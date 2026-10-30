@@ -2169,11 +2169,36 @@ pub struct NativeLoadedAuthority {
     pub cache_digest: String,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct NativeHistoryCoreProof {
+    decision: NativeHistoryDecision,
+    loaded: NativeLoadedAuthority,
+    accounting: NativeHistoryAccounting,
+}
+
+impl std::fmt::Debug for NativeHistoryCoreProof {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NativeHistoryCoreProof")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeHistoryCore {
     pub decision: NativeHistoryDecision,
     pub loaded: NativeLoadedAuthority,
     pub accounting: NativeHistoryAccounting,
+    proof: Arc<NativeHistoryCoreProof>,
+}
+
+impl NativeHistoryCore {
+    fn output_is_intact(&self) -> bool {
+        let mut expected_accounting = self.proof.accounting.clone();
+        // Ordinary-history rebasing is checked by the plan's occurrence mapping.
+        expected_accounting.history = self.accounting.history.clone();
+        self.decision == self.proof.decision
+            && self.loaded == self.proof.loaded
+            && self.accounting == expected_accounting
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2205,10 +2230,16 @@ pub fn prepare_native_history_core(
         super::projection::prepare_native_history_reproject(history, input, qualification)?;
     let accounting = native_returned_accounting(history, input, &decision)?;
     let loaded = super::tool_search::native_loaded_authority(history, input, &decision)?;
+    let proof = Arc::new(NativeHistoryCoreProof {
+        decision: decision.clone(),
+        loaded: loaded.clone(),
+        accounting: accounting.clone(),
+    });
     Ok(NativeHistoryCore {
         decision,
         loaded,
         accounting,
+        proof,
     })
 }
 
@@ -2692,6 +2723,10 @@ pub struct NativeDeclarationIdentity {
 pub enum NativePlanReadiness {
     Tentative,
     SendOnly,
+    OwningPrimary {
+        preparation: Box<NativeBoundPreparation>,
+        certificate: Arc<NativeHistoryCommitCertificate>,
+    },
     RequiredGeneration {
         generation: u64,
         high_water: u64,
@@ -2746,6 +2781,276 @@ impl NativeLoweredHistory {
             conversation: digest(conversation)?,
             instructions: body.get(instructions).map(digest).transpose()?,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeResponsesInputProjection {
+    Preserve,
+    Strict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFinalizationEvidence {
+    backend: crate::ApiBackend,
+    dialect: NativeReplayDialect,
+    history: NativeLoweredHistory,
+    carrier: NativeFinalCarrier,
+    request_digest: String,
+}
+
+impl NativeFinalizationEvidence {
+    fn request_digest(
+        request: &crate::ConversationRequest,
+        backend: &crate::ApiBackend,
+    ) -> Result<String, NativePlanRefusal> {
+        let body = match backend {
+            crate::ApiBackend::Messages => {
+                serde_json::to_value(super::messages::build_messages_request(request))
+            }
+            crate::ApiBackend::Responses => serde_json::to_value(
+                async_openai::types::responses::CreateResponse::from(request),
+            ),
+            crate::ApiBackend::ChatCompletions => {
+                return Err(NativePlanRefusal::InvalidQualification);
+            }
+        }
+        .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        let values = [
+            serde_json::to_value(&request.items).map_err(|_| NativePlanRefusal::InvalidHistory)?,
+            body,
+            Value::Array(crate::extra_tool_entries_for_route(
+                &request.hosted_tools,
+                request.search_admission,
+            )),
+        ];
+        let mut digests = Vec::with_capacity(values.len());
+        for value in values {
+            let bytes =
+                serde_json::to_vec(&value).map_err(|_| NativePlanRefusal::InvalidHistory)?;
+            NativeResource::SnapshotPayloadBytes
+                .admit(bytes.len() as u64, 0)
+                .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+            digests.push(super::projection::native_content_digest(&bytes));
+        }
+        Ok(super::projection::native_content_digest(
+            &serde_json::to_vec(&digests).map_err(|_| NativePlanRefusal::InvalidHistory)?,
+        ))
+    }
+
+    fn validates(
+        &self,
+        context: &NativeHistoryRequestContext,
+        request: &crate::ConversationRequest,
+        carrier: &NativeFinalCarrier,
+    ) -> Result<(), NativePlanRefusal> {
+        if self.backend != context.capture.target.backend
+            || self.dialect != context.capture.target.dialect
+            || &self.carrier != carrier
+            || self.request_digest != Self::request_digest(request, &self.backend)?
+        {
+            return Err(NativePlanRefusal::FinalCarrierChanged);
+        }
+        Ok(())
+    }
+    fn checked_body(
+        request: &crate::ConversationRequest,
+        expected: &Value,
+        backend: crate::ApiBackend,
+        dialect: NativeReplayDialect,
+        carrier: NativeFinalCarrier,
+    ) -> Result<Self, NativePlanRefusal> {
+        let actual: Value = serde_json::from_slice(carrier.bytes())
+            .map_err(|_| NativePlanRefusal::FinalCarrierChanged)?;
+        let history = NativeLoweredHistory::from_body(expected, &backend)?;
+        if NativeLoweredHistory::from_body(&actual, &backend)? != history
+            || actual.get("model") != expected.get("model")
+            || actual.get("tools") != expected.get("tools")
+            || (backend == crate::ApiBackend::Responses
+                && actual.get("store") != Some(&Value::Bool(false)))
+        {
+            return Err(NativePlanRefusal::FinalCarrierChanged);
+        }
+        Ok(Self {
+            request_digest: Self::request_digest(request, &backend)?,
+            backend,
+            dialect,
+            history,
+            carrier,
+        })
+    }
+
+    pub fn checked_responses(
+        request: &crate::ConversationRequest,
+        dialect: crate::ResponsesReplayDialect,
+        projection: NativeResponsesInputProjection,
+        carrier: NativeFinalCarrier,
+    ) -> Result<Self, NativePlanRefusal> {
+        let mut expected = serde_json::to_value(
+            async_openai::types::responses::CreateResponse::from(request),
+        )
+        .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        let extras =
+            crate::extra_tool_entries_for_route(&request.hosted_tools, request.search_admission);
+        if !extras.is_empty() {
+            let (declarations, hosted): (Vec<_>, Vec<_>) = extras.into_iter().partition(|entry| {
+                entry.get("type").and_then(Value::as_str)
+                    == Some(crate::TOOL_SEARCH_DECLARATION_TYPE)
+            });
+            let tools = expected
+                .as_object_mut()
+                .ok_or(NativePlanRefusal::InvalidHistory)?
+                .entry("tools")
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or(NativePlanRefusal::InvalidDeclarations)?;
+            tools.splice(0..0, declarations);
+            tools.extend(hosted);
+        }
+        if dialect == crate::ResponsesReplayDialect::Codex
+            && let Some(tools) = expected.get_mut("tools").and_then(Value::as_array_mut)
+        {
+            for tool in tools {
+                if tool.get("type").and_then(Value::as_str) == Some("web_search")
+                    && let Some(tool) = tool.as_object_mut()
+                {
+                    tool.entry("external_web_access")
+                        .or_insert(Value::Bool(true));
+                }
+            }
+        }
+        crate::patch_reasoning_text_types(&mut expected);
+        crate::patch_reasoning_empty_ids(
+            &mut expected,
+            request.model.as_deref().unwrap_or_default(),
+        );
+        crate::strip_sentinel_web_search_actions(&mut expected);
+        for replacement in request.raw_responses_input_replacements(dialect) {
+            let input = expected
+                .get_mut("input")
+                .and_then(Value::as_array_mut)
+                .ok_or(NativePlanRefusal::InvalidHistory)?;
+            *input
+                .get_mut(replacement.input_item_index)
+                .ok_or(NativePlanRefusal::InvalidHistory)? = replacement.value;
+        }
+        let input = expected
+            .get_mut("input")
+            .and_then(Value::as_array_mut)
+            .ok_or(NativePlanRefusal::InvalidHistory)?;
+        let proactive = request.reasoning_effort == Some(crate::ReasoningEffort::Ultra);
+        let mode = match (dialect == crate::ResponsesReplayDialect::Codex, proactive) {
+            (true, false) => "explicit_request_only",
+            (true, true) => "proactive",
+            (false, false) => {
+                "Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests."
+            }
+            (false, true) => {
+                "Multi-agent mode: proactive — subagents may be spawned proactively when the task benefits from delegation."
+            }
+        };
+        let anchor = request
+            .x_grok_conv_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty());
+        let at = if !anchor
+            && input
+                .last()
+                .is_some_and(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        {
+            input.len() - 1
+        } else {
+            input.len()
+        };
+        input.insert(
+            at,
+            serde_json::json!({"type":"message","role":"developer", "content":[{
+                "type":"input_text", "text":format!("<multi_agent_mode>{mode}</multi_agent_mode>"),
+            }]}),
+        );
+        if projection == NativeResponsesInputProjection::Strict {
+            for item in input {
+                if item.get("type").and_then(Value::as_str) == Some("reasoning")
+                    && let Some(item) = item.as_object_mut()
+                {
+                    item.remove("content");
+                    item.remove("id");
+                }
+            }
+        }
+        Self::checked_body(
+            request,
+            &expected,
+            crate::ApiBackend::Responses,
+            NativeReplayDialect::Responses(dialect),
+            carrier,
+        )
+    }
+
+    pub fn checked_native_messages(
+        request: &crate::ConversationRequest,
+        core: &NativeHistoryCore,
+        carrier: NativeFinalCarrier,
+    ) -> Result<Self, NativePlanRefusal> {
+        if !core.output_is_intact() {
+            return Err(NativePlanRefusal::InvalidAccounting);
+        }
+        let kept: Vec<_> = core
+            .decision
+            .members
+            .iter()
+            .filter(|member| member.action == NativeHistoryAction::Keep)
+            .filter_map(|member| member.raw.as_ref())
+            .collect();
+        let mut marked = request.clone();
+        let mut replacements = Vec::new();
+        for item in &mut marked.items {
+            if let super::ConversationItem::Discovery { item: discovery } = item {
+                let ordinal = replacements.len();
+                if kept.get(ordinal).copied() != Some(discovery.raw()) {
+                    return Err(NativePlanRefusal::InvalidHistory);
+                }
+                let marker = format!("native-history-validation-{}-{ordinal}", carrier.digest());
+                replacements.push((marker.clone(), discovery.raw().clone()));
+                *item = super::ConversationItem::assistant(marker);
+            }
+        }
+        if replacements.len() != kept.len() {
+            return Err(NativePlanRefusal::InvalidHistory);
+        }
+        let mut expected = serde_json::to_value(super::messages::build_messages_request(&marked))
+            .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        let mut seen = std::collections::BTreeSet::new();
+        for message in expected
+            .get_mut("messages")
+            .and_then(Value::as_array_mut)
+            .ok_or(NativePlanRefusal::InvalidHistory)?
+        {
+            let content = message
+                .get_mut("content")
+                .and_then(Value::as_array_mut)
+                .ok_or(NativePlanRefusal::InvalidHistory)?;
+            for part in content {
+                if let Some(index) = replacements.iter().position(|(marker, _)| {
+                    part.get("text").and_then(Value::as_str) == Some(marker.as_str())
+                }) {
+                    if !seen.insert(index) {
+                        return Err(NativePlanRefusal::InvalidHistory);
+                    }
+                    *part = replacements[index].1.clone();
+                }
+            }
+        }
+        if seen.len() != replacements.len() {
+            return Err(NativePlanRefusal::InvalidHistory);
+        }
+        Self::checked_body(
+            request,
+            &expected,
+            crate::ApiBackend::Messages,
+            NativeReplayDialect::Messages,
+            carrier,
+        )
     }
 }
 
@@ -2873,12 +3178,14 @@ pub struct NativeHistoryPlan {
     qualification: Vec<NativeGroupQualification>,
     core: NativeHistoryCore,
     readiness: NativePlanReadiness,
+    finalization: Option<NativeFinalizationEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeHistoryReady {
     Inactive,
     SendOnly,
+    OwningPrimary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2901,6 +3208,55 @@ impl NativeHistoryPlan {
     pub fn checked(
         context: NativeHistoryRequestContext,
         input: NativeHistoryPlanInput<'_>,
+    ) -> Result<Self, NativePlanRefusal> {
+        Self::checked_with_finalization(context, input, None)
+    }
+
+    pub fn checked_finalized(
+        context: NativeHistoryRequestContext,
+        input: NativeHistoryPlanInput<'_>,
+        finalization: NativeFinalizationEvidence,
+    ) -> Result<Self, NativePlanRefusal> {
+        finalization.validates(&context, input.lowering_request, &input.carrier)?;
+        if input
+            .core
+            .decision
+            .groups
+            .iter()
+            .any(|group| group.action == NativeHistoryAction::Keep)
+            && !input.core.loaded.definitions.is_empty()
+        {
+            let current = input
+                .lowering_request
+                .native_eligible_inputs
+                .as_ref()
+                .filter(|current| current.matches_specs(&input.lowering_request.tools))
+                .ok_or(NativePlanRefusal::InvalidDeclarations)?;
+            for loaded in &input.core.loaded.definitions {
+                let matches = current
+                    .entries()
+                    .iter()
+                    .filter(|entry| {
+                        entry.namespace_kind() == loaded.namespace_kind
+                            && entry.qualified_namespace() == loaded.qualified_namespace
+                            && entry.child_name() == loaded.child_name
+                            && entry.schema_digest() == loaded.schema_digest
+                            && serde_json::to_value(entry.declaration()).ok().as_ref()
+                                == Some(&loaded.declaration)
+                    })
+                    .count();
+                if matches != 1 {
+                    return Err(NativePlanRefusal::InvalidDeclarations);
+                }
+            }
+        }
+        Self::checked_with_finalization(context, input, Some(finalization))
+    }
+
+    fn checked_with_finalization(
+        context: NativeHistoryRequestContext,
+        input: NativeHistoryPlanInput<'_>,
+        finalization: Option<NativeFinalizationEvidence>,
     ) -> Result<Self, NativePlanRefusal> {
         let NativeHistoryPlanInput {
             record,
@@ -2926,8 +3282,11 @@ impl NativeHistoryPlan {
         {
             return Err(NativePlanRefusal::InvalidHistory);
         }
-        let lowered_history =
-            NativeLoweredHistory::capture(lowering_request, &context.capture.target.backend)?;
+        let lowered_history = if let Some(evidence) = &finalization {
+            evidence.history.clone()
+        } else {
+            NativeLoweredHistory::capture(lowering_request, &context.capture.target.backend)?
+        };
         let plan = Self {
             context,
             record,
@@ -2944,6 +3303,7 @@ impl NativeHistoryPlan {
             qualification,
             core,
             readiness: NativePlanReadiness::Tentative,
+            finalization,
         };
         plan.validate_binding()?;
         Ok(plan)
@@ -3002,13 +3362,13 @@ impl NativeHistoryPlan {
         if self.context.requirement != NativeHistoryRequirement::Selected {
             return Err(NativePlanRefusal::InactivePlan);
         }
-        // Current lowerers do not verify native KEEP bytes; U9 owns that binding.
-        if self
-            .core
-            .decision
-            .groups
-            .iter()
-            .any(|group| group.action == NativeHistoryAction::Keep)
+        if self.finalization.is_none()
+            && self
+                .core
+                .decision
+                .groups
+                .iter()
+                .any(|group| group.action == NativeHistoryAction::Keep)
         {
             return Err(NativePlanRefusal::KeepCarrierUnverified);
         }
@@ -3083,6 +3443,16 @@ impl NativeHistoryPlan {
         }
         self.validate_declarations()?;
         self.validate_decisions()?;
+        if !self.core.output_is_intact() {
+            return Err(NativePlanRefusal::InvalidAccounting);
+        }
+        if self
+            .finalization
+            .as_ref()
+            .is_some_and(|evidence| evidence.carrier != self.carrier)
+        {
+            return Err(NativePlanRefusal::FinalCarrierChanged);
+        }
         Ok(())
     }
 
@@ -3192,7 +3562,20 @@ impl NativeHistoryPlan {
                 }
                 _ => false,
             };
-            if link.view_digest.as_ref() != Some(&digest) || !native {
+            // Durable views hash a one-item vector; send views hash the item.
+            let durable_digest = self
+                .finalization
+                .as_ref()
+                .map(|_| {
+                    serde_json::to_vec(std::slice::from_ref(original))
+                        .map(|bytes| super::projection::native_content_digest(&bytes))
+                        .map_err(|_| NativePlanRefusal::InvalidHistory)
+                })
+                .transpose()?;
+            if (link.view_digest.as_ref() != Some(&digest)
+                && link.view_digest.as_ref() != durable_digest.as_ref())
+                || !native
+            {
                 return Err(NativePlanRefusal::InvalidHistory);
             }
             match outputs.entry(index) {
@@ -3515,6 +3898,493 @@ impl NativeHistoryPlan {
     }
 }
 
+#[derive(Default)]
+pub struct NativeHistoryAuthorityIssuer {
+    identity: Arc<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeHistorySealPurpose {
+    OwningPrimary,
+    SwitchStore,
+    BoundBuild,
+    CompoundCommit,
+}
+
+#[derive(Clone)]
+pub struct NativeHistoryIssuedSeal {
+    issuer: Arc<()>,
+    live: Arc<std::sync::atomic::AtomicBool>,
+    reported: Arc<std::sync::atomic::AtomicBool>,
+    purpose: NativeHistorySealPurpose,
+    actor_nonce: u64,
+    lineage: String,
+    run: u64,
+    capture: Option<NativeHistoryCapture>,
+}
+
+impl std::fmt::Debug for NativeHistoryIssuedSeal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeHistoryIssuedSeal")
+            .field("purpose", &self.purpose)
+            .field("live", &self.is_live())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for NativeHistoryIssuedSeal {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.issuer, &other.issuer)
+            && Arc::ptr_eq(&self.live, &other.live)
+            && self.purpose == other.purpose
+            && self.actor_nonce == other.actor_nonce
+            && self.lineage == other.lineage
+            && self.run == other.run
+            && self.capture == other.capture
+    }
+}
+impl Eq for NativeHistoryIssuedSeal {}
+
+impl NativeHistoryIssuedSeal {
+    pub fn is_live(&self) -> bool {
+        self.live.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn finish(&self) {
+        self.live.store(false, std::sync::atomic::Ordering::Release);
+    }
+    pub fn purpose(&self) -> NativeHistorySealPurpose {
+        self.purpose
+    }
+    pub fn actor_nonce(&self) -> u64 {
+        self.actor_nonce
+    }
+    pub fn lineage(&self) -> &str {
+        &self.lineage
+    }
+    pub fn run(&self) -> u64 {
+        self.run
+    }
+    pub fn capture(&self) -> Option<&NativeHistoryCapture> {
+        self.capture.as_ref()
+    }
+}
+
+impl NativeHistoryAuthorityIssuer {
+    pub fn owns(&self, seal: &NativeHistoryIssuedSeal) -> bool {
+        Arc::ptr_eq(&self.identity, &seal.issuer) && seal.is_live()
+    }
+
+    pub fn issue_owner(
+        &self,
+        purpose: NativeHistorySealPurpose,
+        actor_nonce: u64,
+        lineage: String,
+        run: u64,
+    ) -> Result<NativeHistoryIssuedSeal, NativeUnavailable> {
+        if !matches!(
+            purpose,
+            NativeHistorySealPurpose::OwningPrimary | NativeHistorySealPurpose::SwitchStore
+        ) || actor_nonce == 0
+            || lineage.is_empty()
+            || run == 0
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        Ok(NativeHistoryIssuedSeal {
+            issuer: self.identity.clone(),
+            live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            purpose,
+            actor_nonce,
+            lineage,
+            run,
+            capture: None,
+        })
+    }
+
+    pub fn issue_bound(
+        &self,
+        owner: &NativeHistoryIssuedSeal,
+        capture: NativeHistoryCapture,
+    ) -> Result<NativeHistoryIssuedSeal, NativeUnavailable> {
+        if !self.owns(owner)
+            || owner.lineage != capture.lineage.id
+            || !matches!(
+                owner.purpose,
+                NativeHistorySealPurpose::OwningPrimary | NativeHistorySealPurpose::SwitchStore
+            )
+        {
+            return Err(NativeUnavailable::Incomplete);
+        }
+        Ok(NativeHistoryIssuedSeal {
+            issuer: self.identity.clone(),
+            live: owner.live.clone(),
+            reported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            purpose: NativeHistorySealPurpose::BoundBuild,
+            actor_nonce: owner.actor_nonce,
+            lineage: owner.lineage.clone(),
+            run: owner.run,
+            capture: Some(capture),
+        })
+    }
+}
+
+/// Authority class named by a preparation's captured intent.
+///
+/// This is a *name*, not verified issuance: it records which class of write the
+/// caller claimed. waj2-U9's owner/revision checks are what turn a claim into
+/// durable authority; nothing here may be read as proof of either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePreparationGrant {
+    SendOnly,
+    OwningPrimary,
+    SwitchStore,
+}
+
+/// Tentative, host-only preparation carried by a Selected bound request.
+///
+/// Captured independently of any final plan: a Selected request keeps its
+/// requirement, the actor's per-build counters, the frozen retained-history
+/// boundary and the durable→send mapping even after the plan is dropped or the
+/// carrier invalidated. The constructor is public only because the owning actor
+/// lives in another crate; the values grant nothing on their own —
+/// `NativeHistoryReady` still comes from the checked plan, never from the
+/// presence of this struct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeBoundPreparation {
+    requirement: NativeHistoryRequirement,
+    grant: NativePreparationGrant,
+    issued_request: String,
+    history: NativeHistoryBoundary,
+    mapping: NativeHistoryTransformMapping,
+    history_revision: Option<u64>,
+    install_generation: Option<u64>,
+    build_sequence: u64,
+    actor_nonce: u64,
+    context: Option<NativeHistoryRequestContext>,
+    seal: Option<NativeHistoryIssuedSeal>,
+    durable_history: Option<Arc<[u8]>>,
+    switch_projection: Option<NativeSwitchProjection>,
+}
+
+impl NativeBoundPreparation {
+    /// `history_revision` and `install_generation` are `None` until their own
+    /// counters exist; the caller may not substitute a look-alike value.
+    #[allow(clippy::too_many_arguments)]
+    pub fn issued(
+        requirement: NativeHistoryRequirement,
+        grant: NativePreparationGrant,
+        issued_request: String,
+        history: NativeHistoryBoundary,
+        mapping: NativeHistoryTransformMapping,
+        history_revision: Option<u64>,
+        install_generation: Option<u64>,
+        build_sequence: u64,
+        actor_nonce: u64,
+    ) -> Self {
+        Self {
+            requirement,
+            grant,
+            issued_request,
+            history,
+            mapping,
+            history_revision,
+            install_generation,
+            build_sequence,
+            actor_nonce,
+            context: None,
+            seal: None,
+            durable_history: None,
+            switch_projection: None,
+        }
+    }
+
+    pub fn requirement(&self) -> NativeHistoryRequirement {
+        self.requirement
+    }
+    pub fn grant(&self) -> NativePreparationGrant {
+        self.grant
+    }
+    pub fn issued_request(&self) -> &str {
+        &self.issued_request
+    }
+    pub fn history(&self) -> &NativeHistoryBoundary {
+        &self.history
+    }
+    pub fn mapping(&self) -> &NativeHistoryTransformMapping {
+        &self.mapping
+    }
+    /// The durable-history revision counter is not implemented on this branch:
+    /// `ConversationItem` length and the native `source_revision`
+    /// (`NativeLineage`) are different quantities and neither may be recorded
+    /// here, so the preparation carries `None` with this reason rather than a
+    /// look-alike value. A later unit owns the real counter.
+    pub fn history_revision(&self) -> Option<u64> {
+        self.history_revision
+    }
+    /// No production site advances an install generation this actor can read
+    /// (the transport binding carries config and credentials only), so the
+    /// capture is `None` with this reason instead of an aliased counter.
+    pub fn install_generation(&self) -> Option<u64> {
+        self.install_generation
+    }
+    pub fn build_sequence(&self) -> u64 {
+        self.build_sequence
+    }
+    pub fn actor_nonce(&self) -> u64 {
+        self.actor_nonce
+    }
+}
+
+/// The builder seam a durable occurrence passed through on its way to the send
+/// view of one bound build.
+///
+/// Every arm names one actual mutation site in
+/// `xai-chat-state/src/actor/request_builder.rs`; an occurrence the builder did
+/// not touch carries [`Self::Kept`] and nothing else. None of these arms removes
+/// an item: pruning rewrites `ToolResult.content` in place and the image budget
+/// evicts image parts in place, so a `Pruned*` or `ImageBudgetCompacted` arm is
+/// a content transform at the same durable coordinate, never a durable strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeHistoryTransform {
+    Kept,
+    ImageBudgetCompacted,
+    PrunedHardClear,
+    PrunedSoftTrim,
+    RequestOnlyReminder,
+    RequestOnlyReminderUpsert,
+    AgentMessageLabelRepaired,
+}
+
+impl NativeHistoryTransform {
+    /// The two arms that name a request-only memory reminder as their input.
+    pub fn names_reminder(self) -> bool {
+        matches!(
+            self,
+            Self::RequestOnlyReminder | Self::RequestOnlyReminderUpsert
+        )
+    }
+}
+
+/// One occurrence of [`NativeHistoryTransformMapping`].
+///
+/// `before_digest` is present exactly for an occurrence that existed in the
+/// frozen durable history; a request-only insertion carries no durable
+/// coordinate. Any entry whose transforms name a reminder records the actual
+/// reminder text it was built from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHistoryMappingEntry {
+    durable_index: Option<u32>,
+    send_index: Option<u32>,
+    transforms: Vec<NativeHistoryTransform>,
+    before_digest: Option<String>,
+    after_digest: String,
+    reminder_input: Option<String>,
+}
+
+impl NativeHistoryMappingEntry {
+    /// An occurrence that was present in `D_pre`.
+    pub fn durable(
+        durable_index: u32,
+        before_digest: String,
+        after_digest: String,
+        transforms: Vec<NativeHistoryTransform>,
+        reminder_input: Option<String>,
+    ) -> Self {
+        Self {
+            durable_index: Some(durable_index),
+            send_index: None,
+            transforms,
+            before_digest: Some(before_digest),
+            after_digest,
+            reminder_input,
+        }
+    }
+
+    /// An occurrence the builder created for this request only.
+    pub fn request_only_insertion(
+        after_digest: String,
+        transforms: Vec<NativeHistoryTransform>,
+        reminder_input: Option<String>,
+    ) -> Self {
+        Self {
+            durable_index: None,
+            send_index: None,
+            transforms,
+            before_digest: None,
+            after_digest,
+            reminder_input,
+        }
+    }
+
+    pub fn durable_index(&self) -> Option<u32> {
+        self.durable_index
+    }
+    pub fn send_index(&self) -> Option<u32> {
+        self.send_index
+    }
+    pub fn transforms(&self) -> &[NativeHistoryTransform] {
+        &self.transforms
+    }
+    pub fn before_digest(&self) -> Option<&str> {
+        self.before_digest.as_deref()
+    }
+    pub fn after_digest(&self) -> &str {
+        &self.after_digest
+    }
+    pub fn reminder_input(&self) -> Option<&str> {
+        self.reminder_input.as_deref()
+    }
+
+    fn with_send_index(mut self, send_index: u32) -> Self {
+        self.send_index = Some(send_index);
+        self
+    }
+}
+
+/// Host-only, occurrence-indexed relation between the frozen durable history
+/// (`D_pre`) and the actual send history (`S_pre`) of one bound build
+/// (design r4 §4.1).
+///
+/// It is complete by construction: every durable occurrence and every send
+/// occurrence appears exactly once, each with its before/after item digest and
+/// the single seam that changed it. `Checked` is the only way to obtain one and
+/// it refuses an incomplete or ambiguous relation. The entry count is bounded by
+/// the request's own item count plus at most one request-only insertion per
+/// seam, so it adds no new retention surface — nothing here is serialized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHistoryTransformMapping {
+    durable: NativeHistoryBoundary,
+    send: NativeHistoryBoundary,
+    entries: Vec<NativeHistoryMappingEntry>,
+}
+
+impl NativeHistoryTransformMapping {
+    /// Verifies the relation covers both boundaries completely and that every
+    /// entry is self-consistent, then binds the send coordinates in order.
+    ///
+    /// Refusals: `InvalidReference` for a malformed entry (a digest without a
+    /// durable coordinate, a duplicate durable coordinate, an insertion credited
+    /// to a seam other than the request-only reminder, a `Kept` entry whose
+    /// digests differ or a changed entry claimed as `Kept`, a reminder arm
+    /// without its reminder text); `Incomplete` for an uncovered durable
+    /// coordinate, an empty transform list, or a send count that differs from
+    /// `S_pre`'s item count.
+    pub fn checked(
+        durable: NativeHistoryBoundary,
+        send: NativeHistoryBoundary,
+        entries: Vec<NativeHistoryMappingEntry>,
+    ) -> Result<Self, NativeUnavailable> {
+        let durable_len =
+            usize::try_from(durable.items).map_err(|_| NativeUnavailable::Incomplete)?;
+        let send_len = usize::try_from(send.items).map_err(|_| NativeUnavailable::Incomplete)?;
+        let mut seen_durable = vec![false; durable_len];
+        for entry in &entries {
+            let has_before = entry.before_digest.is_some();
+            if has_before != entry.durable_index.is_some() {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            if entry.transforms.is_empty() {
+                return Err(NativeUnavailable::Incomplete);
+            }
+            let names_reminder = entry.transforms.iter().any(|t| t.names_reminder());
+            if names_reminder != entry.reminder_input.is_some()
+                || entry.reminder_input.as_deref().is_some_and(str::is_empty)
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            if entry.transforms.contains(&NativeHistoryTransform::Kept)
+                && entry.transforms.len() > 1
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            if entry.durable_index.is_none()
+                && entry.transforms.as_slice() != [NativeHistoryTransform::RequestOnlyReminder]
+            {
+                // Only the insertion seam may create a send occurrence with no
+                // durable coordinate.
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            if !is_hex64(&entry.after_digest) {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            let is_kept = entry.transforms.as_slice() == [NativeHistoryTransform::Kept];
+            if let Some(before) = entry.before_digest.as_deref() {
+                if !is_hex64(before) {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+                if is_kept != (before == entry.after_digest.as_str()) {
+                    // `Kept` means the builder copied the bytes unchanged; any
+                    // other relation must show a digest change it observed.
+                    return Err(NativeUnavailable::Fidelity);
+                }
+            } else if is_kept {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            if let Some(index) = entry.durable_index {
+                // The builder never drops a durable occurrence on the way to the
+                // send view, so every durable coordinate must be carried.
+                let slot = usize::try_from(index).map_err(|_| NativeUnavailable::Incomplete)?;
+                let seen = seen_durable
+                    .get_mut(slot)
+                    .ok_or(NativeUnavailable::Incomplete)?;
+                if *seen {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+                *seen = true;
+            }
+        }
+        if seen_durable.iter().any(|seen| !seen) {
+            return Err(NativeUnavailable::Incomplete);
+        }
+        // The caller lists entries in send order; the send coordinates are
+        // bound here so a relation cannot carry an index the builder never
+        // emitted, and `S_pre`'s item count is what the list must match.
+        if entries.len() != send_len {
+            return Err(NativeUnavailable::Incomplete);
+        }
+        let mut bound = Vec::with_capacity(entries.len());
+        for (position, entry) in entries.into_iter().enumerate() {
+            bound.push(entry.with_send_index(position as u32));
+        }
+        Ok(Self {
+            durable,
+            send,
+            entries: bound,
+        })
+    }
+
+    pub fn durable(&self) -> &NativeHistoryBoundary {
+        &self.durable
+    }
+    pub fn send(&self) -> &NativeHistoryBoundary {
+        &self.send
+    }
+    pub fn entries(&self) -> &[NativeHistoryMappingEntry] {
+        &self.entries
+    }
+    pub fn send_for_durable(&self, durable_index: u32) -> Option<u32> {
+        self.entries
+            .iter()
+            .find(|entry| entry.durable_index == Some(durable_index))
+            .and_then(|entry| entry.send_index)
+    }
+    pub fn durable_for_send(&self, send_index: u32) -> Option<u32> {
+        self.entries
+            .iter()
+            .find(|entry| entry.send_index == Some(send_index))
+            .and_then(|entry| entry.durable_index)
+    }
+}
+
+fn is_hex64(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 pub fn validate_native_history_plan(
     context: &NativeHistoryRequestContext,
     plan: Option<&NativeHistoryPlan>,
@@ -3536,6 +4406,14 @@ pub fn validate_native_history_plan(
                 (NativeHistoryWriteAuthority::SendOnly, NativePlanReadiness::SendOnly) => {
                     Ok(NativeHistoryReady::SendOnly)
                 }
+                (
+                    NativeHistoryWriteAuthority::OwningPrimary { .. },
+                    NativePlanReadiness::OwningPrimary {
+                        preparation,
+                        certificate,
+                    },
+                ) if certificate.validates(preparation) => Ok(NativeHistoryReady::OwningPrimary),
+                (_, NativePlanReadiness::OwningPrimary { .. }) => Err(NativePlanRefusal::NotReady),
                 (_, NativePlanReadiness::Tentative) => Err(NativePlanRefusal::NotReady),
                 _ => Err(NativePlanRefusal::AuthorityUnverified),
             }
@@ -3543,9 +4421,975 @@ pub fn validate_native_history_plan(
     }
 }
 
+impl NativeHistoryPlan {
+    pub fn checked_bound(
+        preparation: NativeBoundPreparation,
+        certificate: NativeHistoryCommitCertificate,
+        input: NativeHistoryPlanInput<'_>,
+    ) -> Result<Self, NativePlanRefusal> {
+        if preparation.grant() != NativePreparationGrant::OwningPrimary
+            || !certificate.validates(&preparation)
+            || certificate.acknowledgement().before() != preparation.history()
+            || super::projection::native_content_digest(&input.input_history_bytes)
+                != preparation.mapping().send().digest
+            || input.core.accounting.history != *preparation.mapping().send()
+        {
+            return Err(NativePlanRefusal::AuthorityUnverified);
+        }
+        let mut context = preparation
+            .context()
+            .cloned()
+            .ok_or(NativePlanRefusal::AuthorityUnverified)?;
+        if !matches!(
+            context.authority(),
+            NativeHistoryWriteAuthority::OwningPrimary { .. }
+        ) {
+            return Err(NativePlanRefusal::AuthorityUnverified);
+        }
+        context.capture.history = preparation.mapping().send().clone();
+        let mut plan = Self::checked(context, input)?;
+        plan.readiness = NativePlanReadiness::OwningPrimary {
+            preparation: Box::new(preparation),
+            certificate: Arc::new(certificate),
+        };
+        plan.validate_binding()?;
+        Ok(plan)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeSwitchProjection {
+    target_model: String,
+    target_pin: Option<String>,
+    backend: crate::ApiBackend,
+    boundary: super::projection::Boundary,
+    admission: super::responses::SearchAdmission,
+}
+impl NativeSwitchProjection {
+    pub fn captured(
+        target_model: String,
+        target_pin: Option<String>,
+        route: &super::projection::TargetRoute,
+    ) -> Self {
+        Self {
+            target_model,
+            target_pin,
+            backend: route.backend(),
+            boundary: route.boundary(),
+            admission: route.admission(),
+        }
+    }
+    pub fn project(
+        &self,
+        items: &[super::ConversationItem],
+    ) -> super::projection::ProjectedHistory {
+        let route = super::projection::TargetRoute::new(
+            self.backend.clone(),
+            self.boundary,
+            self.admission,
+        );
+        super::projection::project_switch_history(
+            items,
+            &self.target_model,
+            self.boundary,
+            self.target_pin.as_deref(),
+            &route,
+        )
+    }
+}
+impl NativeBoundPreparation {
+    pub fn with_switch_projection(
+        mut self,
+        projection: NativeSwitchProjection,
+    ) -> Result<Self, NativeUnavailable> {
+        if self.grant != NativePreparationGrant::SwitchStore || self.switch_projection.is_some() {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        self.switch_projection = Some(projection);
+        Ok(self)
+    }
+    pub fn switch_projection(&self) -> Option<&NativeSwitchProjection> {
+        self.switch_projection.as_ref()
+    }
+}
+
+#[derive(Clone)]
+pub struct NativeHistoryRegistrationKey {
+    issuer: Arc<()>,
+}
+impl std::fmt::Debug for NativeHistoryRegistrationKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NativeHistoryRegistrationKey { .. }")
+    }
+}
+impl NativeHistoryAuthorityIssuer {
+    pub fn registration_key(&self) -> NativeHistoryRegistrationKey {
+        NativeHistoryRegistrationKey {
+            issuer: self.identity.clone(),
+        }
+    }
+    pub fn accepts_registration_key(&self, key: &NativeHistoryRegistrationKey) -> bool {
+        Arc::ptr_eq(&self.identity, &key.issuer)
+    }
+}
+
+fn native_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeHistoryBefore {
+    pub boundary: NativeHistoryBoundary,
+    pub byte_len: u64,
+    pub raw_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeHistoryAfterImage {
+    pub format_version: u32,
+    pub blob: NativeBlobRef,
+    pub boundary: NativeHistoryBoundary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeCompoundOperation {
+    Projection,
+    NativeCheckpoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeCompoundCommit {
+    pub record_kind: String,
+    pub schema_version: u32,
+    pub policy_revision: u32,
+    pub reader_floor: u32,
+    pub limits_revision: u32,
+    pub lineage: String,
+    pub high_water: u64,
+    pub checkpoint: NativeBlobRef,
+    pub transaction: String,
+    pub operation: NativeCompoundOperation,
+    pub previous_generation: u64,
+    #[serde(deserialize_with = "native_required_option")]
+    pub previous_checkpoint: Option<NativeBlobRef>,
+    #[serde(deserialize_with = "native_required_option")]
+    pub previous_authority_digest: Option<String>,
+    pub before: NativeHistoryBefore,
+    #[serde(deserialize_with = "native_required_option")]
+    pub after_image: Option<NativeHistoryAfterImage>,
+    #[serde(deserialize_with = "native_required_option")]
+    pub projection: Option<NativeBlobRef>,
+}
+
+impl NativeCompoundCommit {
+    pub fn validate(&self) -> Result<(), NativeUnavailable> {
+        let reference = |reference: &NativeBlobRef, kind: &str, limit: u64| {
+            reference.kind == kind && reference.byte_len <= limit && is_hex64(&reference.digest)
+        };
+        if self.record_kind != "native_compound_commit"
+            || (
+                self.schema_version,
+                self.policy_revision,
+                self.reader_floor,
+                self.limits_revision,
+            ) != (3, 1, 3, 2)
+            || self.lineage.is_empty()
+            || self.transaction.is_empty()
+            || self.previous_generation.checked_add(1) != Some(self.high_water)
+            || !reference(&self.checkpoint, "checkpoint", NATIVE_CONTROL_BYTES)
+            || !is_hex64(&self.before.boundary.digest)
+            || !is_hex64(&self.before.raw_digest)
+            || (self.previous_generation == 0) != self.previous_checkpoint.is_none()
+            || (self.previous_generation == 0) != self.previous_authority_digest.is_none()
+            || self
+                .previous_checkpoint
+                .as_ref()
+                .is_some_and(|previous| !reference(previous, "checkpoint", NATIVE_CONTROL_BYTES))
+            || self
+                .previous_authority_digest
+                .as_deref()
+                .is_some_and(|digest| !is_hex64(digest))
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        match (self.operation, &self.after_image, &self.projection) {
+            (NativeCompoundOperation::Projection, Some(image), Some(metadata))
+                if image.format_version == 1
+                    && reference(&image.blob, "ordinary_history_jsonl", NATIVE_ROLE_BYTES)
+                    && is_hex64(&image.boundary.digest)
+                    && reference(metadata, "projection_metadata", NATIVE_LEDGER_BYTES)
+                    && self.projection_transaction()? == self.transaction =>
+            {
+                Ok(())
+            }
+            (NativeCompoundOperation::NativeCheckpoint, None, None) => Ok(()),
+            _ => Err(NativeUnavailable::InvalidReference),
+        }
+    }
+
+    pub fn projection_transaction(&self) -> Result<String, NativeUnavailable> {
+        #[derive(Serialize)]
+        struct Key<'a> {
+            lineage: &'a str,
+            previous_generation: u64,
+            previous_checkpoint_digest: Option<&'a str>,
+            previous_authority_digest: Option<&'a str>,
+            before: &'a NativeHistoryBefore,
+            after_image: &'a NativeHistoryAfterImage,
+            checkpoint_digest: &'a str,
+            projection_digest: &'a str,
+        }
+        let bytes = serde_json::to_vec(&Key {
+            lineage: &self.lineage,
+            previous_generation: self.previous_generation,
+            previous_checkpoint_digest: self
+                .previous_checkpoint
+                .as_ref()
+                .map(|reference| reference.digest.as_str()),
+            previous_authority_digest: self.previous_authority_digest.as_deref(),
+            before: &self.before,
+            after_image: self
+                .after_image
+                .as_ref()
+                .ok_or(NativeUnavailable::InvalidReference)?,
+            checkpoint_digest: &self.checkpoint.digest,
+            projection_digest: &self
+                .projection
+                .as_ref()
+                .ok_or(NativeUnavailable::InvalidReference)?
+                .digest,
+        })
+        .map_err(|_| NativeUnavailable::Fidelity)?;
+        Ok(format!(
+            "s3p:{}",
+            super::projection::native_content_digest(&bytes)
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeMaterialized {
+    pub format_version: u32,
+    pub authority_digest: String,
+    pub history_digest: String,
+    pub history_byte_len: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeDomainBackend {
+    Responses,
+    Messages,
+    ChatCompletions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeResponseDialect {
+    Codex,
+    Xai,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum NativeDomainDialect {
+    Messages,
+    Responses(NativeResponseDialect),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionDomain {
+    pub backend: NativeDomainBackend,
+    pub dialect: NativeDomainDialect,
+    pub model: String,
+    pub row: String,
+    pub provider: String,
+    pub deployment: String,
+    pub deployment_revision: String,
+    pub endpoint: String,
+    pub principal: String,
+}
+
+impl From<&NativeReplayDomain> for NativeProjectionDomain {
+    fn from(domain: &NativeReplayDomain) -> Self {
+        Self {
+            backend: match domain.backend {
+                crate::ApiBackend::Responses => NativeDomainBackend::Responses,
+                crate::ApiBackend::Messages => NativeDomainBackend::Messages,
+                crate::ApiBackend::ChatCompletions => NativeDomainBackend::ChatCompletions,
+            },
+            dialect: match &domain.dialect {
+                NativeReplayDialect::Messages => NativeDomainDialect::Messages,
+                NativeReplayDialect::Responses(dialect) => {
+                    NativeDomainDialect::Responses(match dialect {
+                        super::ResponsesReplayDialect::Codex => NativeResponseDialect::Codex,
+                        super::ResponsesReplayDialect::Xai => NativeResponseDialect::Xai,
+                        super::ResponsesReplayDialect::Other => NativeResponseDialect::Other,
+                    })
+                }
+            },
+            model: domain.model.clone(),
+            row: domain.row.clone(),
+            provider: domain.provider.clone(),
+            deployment: domain.deployment.clone(),
+            deployment_revision: domain.deployment_revision.clone(),
+            endpoint: domain.endpoint.clone(),
+            principal: domain.principal.clone(),
+        }
+    }
+}
+
+impl NativeProjectionDomain {
+    pub fn domain(&self) -> NativeReplayDomain {
+        NativeReplayDomain {
+            backend: match self.backend {
+                NativeDomainBackend::Responses => crate::ApiBackend::Responses,
+                NativeDomainBackend::Messages => crate::ApiBackend::Messages,
+                NativeDomainBackend::ChatCompletions => crate::ApiBackend::ChatCompletions,
+            },
+            dialect: match self.dialect {
+                NativeDomainDialect::Messages => NativeReplayDialect::Messages,
+                NativeDomainDialect::Responses(dialect) => {
+                    NativeReplayDialect::Responses(match dialect {
+                        NativeResponseDialect::Codex => super::ResponsesReplayDialect::Codex,
+                        NativeResponseDialect::Xai => super::ResponsesReplayDialect::Xai,
+                        NativeResponseDialect::Other => super::ResponsesReplayDialect::Other,
+                    })
+                }
+            },
+            model: self.model.clone(),
+            row: self.row.clone(),
+            provider: self.provider.clone(),
+            deployment: self.deployment.clone(),
+            deployment_revision: self.deployment_revision.clone(),
+            endpoint: self.endpoint.clone(),
+            principal: self.principal.clone(),
+        }
+    }
+    pub fn validate(&self) -> Result<(), NativeUnavailable> {
+        if !self.domain().complete() || self.endpoint.contains(['?', '#', '@']) {
+            return Err(NativeUnavailable::UnknownIdentity);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeProjectionOwner {
+    SwitchStore,
+    OwningPrimary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionVersions {
+    pub schema: u32,
+    pub policy: u32,
+    pub projection: u32,
+    pub reader: u32,
+    pub limits: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionAdmission {
+    pub supports_search_tool: bool,
+    pub has_searchable_tools: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionShape {
+    pub family: String,
+    pub keyless_server: bool,
+    pub output_id_present: bool,
+    pub completed: bool,
+    pub result_error: bool,
+    pub referenced_members: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionReceipt {
+    pub target: NativeProjectionDomain,
+    pub shape: NativeProjectionShape,
+    pub receipt_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionQualification {
+    pub group: u32,
+    #[serde(deserialize_with = "native_required_option")]
+    pub source: Option<NativeProjectionDomain>,
+    pub target: NativeProjectionDomain,
+    pub shape: NativeProjectionShape,
+    #[serde(deserialize_with = "native_required_option")]
+    pub receipt: Option<NativeProjectionReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionGroup {
+    pub key: u32,
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionMember {
+    pub source: u32,
+    pub source_digest: String,
+    #[serde(deserialize_with = "native_required_option")]
+    pub group: Option<u32>,
+    pub action: String,
+    pub output_items: Vec<u64>,
+    pub output_digests: Vec<String>,
+    pub loss: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionFGroup {
+    pub key: u32,
+    pub call: u32,
+    pub call_digest: String,
+    pub result: u32,
+    pub result_digest: String,
+    pub disposition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionFProvenance {
+    pub version: u32,
+    pub groups: Vec<NativeProjectionFGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProjectionMetadata {
+    pub record_kind: String,
+    pub format_version: u32,
+    pub owner_class: NativeProjectionOwner,
+    pub issued_request: String,
+    pub binding_generation: u64,
+    pub original_admission: NativeProjectionAdmission,
+    pub target: NativeProjectionDomain,
+    pub versions: NativeProjectionVersions,
+    pub qualification: Vec<NativeProjectionQualification>,
+    pub input_history: NativeHistoryBoundary,
+    pub post_history: NativeHistoryBoundary,
+    pub groups: Vec<NativeProjectionGroup>,
+    pub members: Vec<NativeProjectionMember>,
+    pub f_provenance: NativeProjectionFProvenance,
+    pub loaded_invalidations: Vec<u32>,
+}
+
+impl NativeProjectionShape {
+    pub fn from_shape(shape: &NativeReplayShape) -> Self {
+        Self {
+            family: match shape.family {
+                NativeReplayFamily::ResponsesClient => "responses_client",
+                NativeReplayFamily::ResponsesServer => "responses_server",
+                NativeReplayFamily::MessagesServer => "messages_server",
+            }
+            .into(),
+            keyless_server: shape.keyless_server,
+            output_id_present: shape.output_id_present,
+            completed: shape.completed,
+            result_error: shape.result_error,
+            referenced_members: shape.referenced_members,
+        }
+    }
+    pub fn shape(&self) -> Result<NativeReplayShape, NativeUnavailable> {
+        Ok(NativeReplayShape {
+            family: match self.family.as_str() {
+                "responses_client" => NativeReplayFamily::ResponsesClient,
+                "responses_server" => NativeReplayFamily::ResponsesServer,
+                "messages_server" => NativeReplayFamily::MessagesServer,
+                _ => return Err(NativeUnavailable::InvalidReference),
+            },
+            keyless_server: self.keyless_server,
+            output_id_present: self.output_id_present,
+            completed: self.completed,
+            result_error: self.result_error,
+            referenced_members: self.referenced_members,
+        })
+    }
+}
+
+impl NativeProjectionQualification {
+    pub fn qualification(&self, key: &str) -> Result<NativeGroupQualification, NativeUnavailable> {
+        self.target.validate()?;
+        if let Some(source) = &self.source {
+            source.validate()?;
+        }
+        Ok(NativeGroupQualification {
+            group: key.into(),
+            source: self.source.as_ref().map(NativeProjectionDomain::domain),
+            target: self.target.domain(),
+            shape: self.shape.shape()?,
+            receipt: self
+                .receipt
+                .as_ref()
+                .map(|receipt| {
+                    Ok(NativeShapeReceipt {
+                        target: receipt.target.domain(),
+                        shape: receipt.shape.shape()?,
+                        receipt_id: receipt.receipt_id.clone(),
+                    })
+                })
+                .transpose()?,
+        })
+    }
+}
+
+impl NativeProjectionMetadata {
+    pub fn validate_namespace(
+        &self,
+        record: &NativeSearchHistoryV1,
+        ledger: &NativeLedger,
+        identity: &NativeIdentityExtension,
+    ) -> Result<(), NativeUnavailable> {
+        if self.record_kind != "native_projection_metadata"
+            || self.format_version != 1
+            || self.issued_request.is_empty()
+            || self.binding_generation == 0
+            || (
+                self.versions.schema,
+                self.versions.policy,
+                self.versions.projection,
+                self.versions.reader,
+                self.versions.limits,
+            ) != (
+                record.schema_version,
+                record.policy_revision,
+                1,
+                record.reader_floor,
+                record.limits_revision,
+            )
+            || self.post_history != record.history_boundary
+            || !is_hex64(&self.input_history.digest)
+            || !is_hex64(&self.post_history.digest)
+            || self.f_provenance.version != 1
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        self.target.validate()?;
+        let mut namespace: Vec<_> = ledger
+            .accounting
+            .iter()
+            .map(|member| (&member.source, member.source_digest.as_str()))
+            .collect();
+        if let NativeIdentityExtension::Revision2 {
+            eligible_member_accounting,
+            ..
+        } = identity
+        {
+            namespace.extend(
+                eligible_member_accounting
+                    .iter()
+                    .map(|member| (&member.source, member.source_digest.as_str())),
+            );
+        }
+        NativeResource::LedgerMembers.admit(namespace.len() as u64, 0)?;
+        NativeResource::LedgerGroups.admit(ledger.groups.len() as u64, 0)?;
+        if self.members.len() != namespace.len() {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for member in &self.members {
+            let (source, source_digest) = namespace
+                .get(member.source as usize)
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            let mut parent = (*source).clone();
+            parent.submember = None;
+            let actual_group = ledger
+                .groups
+                .iter()
+                .position(|group| group.members.contains(&parent));
+            if !seen.insert(member.source)
+                || member.source_digest != *source_digest
+                || member.group.map(|group| group as usize) != actual_group
+                || member.output_items.len() != member.output_digests.len()
+                || member
+                    .output_items
+                    .iter()
+                    .any(|index| *index >= self.post_history.items)
+                || member.output_digests.iter().any(|digest| !is_hex64(digest))
+                || !matches!(
+                    member.action.as_str(),
+                    "Keep"
+                        | "F"
+                        | "Strip"
+                        | "OmitSendOnly"
+                        | "AwaitClient"
+                        | "AwaitResults"
+                        | "ContinueOriginal"
+                )
+                || member.action == "Strip" && (!member.output_items.is_empty() || !member.loss)
+                || matches!(
+                    member.action.as_str(),
+                    "AwaitClient" | "AwaitResults" | "ContinueOriginal"
+                ) && member.loss
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+        }
+        let mut groups = std::collections::BTreeSet::new();
+        for transition in &self.groups {
+            let group = ledger
+                .groups
+                .get(transition.key as usize)
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            if !groups.insert(transition.key)
+                || group.state != "Completed"
+                || !matches!(
+                    transition.from.as_str(),
+                    "KEEP" | "F" | "strip" | "Unrecorded"
+                )
+                || !matches!(transition.to.as_str(), "KEEP" | "F" | "strip")
+                || !matches!(
+                    transition.reason.as_str(),
+                    "kept"
+                        | "unqualified"
+                        | "missing_view"
+                        | "prior_disposition"
+                        | "f_budget"
+                        | "pending"
+                        | "abandoned"
+                )
+                || transition.from == "strip" && transition.to != "strip"
+                || transition.from == "F" && transition.to == "KEEP"
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+        }
+        if groups.len()
+            != ledger
+                .groups
+                .iter()
+                .filter(|group| group.state == "Completed")
+                .count()
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let mut qualifications = std::collections::BTreeSet::new();
+        for qualification in &self.qualification {
+            let group = ledger
+                .groups
+                .get(qualification.group as usize)
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            if !qualifications.insert(qualification.group) || qualification.target != self.target {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            let checked = qualification.qualification(&group.key)?;
+            if let Some(receipt) = &checked.receipt {
+                if receipt.target != checked.target
+                    || receipt.shape != checked.shape
+                    || receipt.receipt_id.is_empty()
+                {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+            }
+        }
+        if qualifications.len() != ledger.groups.len() {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let mut provenance = std::collections::BTreeSet::new();
+        for group in &self.f_provenance.groups {
+            let current = ledger
+                .groups
+                .get(group.key as usize)
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            let call = ledger
+                .accounting
+                .get(group.call as usize)
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            let result = ledger
+                .accounting
+                .get(group.result as usize)
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            if !provenance.insert(group.key)
+                || !current.members.contains(&call.source)
+                || !current.members.contains(&result.source)
+                || group.call == group.result
+                || !is_hex64(&group.call_digest)
+                || !is_hex64(&group.result_digest)
+                || !matches!(group.disposition.as_str(), "F" | "Strip")
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+        }
+        if self
+            .groups
+            .iter()
+            .filter(|group| group.to != "KEEP")
+            .any(|group| !provenance.contains(&group.key))
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let mut invalidations = std::collections::BTreeSet::new();
+        for group in &self.loaded_invalidations {
+            if !invalidations.insert(*group) || ledger.groups.get(*group as usize).is_none() {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCompoundAck {
+    transaction: String,
+    generation: u64,
+    checkpoint: NativeBlobRef,
+    authority_digest: String,
+    before: NativeHistoryBoundary,
+    after: NativeHistoryBoundary,
+}
+
+impl NativeCompoundAck {
+    pub fn from_commit(
+        commit: &NativeCompoundCommit,
+        bytes: &[u8],
+    ) -> Result<Self, NativeUnavailable> {
+        commit.validate()?;
+        if serde_json::from_slice::<NativeCompoundCommit>(bytes)
+            .map_err(|_| NativeUnavailable::Fidelity)?
+            != *commit
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let after = commit.after_image.as_ref().map_or_else(
+            || commit.before.boundary.clone(),
+            |image| image.boundary.clone(),
+        );
+        Ok(Self {
+            transaction: commit.transaction.clone(),
+            generation: commit.high_water,
+            checkpoint: commit.checkpoint.clone(),
+            authority_digest: super::projection::native_content_digest(bytes),
+            before: commit.before.boundary.clone(),
+            after,
+        })
+    }
+    pub fn transaction(&self) -> &str {
+        &self.transaction
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn checkpoint(&self) -> &NativeBlobRef {
+        &self.checkpoint
+    }
+    pub fn authority_digest(&self) -> &str {
+        &self.authority_digest
+    }
+    pub fn before(&self) -> &NativeHistoryBoundary {
+        &self.before
+    }
+    pub fn after(&self) -> &NativeHistoryBoundary {
+        &self.after
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHistoryCommitCertificate {
+    seal: NativeHistoryIssuedSeal,
+    ack: NativeCompoundAck,
+}
+
+impl NativeHistoryAuthorityIssuer {
+    pub fn confirm_compound(
+        &self,
+        preparation: &NativeBoundPreparation,
+        ack: NativeCompoundAck,
+        expected_post: &NativeHistoryBoundary,
+    ) -> Result<NativeHistoryCommitCertificate, NativeUnavailable> {
+        let seal = preparation.seal().ok_or(NativeUnavailable::Incomplete)?;
+        let context = preparation.context().ok_or(NativeUnavailable::Incomplete)?;
+        if !self.owns(seal)
+            || seal.purpose != NativeHistorySealPurpose::BoundBuild
+            || seal.capture.as_ref() != Some(context.capture())
+            || preparation.grant == NativePreparationGrant::SendOnly
+            || ack.before() != preparation.history()
+            || ack.after() != expected_post
+            || context.capture().native_generation.checked_add(1) != Some(ack.generation())
+        {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        let mut seal = seal.clone();
+        seal.purpose = NativeHistorySealPurpose::CompoundCommit;
+        Ok(NativeHistoryCommitCertificate { seal, ack })
+    }
+}
+
+impl NativeHistoryCommitCertificate {
+    pub fn mark_reported_once(&self) -> bool {
+        self.is_live()
+            && self
+                .seal
+                .reported
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+    }
+    pub fn acknowledgement(&self) -> &NativeCompoundAck {
+        &self.ack
+    }
+    pub fn is_live(&self) -> bool {
+        self.seal.is_live()
+    }
+    pub fn validates(&self, preparation: &NativeBoundPreparation) -> bool {
+        preparation.seal().is_some_and(|bound| {
+            Arc::ptr_eq(&self.seal.issuer, &bound.issuer)
+                && Arc::ptr_eq(&self.seal.live, &bound.live)
+                && self.seal.capture == bound.capture
+                && self.seal.run == bound.run
+                && self.seal.actor_nonce == bound.actor_nonce
+                && self.seal.purpose == NativeHistorySealPurpose::CompoundCommit
+                && self.seal.is_live()
+                && self.ack.before() == preparation.history()
+        })
+    }
+}
+
+impl NativeBoundPreparation {
+    pub fn with_issued_context(
+        mut self,
+        context: NativeHistoryRequestContext,
+        seal: NativeHistoryIssuedSeal,
+        durable_history: Arc<[u8]>,
+    ) -> Result<Self, NativeUnavailable> {
+        let history: Vec<super::ConversationItem> =
+            serde_json::from_slice(&durable_history).map_err(|_| NativeUnavailable::Fidelity)?;
+        if context.requirement() != self.requirement
+            || context.capture().history != self.history
+            || self.mapping.durable() != &self.history
+            || seal.capture() != Some(context.capture())
+            || seal.purpose() != NativeHistorySealPurpose::BoundBuild
+            || seal.actor_nonce() != self.actor_nonce
+            || !seal.is_live()
+            || super::projection::native_content_digest(&durable_history) != self.history.digest
+            || history.len() as u64 != self.history.items
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        self.context = Some(context);
+        self.seal = Some(seal);
+        self.durable_history = Some(durable_history);
+        Ok(self)
+    }
+    pub fn context(&self) -> Option<&NativeHistoryRequestContext> {
+        self.context.as_ref()
+    }
+    pub fn seal(&self) -> Option<&NativeHistoryIssuedSeal> {
+        self.seal.as_ref()
+    }
+    pub fn durable_history_bytes(&self) -> Option<&[u8]> {
+        self.durable_history.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_history_owner_seals_cannot_cross_issuers_or_survive_release() {
+        let issuer = NativeHistoryAuthorityIssuer::default();
+        let foreign = NativeHistoryAuthorityIssuer::default();
+        let owner = issuer
+            .issue_owner(
+                NativeHistorySealPurpose::OwningPrimary,
+                1,
+                "owner-lineage".into(),
+                1,
+            )
+            .unwrap();
+        assert!(issuer.owns(&owner));
+        assert!(!foreign.owns(&owner));
+        let borrowed = owner.clone();
+        owner.finish();
+        assert!(!issuer.owns(&borrowed));
+        assert!(!borrowed.is_live());
+    }
+
+    #[test]
+    fn native_history_invalidation_retains_captured_preparation() {
+        let boundary = NativeHistoryBoundary {
+            items: 0,
+            digest: "a".repeat(64),
+        };
+        let mapping =
+            NativeHistoryTransformMapping::checked(boundary.clone(), boundary.clone(), Vec::new())
+                .unwrap();
+        let preparation = NativeBoundPreparation::issued(
+            NativeHistoryRequirement::Selected,
+            NativePreparationGrant::SendOnly,
+            "invalidation-owner".into(),
+            boundary,
+            mapping,
+            None,
+            None,
+            1,
+            1,
+        );
+        let mut request = crate::ConversationRequest {
+            native_bound_preparation: Some(preparation.clone()),
+            ..Default::default()
+        };
+        request.invalidate_encoded();
+        assert_eq!(request.native_bound_preparation, Some(preparation));
+    }
+
+    #[test]
+    fn native_history_mapping_kept_occurrence_needs_no_reminder() {
+        let boundary = NativeHistoryBoundary {
+            items: 1,
+            digest: "a".repeat(64),
+        };
+        let mapping = NativeHistoryTransformMapping::checked(
+            boundary.clone(),
+            boundary,
+            vec![NativeHistoryMappingEntry::durable(
+                0,
+                "b".repeat(64),
+                "b".repeat(64),
+                vec![NativeHistoryTransform::Kept],
+                None,
+            )],
+        )
+        .expect("unchanged durable occurrence requires no reminder input");
+        assert_eq!(mapping.send_for_durable(0), Some(0));
+        assert_eq!(mapping.durable_for_send(0), Some(0));
+    }
+
     use crate::ConversationItem;
     use crate::conversation::projection::{Boundary, TargetRoute};
     use serde_json::json;
@@ -4008,6 +5852,7 @@ mod tests {
             qualification: core.accounting.qualification.clone(),
             core,
             readiness: NativePlanReadiness::Tentative,
+            finalization: None,
         };
         Ok((context, plan))
     }

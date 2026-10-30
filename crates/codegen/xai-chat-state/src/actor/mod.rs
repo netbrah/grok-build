@@ -22,11 +22,16 @@ use crate::handle::ChatStateHandle;
 use crate::persistence::ChatPersistence;
 use crate::types::{PruningConfig, TurnCapture};
 
+use request_builder::NativeBuildCapture;
 use state::ChatState;
-use xai_grok_sampling_types::{ConversationItem, SamplingConfig};
+use xai_grok_sampling_types::{ConversationItem, SamplingConfig, TraceContext};
 
 /// The actor that owns all chat state.
 /// Runs in a dedicated tokio task and processes commands sequentially.
+/// Mints one distinct nonce per actor instance, so a seal from a dead actor
+/// instance can never be replayed against a live one.
+static ACTOR_NONCE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub struct ChatStateActor {
     /// Internal state — conversation, tokens, config, etc.
     state: ChatState,
@@ -40,9 +45,208 @@ pub struct ChatStateActor {
     event_tx: mpsc::UnboundedSender<ChatStateEvent>,
     /// Cancellation token for graceful shutdown.
     cancellation_token: tokio_util::sync::CancellationToken,
+    /// Monotonic per-build sequence for bound builds; issuance evidence only.
+    native_build_sequence: u64,
+    /// Per-actor-instance nonce, minted once at spawn.
+    actor_nonce: u64,
 }
 
 impl ChatStateActor {
+    /// One bound build: check the captured entry, then select and build exactly
+    /// once. `None` means the request was refused before any side effect.
+    ///
+    /// The Inactive route returns no preparation, matching the legacy build byte
+    /// for byte; only Selected carries the tentative preparation, whose counters
+    /// are actor-local issuance evidence rather than durable readiness (waj2-U9).
+    fn bound_build(
+        &mut self,
+        tool_candidates: crate::NativeToolCandidates,
+        memory_reminder: Option<String>,
+        persist_memory_reminder: bool,
+        trace: Option<Box<dyn TraceContext>>,
+        conv_id: String,
+        req_id: String,
+    ) -> Option<(
+        xai_grok_sampling_types::ConversationRequest,
+        crate::RequestTransportBinding,
+    )> {
+        use xai_grok_sampling_types::conversation::native_search_history::{
+            NativeHistoryRequirement, NativePreparationGrant,
+        };
+        if tool_candidates.history_entry().is_err() {
+            return None;
+        }
+        let captured_entry = tool_candidates.history_entry().ok()?;
+        if let crate::NativeHistoryEntryIntent::OwningPrimary(token)
+        | crate::NativeHistoryEntryIntent::SwitchStore(token) = captured_entry.intent()
+        {
+            if !self.native_owner_is_current(token) {
+                return None;
+            }
+            let target = self.state.native.owner_target.as_ref()?;
+            if target.model != self.state.sampling_config.model
+                || target.backend != self.state.sampling_config.api_backend
+            {
+                return None;
+            }
+        }
+        self.ensure_conversation_integrity();
+        let before_builder = if captured_entry.requirement() == NativeHistoryRequirement::Selected {
+            Some(crate::persistence::native::history_boundary(&self.state.conversation).ok()?)
+        } else {
+            None
+        };
+        let binding = crate::RequestTransportBinding {
+            config: self.state.sampling_config.clone(),
+            credentials: self.state.credentials.clone(),
+        };
+        let (specs, native_eligible_inputs, entry) = tool_candidates
+            .select_for_bound_build(&binding.config)
+            .ok()?;
+        self.native_build_sequence = self.native_build_sequence.checked_add(1)?;
+        let build_sequence = self.native_build_sequence;
+        // The Selected preparation is captured from the one build's own output:
+        // `D_pre` must include this build's durable repairs and memory-reminder
+        // effects, so nothing about the retained history is frozen before
+        // `build_conversation_request` has run.
+        let built = self.build_conversation_request(
+            specs,
+            memory_reminder,
+            persist_memory_reminder,
+            trace,
+            conv_id,
+            req_id.clone(),
+            match entry.requirement() {
+                NativeHistoryRequirement::Inactive => NativeBuildCapture::Legacy,
+                NativeHistoryRequirement::Selected => NativeBuildCapture::Selected,
+            },
+        );
+        let mut request = built.request;
+        if built
+            .durable
+            .as_ref()
+            .is_some_and(|history| Some(history) != before_builder.as_ref())
+        {
+            self.state.native.history_revision =
+                self.state.native.history_revision.checked_add(1)?;
+        }
+        let preparation = match entry.requirement() {
+            // Inactive parity: the returned preparation stays `None`, so the
+            // bound request Debug-matches the legacy one exactly. The caller
+            // retains its own captured entry and never reads this absence as a
+            // mode decision.
+            NativeHistoryRequirement::Inactive => None,
+            NativeHistoryRequirement::Selected => {
+                let grant = match entry.intent() {
+                    crate::types::NativeHistoryEntryIntent::SendOnly => {
+                        NativePreparationGrant::SendOnly
+                    }
+                    crate::types::NativeHistoryEntryIntent::OwningPrimary(_) => {
+                        NativePreparationGrant::OwningPrimary
+                    }
+                    crate::types::NativeHistoryEntryIntent::SwitchStore(_) => {
+                        NativePreparationGrant::SwitchStore
+                    }
+                };
+                // A Selected preparation without its frozen durable boundary or
+                // a verified durable->send mapping is refused here rather than
+                // carried, because either one missing makes the later plan a
+                // guess about history the builder never related.
+                let history = built.durable?;
+                let mapping = built.mapping?;
+                let mut preparation = xai_grok_sampling_types::conversation::native_search_history::NativeBoundPreparation::issued(
+                    entry.requirement(), grant, req_id.clone(), history.clone(), mapping,
+                    Some(self.state.native.history_revision), Some(self.state.native.install_generation),
+                    build_sequence, self.actor_nonce,
+                );
+                if grant != NativePreparationGrant::SendOnly {
+                    use xai_grok_sampling_types::conversation::native_search_history::*;
+                    let token = self.state.native.owner.as_ref()?;
+                    let checkpoint = match self.state.native.checkpoint.clone() {
+                        Some(checkpoint) => checkpoint,
+                        None => std::sync::Arc::new(
+                            crate::persistence::native::NativeCheckpoint::empty_projection_input(
+                                token.lineage().into(),
+                                &self.state.conversation,
+                            )
+                            .ok()?,
+                        ),
+                    };
+                    let target = self.state.native.owner_target.clone()?;
+                    self.state.native.binding_generation =
+                        self.state.native.binding_generation.checked_add(1)?;
+                    let capture = NativeHistoryCapture {
+                        history,
+                        history_revision: self.state.native.history_revision,
+                        lineage: checkpoint.record.lineage.clone(),
+                        native_generation: checkpoint.record.generation,
+                        high_water: checkpoint.record.high_water,
+                        projection_revision: checkpoint.active.projection_revision,
+                        strict_append_sequence: 0,
+                        binding_generation: self.state.native.binding_generation,
+                        install_generation: self.state.native.install_generation,
+                        issued_request: req_id.clone(),
+                        target,
+                        execution: if binding.config.api_backend
+                            == xai_grok_sampling_types::ApiBackend::Messages
+                        {
+                            NativeHistoryExecution::Server
+                        } else {
+                            NativeHistoryExecution::Client
+                        },
+                        original_admission: request.search_admission?,
+                        versions: NativeHistoryVersions {
+                            schema: checkpoint.record.schema_version,
+                            policy: 1,
+                            projection: 1,
+                            reader: checkpoint.record.reader_floor,
+                            limits: checkpoint.record.limits_revision,
+                        },
+                    };
+                    let authority = match grant {
+                        NativePreparationGrant::OwningPrimary => {
+                            NativeHistoryWriteAuthority::OwningPrimary {
+                                lineage: capture.lineage.id.clone(),
+                                binding_generation: capture.binding_generation,
+                                request: req_id.clone(),
+                            }
+                        }
+                        NativePreparationGrant::SwitchStore => {
+                            NativeHistoryWriteAuthority::SwitchStore {
+                                lineage: capture.lineage.id.clone(),
+                                binding_generation: capture.binding_generation,
+                            }
+                        }
+                        NativePreparationGrant::SendOnly => unreachable!(),
+                    };
+                    let seal = self
+                        .state
+                        .native
+                        .issuer
+                        .issue_bound(token.seal(), capture.clone())
+                        .ok()?;
+                    let context = NativeHistoryRequestContext::captured(
+                        entry.requirement(),
+                        capture,
+                        authority,
+                    );
+                    preparation = preparation
+                        .with_issued_context(
+                            context,
+                            seal,
+                            serde_json::to_vec(&self.state.conversation).ok()?.into(),
+                        )
+                        .ok()?;
+                    self.state.native.issued = Some(preparation.clone());
+                }
+                Some(preparation)
+            }
+        };
+        request.native_eligible_inputs = native_eligible_inputs;
+        request.native_bound_preparation = preparation;
+        Some((request, binding))
+    }
+
     /// Send an event to subscribers, logging if the channel is closed.
     fn send_event(&self, event: ChatStateEvent) {
         if self.event_tx.send(event).is_err() {
@@ -78,6 +282,7 @@ impl ChatStateActor {
         cancellation_token: tokio_util::sync::CancellationToken,
     ) -> ChatStateHandle {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let actor_nonce = ACTOR_NONCE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let actor = ChatStateActor {
             state: ChatState::new(initial_conversation, sampling_config),
@@ -86,11 +291,14 @@ impl ChatStateActor {
             cmd_rx,
             event_tx,
             cancellation_token,
+            native_build_sequence: 0,
+            actor_nonce,
         };
 
+        let registration_key = actor.state.native.issuer.registration_key();
         tokio::spawn(actor.run());
 
-        ChatStateHandle::new(cmd_tx)
+        ChatStateHandle::new(cmd_tx).with_native_registration_key(registration_key)
     }
 
     /// Main actor loop — processes commands until shutdown or cancellation.
@@ -117,6 +325,58 @@ impl ChatStateActor {
     /// Dispatch a command to the appropriate mutation or query handler.
     async fn handle_command(&mut self, cmd: ChatStateCommand) {
         match cmd {
+            ChatStateCommand::ProjectNativeSwitchHistory {
+                candidates,
+                target_model,
+                target_pin,
+                route,
+                reply,
+            } => {
+                let result = self
+                    .project_native_switch_history(candidates, target_model, target_pin, route)
+                    .await;
+                let _ = reply.send(result);
+            }
+            ChatStateCommand::ReadNativeLoadedAuthority { reply } => {
+                let _ = reply.send(self.state.native.loaded.clone());
+            }
+            ChatStateCommand::ReconcileNativeHistoryProjection { reply } => {
+                let result = self.reconcile_native_projection().await;
+                let _ = reply.send(result);
+            }
+            ChatStateCommand::RegisterNativeHistoryOwner {
+                key,
+                lineage,
+                request,
+                target,
+                owner_class,
+                run_active,
+                reply,
+            } => {
+                let result = self
+                    .register_native_history_owner(
+                        key,
+                        lineage,
+                        request,
+                        target,
+                        owner_class,
+                        run_active,
+                    )
+                    .await;
+                let _ = reply.send(result);
+            }
+            ChatStateCommand::CommitNativeHistoryProjection {
+                preparation,
+                request,
+                route,
+                reply,
+            } => {
+                let result = self
+                    .commit_native_history_projection(preparation, *request, route)
+                    .await;
+                let _ = reply.send(result);
+            }
+
             // ═══ Mutations ═══
             ChatStateCommand::PushUserMessage { item } => {
                 self.push_user_message(item);
@@ -305,6 +565,8 @@ impl ChatStateActor {
             }
             ChatStateCommand::InstallTransportBinding { binding, reply } => {
                 self.state.sampling_config = binding.config;
+                self.state.native.install_generation =
+                    self.state.native.install_generation.saturating_add(1);
                 self.state.credentials = binding.credentials;
                 let _ = reply.send(());
             }
@@ -325,6 +587,8 @@ impl ChatStateActor {
                     && self.state.credentials == expected.credentials;
                 if applied {
                     self.state.sampling_config = binding.config;
+                    self.state.native.install_generation =
+                        self.state.native.install_generation.saturating_add(1);
                     self.state.credentials = binding.credentials;
                 }
                 let _ = reply.send(applied);
@@ -397,6 +661,8 @@ impl ChatStateActor {
                 // shell's two such sites: `acp_session_impl/model_switch.rs`'s effort router and
                 // `acp_session_impl/run_loop.rs`'s `OverrideModelName`).
                 self.state.sampling_config = *config;
+                self.state.native.install_generation =
+                    self.state.native.install_generation.saturating_add(1);
             }
             ChatStateCommand::RecordAgentEditedPath { path } => {
                 self.state.agent_edited_paths.insert(path);
@@ -547,14 +813,17 @@ impl ChatStateActor {
                 reply,
             } => {
                 self.ensure_conversation_integrity();
-                let request = self.build_conversation_request(
-                    tool_definitions,
-                    memory_reminder,
-                    persist_memory_reminder,
-                    trace,
-                    conv_id,
-                    req_id,
-                );
+                let request = self
+                    .build_conversation_request(
+                        tool_definitions,
+                        memory_reminder,
+                        persist_memory_reminder,
+                        trace,
+                        conv_id,
+                        req_id,
+                        NativeBuildCapture::Legacy,
+                    )
+                    .request;
                 let _ = reply.send(request);
             }
             ChatStateCommand::BuildConversationRequestWithBinding {
@@ -566,23 +835,23 @@ impl ChatStateActor {
                 req_id,
                 reply,
             } => {
-                self.ensure_conversation_integrity();
-                let binding = crate::RequestTransportBinding {
-                    config: self.state.sampling_config.clone(),
-                    credentials: self.state.credentials.clone(),
-                };
-                let (specs, native_eligible_inputs) =
-                    tool_candidates.select_with_identity(&binding.config);
-                let mut request = self.build_conversation_request(
-                    specs,
+                let built = self.bound_build(
+                    tool_candidates,
                     memory_reminder,
                     persist_memory_reminder,
                     trace,
                     conv_id,
                     req_id,
                 );
-                request.native_eligible_inputs = native_eligible_inputs;
-                let _ = reply.send((request, binding));
+                // A refusal drops the reply: the handle's query resolves to
+                // None, so the unchanged public signature reports it without a
+                // new error type.
+                match built {
+                    Some(built) => {
+                        let _ = reply.send(built);
+                    }
+                    None => drop(reply),
+                }
             }
             ChatStateCommand::GetConversation { reply } => {
                 tracing::debug!(
@@ -713,5 +982,449 @@ impl ChatStateActor {
                 let _ = reply.send(state::estimate_messages_tokens(&self.state.conversation));
             }
         }
+    }
+}
+
+impl ChatStateActor {
+    async fn register_native_history_owner(
+        &mut self,
+        key: xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRegistrationKey,
+        lineage: String,
+        request: String,
+        target: xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain,
+        owner_class: xai_grok_sampling_types::conversation::native_search_history::NativeProjectionOwner,
+        run_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<
+        crate::NativeHistoryOwnerGuard,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        if !self.state.native.issuer.accepts_registration_key(&key) {
+            return Err(NativeUnavailable::Incomplete);
+        }
+        if request.is_empty()
+            || (owner_class == NativeProjectionOwner::OwningPrimary)
+                != run_active.load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .state
+                .native
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.seal().is_live())
+        {
+            return Err(NativeUnavailable::Incomplete);
+        }
+        self.reconcile_native_projection().await?;
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.persistence.read_native_history(),
+        )
+        .await
+        .map_err(|_| NativeUnavailable::Indeterminate)?
+        .map_err(|_| NativeUnavailable::Indeterminate)??;
+        if read.lineage != lineage {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if let Some(checkpoint) = &read.checkpoint {
+            checkpoint.matches_history(&self.state.conversation)?;
+        }
+        self.state.native.lineage = Some(read.lineage);
+        self.state.native.checkpoint = read.checkpoint;
+        NativeProjectionDomain::from(&target).validate()?;
+        if target.model != self.state.sampling_config.model
+            || target.backend != self.state.sampling_config.api_backend
+            || !target
+                .endpoint
+                .starts_with(self.state.sampling_config.base_url.trim_end_matches('/'))
+        {
+            return Err(NativeUnavailable::UnknownIdentity);
+        }
+        self.state.native.next_run = self
+            .state
+            .native
+            .next_run
+            .checked_add(1)
+            .ok_or(NativeUnavailable::Capacity)?;
+        let purpose = match owner_class {
+            NativeProjectionOwner::OwningPrimary => NativeHistorySealPurpose::OwningPrimary,
+            NativeProjectionOwner::SwitchStore => NativeHistorySealPurpose::SwitchStore,
+        };
+        let seal = self.state.native.issuer.issue_owner(
+            purpose,
+            self.actor_nonce,
+            lineage,
+            self.state.native.next_run,
+        )?;
+        let token = crate::NativeHistoryOwnerToken::new(seal);
+        self.state.native.owner = Some(token.clone());
+        self.state.native.owner_target = Some(target);
+        self.state.native.run_active = Some(run_active);
+        Ok(crate::NativeHistoryOwnerGuard::new(token))
+    }
+
+    fn native_owner_is_current(&self, token: &crate::NativeHistoryOwnerToken) -> bool {
+        self.state.native.owner.as_ref() == Some(token)
+            && self.state.native.issuer.owns(token.seal())
+            && token.actor_instance() == self.actor_nonce
+            && self.state.native.lineage.as_deref() == Some(token.lineage())
+            && self.state.native.run_active.as_ref().is_some_and(|active| {
+                let live = active.load(std::sync::atomic::Ordering::Acquire);
+                match token.seal().purpose() {
+                    xai_grok_sampling_types::conversation::native_search_history::NativeHistorySealPurpose::SwitchStore => !live,
+                    xai_grok_sampling_types::conversation::native_search_history::NativeHistorySealPurpose::OwningPrimary => live,
+                    _ => false,
+                }
+            })
+    }
+
+    async fn reconcile_native_projection(
+        &mut self,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let Some(pending) = self.state.native.pending_projection.clone() else {
+            return Ok(());
+        };
+        let acknowledgement = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.persistence
+                .persist_native_projection_and_ack(pending.stage.write.clone()),
+        )
+        .await
+        .map_err(|_| NativeUnavailable::Indeterminate)?
+        .map_err(|_| NativeUnavailable::Indeterminate)??;
+        let expected = &pending.stage.write;
+        if acknowledgement.transaction() != expected.commit.transaction
+            || acknowledgement.generation() != expected.commit.high_water
+            || acknowledgement.checkpoint().digest
+                != crate::persistence::native::digest(&expected.checkpoint.bytes)
+            || acknowledgement.authority_digest()
+                != crate::persistence::native::digest(&expected.authority_bytes)
+            || acknowledgement.before() != &expected.commit.before.boundary
+            || acknowledgement.after() != &expected.checkpoint.record.history_boundary
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        self.snapshot_turn_slice();
+        self.state.conversation = pending.stage.durable_after;
+        self.rebase_turn_capture_offset();
+        self.state.native.history_revision = self
+            .state
+            .native
+            .history_revision
+            .checked_add(1)
+            .ok_or(NativeUnavailable::Capacity)?;
+        self.state.native.checkpoint = Some(expected.checkpoint.clone());
+        self.state.native.loaded = pending.stage.send_core.loaded.clone();
+        self.state.native.pending_projection = None;
+        Ok(())
+    }
+
+    async fn commit_native_history_projection(
+        &mut self,
+        preparation: xai_grok_sampling_types::conversation::native_search_history::NativeBoundPreparation,
+        request: xai_grok_sampling_types::ConversationRequest,
+        route: xai_grok_sampling_types::conversation::projection::TargetRoute,
+    ) -> Result<
+        crate::persistence::native::NativeProjectionCompletion,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let token = self
+            .state
+            .native
+            .owner
+            .clone()
+            .ok_or(NativeUnavailable::Incomplete)?;
+        if !self.native_owner_is_current(&token)
+            || self.state.native.issued.as_ref() != Some(&preparation)
+            || !preparation
+                .seal()
+                .is_some_and(|seal| self.state.native.issuer.owns(seal))
+            || preparation.history_revision() != Some(self.state.native.history_revision)
+            || crate::persistence::native::history_boundary(&self.state.conversation)?
+                != *preparation.history()
+        {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        let checkpoint = match self.state.native.checkpoint.clone() {
+            Some(checkpoint) => checkpoint,
+            None => std::sync::Arc::new(
+                crate::persistence::native::NativeCheckpoint::empty_projection_input(
+                    token.lineage().into(),
+                    &self.state.conversation,
+                )?,
+            ),
+        };
+        let context = preparation.context().ok_or(NativeUnavailable::Incomplete)?;
+        if checkpoint.record.generation != context.capture().native_generation
+            || checkpoint.record.high_water != context.capture().high_water
+        {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        let stage = checkpoint.prepare_projection(&preparation, &request, &route)?;
+        self.commit_native_prepared_projection(preparation, stage)
+            .await
+    }
+
+    async fn commit_native_prepared_projection(
+        &mut self,
+        preparation: xai_grok_sampling_types::conversation::native_search_history::NativeBoundPreparation,
+        stage: crate::persistence::native::NativePreparedProjection,
+    ) -> Result<
+        crate::persistence::native::NativeProjectionCompletion,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let token = self
+            .state
+            .native
+            .owner
+            .clone()
+            .ok_or(NativeUnavailable::Incomplete)?;
+        if !self.native_owner_is_current(&token)
+            || self.state.native.issued.as_ref() != Some(&preparation)
+            || crate::persistence::native::history_boundary(&self.state.conversation)?
+                != *preparation.history()
+        {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        self.state.native.pending_projection =
+            Some(crate::persistence::native::NativePendingProjection {
+                preparation: preparation.clone(),
+                stage: stage.clone(),
+            });
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.persistence
+                .persist_native_projection_and_ack(stage.write.clone()),
+        )
+        .await
+        .map_err(|_| NativeUnavailable::Indeterminate)
+        .and_then(|result| result.map_err(|_| NativeUnavailable::Indeterminate))
+        .and_then(|result| result);
+        let acknowledgement = match first {
+            Ok(acknowledgement) => acknowledgement,
+            Err(NativeUnavailable::Indeterminate) if self.native_owner_is_current(&token) => {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    self.persistence
+                        .persist_native_projection_and_ack(stage.write.clone()),
+                )
+                .await
+                .map_err(|_| NativeUnavailable::Indeterminate)?
+                .map_err(|_| NativeUnavailable::Indeterminate)??
+            }
+            Err(reason) => return Err(reason),
+        };
+        if acknowledgement.transaction() != stage.write.commit.transaction
+            || acknowledgement.generation() != stage.write.commit.high_water
+            || acknowledgement.authority_digest()
+                != crate::persistence::native::digest(&stage.write.authority_bytes)
+            || acknowledgement.checkpoint().digest
+                != crate::persistence::native::digest(&stage.write.checkpoint.bytes)
+            || acknowledgement.before() != preparation.history()
+            || acknowledgement.after() != &stage.write.checkpoint.record.history_boundary
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        self.snapshot_turn_slice();
+        self.state.conversation = stage.durable_after.clone();
+        self.rebase_turn_capture_offset();
+        self.state.native.history_revision = self
+            .state
+            .native
+            .history_revision
+            .checked_add(1)
+            .ok_or(NativeUnavailable::Capacity)?;
+        self.state.native.checkpoint = Some(stage.write.checkpoint.clone());
+        self.state.native.loaded = stage.send_core.loaded.clone();
+        self.state.native.pending_projection = None;
+        if !self.native_owner_is_current(&token) {
+            return Err(NativeUnavailable::Incomplete);
+        }
+        let certificate = self.state.native.issuer.confirm_compound(
+            &preparation,
+            acknowledgement,
+            &stage.write.checkpoint.record.history_boundary,
+        )?;
+        Ok(crate::persistence::native::NativeProjectionCompletion {
+            preparation,
+            certificate,
+            send_record: stage.send_record,
+            send_ledger_bytes: stage.send_ledger_bytes,
+            send_before: stage.send_before,
+            send_after: stage.send_after,
+            core: stage.send_core,
+        })
+    }
+}
+
+impl ChatStateActor {
+    async fn project_native_switch_history(
+        &mut self,
+        candidates: crate::NativeToolCandidates,
+        target_model: String,
+        target_pin: Option<String>,
+        route: xai_grok_sampling_types::conversation::projection::TargetRoute,
+    ) -> Result<
+        Option<crate::persistence::native::NativeProjectionCompletion>,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let entry = candidates.history_entry()?.clone();
+        let crate::NativeHistoryEntryIntent::SwitchStore(token) = entry.intent() else {
+            return Err(NativeUnavailable::Incomplete);
+        };
+        if entry.requirement() != NativeHistoryRequirement::Selected
+            || !self.native_owner_is_current(token)
+            || self.state.sampling_config.model != target_model
+            || self.state.sampling_config.api_backend != route.backend()
+        {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        let (tools, native_eligible_inputs, _) =
+            candidates.select_for_bound_build(&self.state.sampling_config)?;
+        let admission = xai_grok_sampling_types::SearchAdmission::for_row(
+            self.state.sampling_config.supports_search_tool,
+            &tools,
+        );
+        if admission != route.admission() {
+            return Err(NativeUnavailable::UnknownIdentity);
+        }
+        let history = crate::persistence::native::history_boundary(&self.state.conversation)?;
+        let checkpoint = match self.state.native.checkpoint.clone() {
+            Some(checkpoint) => checkpoint,
+            None => std::sync::Arc::new(
+                crate::persistence::native::NativeCheckpoint::empty_projection_input(
+                    token.lineage().into(),
+                    &self.state.conversation,
+                )?,
+            ),
+        };
+        let mut entries = Vec::with_capacity(self.state.conversation.len());
+        for (index, item) in self.state.conversation.iter().enumerate() {
+            let digest = crate::persistence::native::digest(
+                &serde_json::to_vec(item).map_err(|_| NativeUnavailable::Fidelity)?,
+            );
+            entries.push(NativeHistoryMappingEntry::durable(
+                u32::try_from(index).map_err(|_| NativeUnavailable::Capacity)?,
+                digest.clone(),
+                digest,
+                vec![NativeHistoryTransform::Kept],
+                None,
+            ));
+        }
+        let mapping =
+            NativeHistoryTransformMapping::checked(history.clone(), history.clone(), entries)?;
+        self.native_build_sequence = self
+            .native_build_sequence
+            .checked_add(1)
+            .ok_or(NativeUnavailable::Capacity)?;
+        self.state.native.binding_generation = self
+            .state
+            .native
+            .binding_generation
+            .checked_add(1)
+            .ok_or(NativeUnavailable::Capacity)?;
+        let request_id = format!(
+            "switch:{}:{}",
+            self.state.native.install_generation, target_model
+        );
+        let capture = NativeHistoryCapture {
+            history: history.clone(),
+            history_revision: self.state.native.history_revision,
+            lineage: checkpoint.record.lineage.clone(),
+            native_generation: checkpoint.record.generation,
+            high_water: checkpoint.record.high_water,
+            projection_revision: checkpoint.active.projection_revision,
+            strict_append_sequence: 0,
+            binding_generation: self.state.native.binding_generation,
+            install_generation: self.state.native.install_generation,
+            issued_request: request_id.clone(),
+            target: self
+                .state
+                .native
+                .owner_target
+                .clone()
+                .ok_or(NativeUnavailable::Incomplete)?,
+            execution: if route.backend() == xai_grok_sampling_types::ApiBackend::Messages {
+                NativeHistoryExecution::Server
+            } else {
+                NativeHistoryExecution::Client
+            },
+            original_admission: admission,
+            versions: NativeHistoryVersions {
+                schema: checkpoint.record.schema_version,
+                policy: 1,
+                projection: 1,
+                reader: checkpoint.record.reader_floor,
+                limits: checkpoint.record.limits_revision,
+            },
+        };
+        let seal = self
+            .state
+            .native
+            .issuer
+            .issue_bound(token.seal(), capture.clone())?;
+        let context = NativeHistoryRequestContext::captured(
+            NativeHistoryRequirement::Selected,
+            capture,
+            NativeHistoryWriteAuthority::SwitchStore {
+                lineage: token.lineage().into(),
+                binding_generation: self.state.native.binding_generation,
+            },
+        );
+        let preparation = NativeBoundPreparation::issued(
+            NativeHistoryRequirement::Selected,
+            NativePreparationGrant::SwitchStore,
+            request_id,
+            history,
+            mapping,
+            Some(self.state.native.history_revision),
+            Some(self.state.native.install_generation),
+            self.native_build_sequence,
+            self.actor_nonce,
+        )
+        .with_issued_context(
+            context,
+            seal,
+            serde_json::to_vec(&self.state.conversation)
+                .map_err(|_| NativeUnavailable::Fidelity)?
+                .into(),
+        )?
+        .with_switch_projection(NativeSwitchProjection::captured(
+            target_model.clone(),
+            target_pin,
+            &route,
+        ))?;
+        self.state.native.issued = Some(preparation.clone());
+        let request = xai_grok_sampling_types::ConversationRequest {
+            items: self.state.conversation.clone(),
+            tools,
+            search_admission: Some(admission),
+            native_eligible_inputs,
+            model: Some(target_model),
+            native_bound_preparation: Some(preparation.clone()),
+            ..Default::default()
+        };
+        let stage = checkpoint.prepare_projection(&preparation, &request, &route)?;
+        if let Some(previous) = &checkpoint.compound_proof {
+            let metadata: NativeProjectionMetadata =
+                serde_json::from_slice(&stage.write.metadata_bytes)
+                    .map_err(|_| NativeUnavailable::InvalidReference)?;
+            if previous.metadata() == &metadata
+                && stage.write.commit.before.boundary
+                    == stage.write.checkpoint.record.history_boundary
+                && checkpoint.active.dispositions == stage.write.checkpoint.active.dispositions
+                && checkpoint.active.loaded_invalidations
+                    == stage.write.checkpoint.active.loaded_invalidations
+            {
+                return Ok(None);
+            }
+        }
+        self.commit_native_prepared_projection(preparation, stage)
+            .await
+            .map(Some)
     }
 }

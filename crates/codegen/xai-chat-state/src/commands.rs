@@ -54,6 +54,29 @@ pub enum StrictAppendError {
 
 /// Commands sent to the ChatStateActor via mpsc channel.
 pub enum ChatStateCommand {
+    ProjectNativeSwitchHistory {
+        candidates: crate::NativeToolCandidates, target_model: String, target_pin: Option<String>, route: TargetRoute,
+        reply: oneshot::Sender<Result<Option<crate::persistence::native::NativeProjectionCompletion>, xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>>,
+    },
+
+    ReadNativeLoadedAuthority { reply: oneshot::Sender<xai_grok_sampling_types::conversation::native_search_history::NativeLoadedAuthority> },
+    ReconcileNativeHistoryProjection { reply: oneshot::Sender<Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>> },
+    RegisterNativeHistoryOwner {
+        key: xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRegistrationKey,
+        lineage: String,
+        request: String,
+        target: xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain,
+        owner_class: xai_grok_sampling_types::conversation::native_search_history::NativeProjectionOwner,
+        run_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        reply: oneshot::Sender<Result<crate::NativeHistoryOwnerGuard, xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>>,
+    },
+    CommitNativeHistoryProjection {
+        preparation: xai_grok_sampling_types::conversation::native_search_history::NativeBoundPreparation,
+        request: Box<ConversationRequest>,
+        route: xai_grok_sampling_types::conversation::projection::TargetRoute,
+        reply: oneshot::Sender<Result<crate::persistence::native::NativeProjectionCompletion, xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>>,
+    },
+
     PatchApiKey {
         expected: Box<crate::RequestTransportBinding>,
         api_key: Option<String>,

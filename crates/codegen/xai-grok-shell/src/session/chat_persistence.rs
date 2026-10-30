@@ -18,6 +18,41 @@ impl ChannelChatPersistence {
 }
 
 impl ChatPersistence for ChannelChatPersistence {
+    fn persist_native_checkpoint_and_ack(
+        &mut self,
+        write: xai_chat_state::persistence::native::NativeWrite,
+        pending: xai_chat_state::persistence::native::NativePendingProtection,
+    ) -> oneshot::Receiver<
+        Result<
+            xai_chat_state::persistence::native::NativeAppendAck,
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+        >,
+    > {
+        let (respond_to, receiver) = oneshot::channel();
+        let _ = self.tx.send(PersistenceMsg::PersistNativeCheckpointAndAck {
+            write,
+            pending,
+            respond_to,
+        });
+        receiver
+    }
+
+    fn persist_native_projection_and_ack(
+        &mut self,
+        write: xai_chat_state::persistence::native::NativeProjectionWrite,
+    ) -> oneshot::Receiver<
+        Result<
+            xai_grok_sampling_types::conversation::native_search_history::NativeCompoundAck,
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+        >,
+    > {
+        let (respond_to, receiver) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(PersistenceMsg::PersistNativeProjectionAndAck { write, respond_to });
+        receiver
+    }
+
     fn read_native_history(
         &mut self,
     ) -> oneshot::Receiver<

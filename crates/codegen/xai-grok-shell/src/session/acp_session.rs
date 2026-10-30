@@ -1398,32 +1398,14 @@ const SYSTEM_PROMPT_FILENAME: &str = "system_prompt.txt";
 /// `chat_state_handle.replace_conversation` persists the same content, but only after two async actor hops.
 /// Whichever atomic `rename` lands last wins and the content is identical, so the two writers can never produce a torn file.
 fn persist_chat_history_jsonl_sync(session_info: &SessionInfo, conversation: &[ConversationItem]) {
-    let dir = match crate::session::persistence::ensure_owner_only_session_dir(session_info) {
-        Ok(dir) => dir,
-        Err(e) => {
-            tracing::warn!(session_id = %session_info.id.0, ?e,
-                "persist_chat_history_jsonl_sync: failed to create session dir");
-            return;
-        }
-    };
-    let final_path = dir.join("chat_history.jsonl");
-    let tmp_path = dir.join("chat_history.jsonl.sync.tmp");
-    let result = (|| -> std::io::Result<()> {
-        use std::io::Write;
-        let mut buf = Vec::new();
-        for item in conversation {
-            serde_json::to_writer(&mut buf, item)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            buf.push(b'\n');
-        }
-        std::fs::File::create(&tmp_path)?.write_all(&buf)?;
-        std::fs::rename(&tmp_path, &final_path)?;
-        Ok(())
-    })();
-    if let Err(e) = result {
-        tracing::warn!(session_id = %session_info.id.0, ?e,
-            "persist_chat_history_jsonl_sync: failed to persist chat_history.jsonl");
-        let _ = std::fs::remove_file(&tmp_path);
+    if let Err(error) = crate::session::persistence::enqueue_guarded_legacy_replace(
+        session_info,
+        conversation.to_vec(),
+    ) {
+        tracing::warn!(
+            ?error,
+            "legacy snapshot could not reach its persistence FIFO"
+        );
     }
 }
 /// Persist the exact rendered system prompt to `{session_dir}/system_prompt.txt`.
@@ -1983,7 +1965,7 @@ mod media_gen_auth_retry_tests;
 mod media_gen_batch_limit_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/native_history_policy_tests.rs"]
-mod native_history_policy_tests;
+pub(crate) mod native_history_policy_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/memory_config_tests.rs"]
 mod memory_config_tests;

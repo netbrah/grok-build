@@ -7116,7 +7116,7 @@ async fn bound_build_captures_request_and_transport_atomically() {
     let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
     *h.handle.bound_build_probe.lock().unwrap() = Some((reached_tx, resume_rx));
     let mut build = Box::pin(h.handle.build_request_with_binding(
-        crate::NativeToolCandidates::builtins_only(tools.clone()),
+        u8_with_entry(crate::NativeToolCandidates::builtins_only(tools.clone())),
         None,
         false,
         None,
@@ -7173,7 +7173,7 @@ async fn bound_build_captures_request_and_transport_atomically() {
     let (next, next_binding) = h
         .handle
         .build_request_with_binding(
-            crate::NativeToolCandidates::builtins_only(tools),
+            u8_with_entry(crate::NativeToolCandidates::builtins_only(tools)),
             None,
             false,
             None,
@@ -7242,7 +7242,7 @@ async fn bound_build_preserves_legacy_bytes_and_builder_effects() {
                 let (request, binding) = h
                     .handle
                     .build_request_with_binding(
-                        candidates,
+                        u8_with_entry(candidates),
                         reminder.clone(),
                         persist_memory_reminder,
                         None,
@@ -7330,7 +7330,9 @@ async fn bound_build_closed_actor_returns_none() {
     assert!(
         closed
             .build_request_with_binding(
-                crate::NativeToolCandidates::builtins_only(bound_build_specs()),
+                u8_with_entry(crate::NativeToolCandidates::builtins_only(
+                    bound_build_specs()
+                )),
                 None,
                 false,
                 None,
@@ -7344,7 +7346,7 @@ async fn bound_build_closed_actor_returns_none() {
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
     let handle = crate::ChatStateHandle::new(cmd_tx);
     let mut build = Box::pin(handle.build_request_with_binding(
-        crate::NativeToolCandidates::builtins_only(Vec::new()),
+        u8_with_entry(crate::NativeToolCandidates::builtins_only(Vec::new())),
         None,
         false,
         None,
@@ -7496,7 +7498,7 @@ async fn bound_build_selects_candidates_on_captured_row() {
             let (request, binding) = h
                 .handle
                 .build_request_with_binding(
-                    candidates,
+                    u8_with_entry(candidates),
                     None,
                     false,
                     None,
@@ -7569,7 +7571,7 @@ async fn bound_build_keeps_legacy_builtin_admission_and_single_builder() {
         let (request, binding) = h
             .handle
             .build_request_with_binding(
-                bound_candidate_payload(&[], &mcp),
+                u8_with_entry(bound_candidate_payload(&[], &mcp)),
                 None,
                 false,
                 None,
@@ -7615,7 +7617,7 @@ async fn bound_build_keeps_legacy_builtin_admission_and_single_builder() {
             let (request, binding) = h
                 .handle
                 .build_request_with_binding(
-                    crate::NativeToolCandidates::builtins_only(tools.clone()),
+                    u8_with_entry(crate::NativeToolCandidates::builtins_only(tools.clone())),
                     None,
                     false,
                     None,
@@ -8895,6 +8897,8 @@ async fn native_history_lost_reply_reclaims_in_actor_step() {
         cmd_rx: received,
         event_tx: events,
         cancellation_token: tokio_util::sync::CancellationToken::new(),
+        native_build_sequence: 0,
+        actor_nonce: 1,
     };
     actor.bootstrap_native_history().await;
     let mut begin = Box::pin(handle.begin_native_capture("mock".into(), "unreceived".into(), 1));
@@ -9512,7 +9516,7 @@ async fn native_identity_companion_reaches_persisted_slot() {
     let (request, _) = h
         .handle
         .build_request_with_binding(
-            candidates,
+            u8_with_entry(candidates),
             None,
             false,
             None,
@@ -9641,7 +9645,7 @@ async fn native_identity_companion_reaches_persisted_slot() {
         let (request, _) = h
             .handle
             .build_request_with_binding(
-                candidates,
+                u8_with_entry(candidates),
                 None,
                 false,
                 None,
@@ -10498,4 +10502,425 @@ fn u5a_primary_capacity_controls() {
             }
         }
     }
+}
+
+/// waj2-U8 transport precondition: a bound build now needs an explicitly
+/// captured entry. These fixtures drive the legacy-equivalent route, so they
+/// attach Inactive/SendOnly; every assertion stays as written.
+fn u8_inactive_entry() -> crate::NativeHistoryEntry {
+    crate::NativeHistoryEntry::send_only(
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive,
+    )
+}
+
+fn u8_with_entry(candidates: crate::NativeToolCandidates) -> crate::NativeToolCandidates {
+    candidates
+        .with_history_entry(u8_inactive_entry())
+        .expect("freshly built candidates carry no entry")
+}
+
+#[tokio::test]
+async fn native_history_bound_builder_maps_retained_and_request_only_effects() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    for persist_reminder in [false, true] {
+        let mut items = bound_build_items();
+        items.push(ConversationItem::assistant_tool_calls(vec![
+            xai_grok_sampling_types::ToolCall {
+                id: "durable-sentinel-call".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+        ]));
+        items.push(ConversationItem::tool_result(
+            "durable-sentinel-call",
+            "DURABLE_SENTINEL".repeat(1000),
+        ));
+        for index in 0..14 {
+            items.push(ConversationItem::user(format!(
+                "later ordinary turn {index}"
+            )));
+        }
+        let mut harness = TestHarness::with_config(items, bound_build_rows().0.config);
+        harness.handle.record_token_usage(100_000);
+        harness.handle.get_conversation().await;
+        harness.drain_events();
+        harness.drain_persistence();
+        let (request, _) = harness
+            .handle
+            .build_request_with_binding(
+                crate::NativeToolCandidates::builtins_only(bound_build_specs())
+                    .with_history_entry(crate::NativeHistoryEntry::send_only(
+                        NativeHistoryRequirement::Selected,
+                    ))
+                    .unwrap(),
+                Some("request-reminder-input".into()),
+                persist_reminder,
+                None,
+                "mapping-lineage".into(),
+                "mapping-request".into(),
+            )
+            .await
+            .unwrap();
+        let durable = harness.handle.get_conversation().await;
+        let preparation = request.native_bound_preparation.as_ref().unwrap();
+        assert_eq!(
+            preparation.history(),
+            &crate::persistence::native::history_boundary(&durable).unwrap()
+        );
+        assert_eq!(preparation.mapping().durable(), preparation.history());
+        assert_eq!(
+            preparation.mapping().send(),
+            &crate::persistence::native::history_boundary(&request.items).unwrap()
+        );
+        assert_ne!(
+            preparation.mapping().durable(),
+            preparation.mapping().send()
+        );
+        let sentinel_index = durable.iter().position(|item| matches!(item,
+            ConversationItem::ToolResult(result) if result.content.contains("DURABLE_SENTINEL")
+        )).unwrap();
+        let send_index = preparation
+            .mapping()
+            .send_for_durable(sentinel_index as u32)
+            .unwrap() as usize;
+        assert!(
+            matches!(&request.items[send_index], ConversationItem::ToolResult(result)
+            if result.content.as_ref() == super::request_builder::HARD_CLEAR_PLACEHOLDER)
+        );
+        let relation = &preparation.mapping().entries()[send_index];
+        assert_eq!(relation.durable_index(), Some(sentinel_index as u32));
+        assert!(
+            relation
+                .transforms()
+                .contains(&NativeHistoryTransform::PrunedHardClear)
+        );
+        assert_eq!(
+            durable[0].text_content().contains("request-reminder-input"),
+            persist_reminder
+        );
+        assert!(
+            request.items[0]
+                .text_content()
+                .contains("request-reminder-input")
+        );
+        assert_eq!(
+            harness
+                .drain_events()
+                .iter()
+                .filter(|event| matches!(event, ChatStateEvent::ImageBudget { .. }))
+                .count(),
+            1
+        );
+        let records = harness.drain_persistence();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, PersistenceRecord::ReplaceHistory(_)))
+                .count(),
+            usize::from(persist_reminder)
+        );
+        let mut missing = preparation.mapping().entries().to_vec();
+        missing.pop();
+        assert!(
+            NativeHistoryTransformMapping::checked(
+                preparation.mapping().durable().clone(),
+                preparation.mapping().send().clone(),
+                missing,
+            )
+            .is_err()
+        );
+        let mut duplicate = preparation.mapping().entries().to_vec();
+        duplicate[1] = duplicate[0].clone();
+        assert!(
+            NativeHistoryTransformMapping::checked(
+                preparation.mapping().durable().clone(),
+                preparation.mapping().send().clone(),
+                duplicate,
+            )
+            .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_history_actor_missing_entry_refuses_before_integrity_effects() {
+    let (mock, mut persistence) = MockChatPersistence::new();
+    let (_tx, rx) = mpsc::unbounded_channel();
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut actor = ChatStateActor {
+        state: super::state::ChatState::new(Vec::new(), test_config()),
+        pruning_config: Default::default(),
+        persistence: Box::new(mock),
+        cmd_rx: rx,
+        event_tx,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        native_build_sequence: 0,
+        actor_nonce: 1,
+    };
+    actor.state.conversation = vec![ConversationItem::assistant_tool_calls(vec![
+        xai_grok_sampling_types::ToolCall {
+            id: "unpaired-before-refusal".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        },
+    ])];
+    let before = serde_json::to_value(&actor.state.conversation).unwrap();
+    let (reply, response) = tokio::sync::oneshot::channel();
+    actor
+        .handle_command(
+            crate::commands::ChatStateCommand::BuildConversationRequestWithBinding {
+                tool_candidates: crate::NativeToolCandidates::builtins_only(Vec::new()),
+                memory_reminder: Some("must-not-persist".into()),
+                persist_memory_reminder: true,
+                trace: None,
+                conv_id: "missing-entry-lineage".into(),
+                req_id: "missing-entry-request".into(),
+                reply,
+            },
+        )
+        .await;
+    assert!(response.await.is_err());
+    assert_eq!(
+        serde_json::to_value(&actor.state.conversation).unwrap(),
+        before
+    );
+    assert!(persistence.drain().is_empty());
+    assert_eq!(actor.native_build_sequence, 0);
+}
+
+#[tokio::test]
+async fn native_history_primary_authority_and_revision_are_checked() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let mut config = test_config();
+    config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    let mut h = TestHarness::with_config(bound_build_items(), config.clone());
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let domain = NativeReplayDomain {
+        backend: config.api_backend.clone(),
+        dialect: NativeReplayDialect::Messages,
+        model: config.model.clone(),
+        row: config.model.clone(),
+        provider: "offline".into(),
+        deployment: "unit".into(),
+        deployment_revision: "1".into(),
+        endpoint: format!("{}/messages", config.base_url),
+        principal: "nonsecret-unit".into(),
+    };
+    let guard = h
+        .handle
+        .register_native_history_owner(
+            "mock".into(),
+            "owner-run".into(),
+            domain.clone(),
+            NativeProjectionOwner::OwningPrimary,
+            active.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        h.handle
+            .register_native_history_owner(
+                "mock".into(),
+                "overlap".into(),
+                domain.clone(),
+                NativeProjectionOwner::OwningPrimary,
+                active.clone()
+            )
+            .await
+            .is_err()
+    );
+    let owner = guard.token();
+    let candidates = crate::NativeToolCandidates::builtins_only(bound_build_specs())
+        .with_history_entry(crate::NativeHistoryEntry::captured(
+            NativeHistoryRequirement::Selected,
+            crate::NativeHistoryEntryIntent::OwningPrimary(owner.clone()),
+        ))
+        .unwrap();
+    h.handle.get_conversation().await;
+    h.drain_events();
+    h.drain_persistence();
+    let (request, binding) = h
+        .handle
+        .build_request_with_binding(
+            candidates.clone(),
+            Some("owning reminder".into()),
+            true,
+            None,
+            "mock".into(),
+            "owned-bound-A".into(),
+        )
+        .await
+        .unwrap();
+    let preparation = request.native_bound_preparation.as_ref().unwrap();
+    assert!(preparation.seal().unwrap().is_live());
+    assert_eq!(preparation.context().unwrap().capture().target, domain);
+    assert_eq!(
+        preparation.context().unwrap().capture().issued_request,
+        "owned-bound-A"
+    );
+    assert_eq!(
+        preparation.history(),
+        &crate::persistence::native::history_boundary(&h.handle.get_conversation().await).unwrap()
+    );
+    assert!(preparation.history_revision().is_some() && preparation.install_generation().is_some());
+    assert_eq!(
+        h.drain_events()
+            .iter()
+            .filter(|event| matches!(event, ChatStateEvent::ImageBudget { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        h.drain_persistence()
+            .iter()
+            .filter(|record| matches!(record, PersistenceRecord::ReplaceHistory(_)))
+            .count(),
+        1
+    );
+    let foreign_issuer = NativeHistoryAuthorityIssuer::default();
+    let foreign = crate::NativeHistoryOwnerToken::new(
+        foreign_issuer
+            .issue_owner(
+                NativeHistorySealPurpose::OwningPrimary,
+                owner.actor_instance(),
+                owner.lineage().into(),
+                owner.run(),
+            )
+            .unwrap(),
+    );
+    let before = h.handle.get_conversation().await;
+    let bad = crate::NativeToolCandidates::builtins_only(Vec::new())
+        .with_history_entry(crate::NativeHistoryEntry::captured(
+            NativeHistoryRequirement::Selected,
+            crate::NativeHistoryEntryIntent::OwningPrimary(foreign),
+        ))
+        .unwrap();
+    assert!(
+        h.handle
+            .build_request_with_binding(
+                bad,
+                Some("must not persist".into()),
+                true,
+                None,
+                "mock".into(),
+                "foreign-owner".into()
+            )
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::to_value(h.handle.get_conversation().await).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+    assert!(h.drain_persistence().is_empty());
+    let mut b = binding.clone();
+    b.config.model = "installed-B".into();
+    h.handle.install_transport_binding(b).await.unwrap();
+    assert_eq!(
+        preparation.context().unwrap().capture().target.model,
+        config.model,
+        "install B never retargets issued A"
+    );
+    let route = TargetRoute::new(
+        binding.config.api_backend.clone(),
+        Boundary::Vertex,
+        request.search_admission.unwrap(),
+    );
+    let refused = h
+        .handle
+        .commit_native_history_projection(preparation.clone(), request.clone(), route.clone())
+        .await;
+    assert!(
+        matches!(refused, Err(NativeUnavailable::Persistence)),
+        "mock/unsupported store never provides a durable readiness certificate"
+    );
+    let borrowed = h.handle.clone();
+    let (send_only, _) = borrowed
+        .build_request_with_binding(
+            crate::NativeToolCandidates::builtins_only(Vec::new())
+                .with_history_entry(crate::NativeHistoryEntry::send_only(
+                    NativeHistoryRequirement::Selected,
+                ))
+                .unwrap(),
+            None,
+            false,
+            None,
+            "mock".into(),
+            "borrowed-send-only".into(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        borrowed
+            .commit_native_history_projection(
+                send_only.native_bound_preparation.unwrap(),
+                request.clone(),
+                route.clone()
+            )
+            .await
+            .is_err()
+    );
+    h.handle
+        .push_user_message_and_ack(ConversationItem::user(
+            "intervening complete history change",
+        ))
+        .await;
+    assert_eq!(
+        h.handle
+            .commit_native_history_projection(preparation.clone(), request.clone(), route)
+            .await
+            .unwrap_err(),
+        NativeUnavailable::StaleHistory
+    );
+    drop(guard);
+    assert!(!preparation.seal().unwrap().is_live());
+    active.store(false, std::sync::atomic::Ordering::Release);
+    assert!(
+        h.handle
+            .build_request_with_binding(
+                candidates,
+                None,
+                false,
+                None,
+                "mock".into(),
+                "cancelled-owner".into()
+            )
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn native_history_borrowed_handle_cannot_register_owner() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let mut config = test_config();
+    config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    let h = TestHarness::with_config(Vec::new(), config.clone());
+    let borrowed = h.handle.clone();
+    let domain = NativeReplayDomain {
+        backend: config.api_backend.clone(),
+        dialect: NativeReplayDialect::Messages,
+        model: config.model.clone(),
+        row: config.model.clone(),
+        provider: "offline".into(),
+        deployment: "unit".into(),
+        deployment_revision: "1".into(),
+        endpoint: format!("{}/messages", config.base_url),
+        principal: "nonsecret-unit".into(),
+    };
+    let claimed_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let result = borrowed
+        .register_native_history_owner(
+            "mock".into(),
+            "borrowed-not-owning-run".into(),
+            domain,
+            NativeProjectionOwner::OwningPrimary,
+            claimed_active,
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "a borrowed handle and caller-authored active flag must never mint this actor's owner capability"
+    );
+    assert!(h.handle.get_conversation().await.is_empty());
 }

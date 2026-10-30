@@ -2573,8 +2573,15 @@ impl SessionActor {
         turn_sampling: &mut TurnSampling,
     ) -> Result<TurnOutcome, acp::Error> {
         self.process_conversation_turn_inner_with_native_preparer(
-            req_id, trace_gcs_config, artifact_tracker, json_schema, salvage, turn_sampling, None,
-        ).await
+            req_id,
+            trace_gcs_config,
+            artifact_tracker,
+            json_schema,
+            salvage,
+            turn_sampling,
+            None,
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -2586,11 +2593,22 @@ impl SessionActor {
         json_schema: Option<serde_json::Value>,
         salvage: &mut super::length_salvage::LengthSalvage,
         turn_sampling: &mut TurnSampling,
-        prepare: &mut dyn FnMut(&mut ConversationRequest, &xai_chat_state::RequestTransportBinding) -> Result<(), acp::Error>,
+        prepare: &mut dyn FnMut(
+            &mut ConversationRequest,
+            &xai_chat_state::RequestTransportBinding,
+        ) -> Result<(), acp::Error>,
     ) -> Result<TurnOutcome, acp::Error> {
-        let result = self.process_conversation_turn_inner_with_native_preparer(
-            req_id, trace_gcs_config, artifact_tracker, json_schema, salvage, turn_sampling, Some(prepare),
-        ).await;
+        let result = self
+            .process_conversation_turn_inner_with_native_preparer(
+                req_id,
+                trace_gcs_config,
+                artifact_tracker,
+                json_schema,
+                salvage,
+                turn_sampling,
+                Some(prepare),
+            )
+            .await;
         self.turn_phases.emit_pending_latency();
         result
     }
@@ -2613,6 +2631,7 @@ impl SessionActor {
             }
         }
         let _clear_turn_span_id = ClearTurnSpanId(&self.current_turn_span_id);
+        let mut native_owner_guard: Option<xai_chat_state::NativeHistoryOwnerGuard> = None;
         let conv_turn_start = std::time::Instant::now();
         let conv_turn_clock = DualClock::now();
         let turn_phases = self.turn_phases.clone();
@@ -2893,6 +2912,41 @@ impl SessionActor {
                 },
                 BridgeDeclarationProjection::candidates,
             );
+            // waj2-U8: one capture per fresh bound request, from the single
+            // production selector, attached AFTER the transforms so a fork
+            // replacement or appended structured output can never drop it.
+            let native_requirement = super::switch_projection::select_native_history();
+            let native_entry = match native_requirement {
+                xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive => {
+                    // Explicit Inactive needs no owner wait; the caller keeps this
+                    // value and never infers the mode from the returned preparation.
+                    xai_chat_state::NativeHistoryEntry::send_only(native_requirement)
+                }
+                xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected => {
+                    if native_owner_guard.is_none() {
+                        #[cfg(test)]
+                        let target = super::switch_projection::HISTORY_S3_TEST_DOMAIN.try_with(Clone::clone).ok();
+                        #[cfg(not(test))]
+                        let target: Option<xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain> = None;
+                        let target = target.ok_or_else(|| crate::sampling::error::local_error("native_history_binding_unknown", "Selected history requires independently supplied nonsecret target facts"))?;
+                        native_owner_guard = Some(self.chat_state_handle.register_native_history_owner(
+                            self.session_id_string(), req_id.to_owned(), target,
+                            xai_grok_sampling_types::conversation::native_search_history::NativeProjectionOwner::OwningPrimary,
+                            self.session_turn_active.clone(),
+                        ).await.map_err(|reason| crate::sampling::error::local_error("native_history_owner_refused", format!("native owner refused: {reason:?}")))?);
+                    }
+                    xai_chat_state::NativeHistoryEntry::captured(native_requirement,
+                        xai_chat_state::NativeHistoryEntryIntent::OwningPrimary(native_owner_guard.as_ref().ok_or_else(|| crate::sampling::error::local_error("native_history_owner_missing", "native owner guard is missing"))?.token()))
+                }
+            };
+            let effective_tools = effective_tools
+                .with_history_entry(native_entry.clone())
+                .map_err(|_| {
+                    crate::sampling::error::local_error(
+                        "native_history_capture_conflict",
+                        "tool candidates already carried a history entry",
+                    )
+                })?;
             let build_req_start = std::time::Instant::now();
             let build_request_span =
                 xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
@@ -2900,7 +2954,7 @@ impl SessionActor {
                     build_request_ms = tracing::field::Empty,
                     item_count = tracing::field::Empty,
                 ));
-            let (request, binding) = self
+            let (request, mut binding) = self
                 .chat_state_handle
                 .build_request_with_binding(
                     effective_tools,
@@ -2918,7 +2972,25 @@ impl SessionActor {
                     req_id.to_owned(),
                 )
                 .await
-                .expect("chat state actor should be alive");
+                .ok_or_else(|| {
+                    crate::sampling::error::local_error(
+                        "native_history_build_refused",
+                        "bound build refused (mailbox closed or missing history entry)",
+                    )
+                })?;
+            // The caller-owned explicit-Inactive/no-plan adapter: absence of a
+            // preparation is never a mode decision, and only a Selected caller
+            // with nothing prepared is a genuine inconsistency.
+            super::switch_projection::native_history_inactive_adapter(
+                &native_entry,
+                request.native_bound_preparation.as_ref(),
+            )
+            .map_err(|_| {
+                crate::sampling::error::local_error(
+                    "native_history_preparation_missing",
+                    "Selected bound build returned no preparation",
+                )
+            })?;
             #[cfg(test)]
             self.observe_outer_bound_build(&request, &binding).await;
             let recovery_policy = NativeMcpRecoveryPolicy::for_bound_request(
@@ -2962,8 +3034,9 @@ impl SessionActor {
                 self.project_bound_bridge_declarations(&mut request, &binding, projection)
                     .map_err(crate::sampling::error::map_sampling_err_to_acp)?;
             }
-            self.publish_bound_projection(&request, &binding, selected_functions)
-                .await;
+            if native_requirement == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive {
+                self.publish_bound_projection(&request, &binding, selected_functions).await;
+            }
             // ANTHROPIC-WIRE-2 (cut 4): once the escalation fired, every
             // continuation sample carries the bumped cap — max(64K, the
             // alias-aware R5 table row). Applied BEFORE the workflow
@@ -2987,6 +3060,10 @@ impl SessionActor {
             request.max_output_tokens = effective_cap;
             if salvage.enabled() {
                 request.length_policy = xai_grok_sampling_types::LengthPolicy::CompletePartial;
+            }
+            if native_requirement == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected {
+                request = self.finalize_native_history_primary(request, &mut binding).await?;
+                self.publish_bound_projection(&request, &binding, selected_functions).await;
             }
             self.emit_event(crate::session::events::Event::PhaseChanged {
                 phase: crate::session::events::Phase::WaitingForModel,
@@ -4663,7 +4740,7 @@ impl SessionActor {
                 crate::agent::subagent::strip_ask_user_question_tool(&mut tools);
                 crate::agent::subagent::strip_workflow_tool(&mut tools);
             }
-            xai_chat_state::NativeToolCandidates::builtins_only(tools)
+            candidates.replace_specs_without_identity(tools)
         } else {
             candidates.map_specs(|tools| {
                 if self.startup_hints.is_subagent {
@@ -4741,5 +4818,112 @@ impl SessionActor {
             });
         }
         Some(projection)
+    }
+}
+
+impl SessionActor {
+    async fn finalize_native_history_primary(
+        &self,
+        mut request: ConversationRequest,
+        binding: &mut xai_chat_state::RequestTransportBinding,
+    ) -> Result<ConversationRequest, acp::Error> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        use xai_grok_sampling_types::conversation::projection::{TargetRoute, model_boundary_class};
+        if binding.config.api_backend != xai_grok_sampling_types::ApiBackend::Messages {
+            return Err(crate::sampling::error::local_error(
+                "native_history_wire_staged",
+                "Selected primary replay on this wire remains staged",
+            ));
+        }
+        let preparation = request.native_bound_preparation.clone().ok_or_else(|| {
+            crate::sampling::error::local_error(
+                "native_history_preparation_missing",
+                "Selected primary has no issued preparation",
+            )
+        })?;
+        let admission = request.search_admission.ok_or_else(|| {
+            crate::sampling::error::local_error(
+                "native_history_admission_missing",
+                "Selected primary has no original admission",
+            )
+        })?;
+        let route = TargetRoute::new(
+            binding.config.api_backend.clone(),
+            model_boundary_class(&binding.config.model),
+            admission,
+        );
+        let completion = self
+            .chat_state_handle
+            .commit_native_history_projection(preparation, request.clone(), route)
+            .await
+            .map_err(|reason| {
+                crate::sampling::error::local_error(
+                    "native_history_compound_refused",
+                    format!("native compound projection refused: {reason:?}"),
+                )
+            })?;
+        request.items = completion.send_after;
+        let client = self
+            .prepare_chat_completion_from_binding(binding, false)
+            .await?;
+        let (mut normalized, encoded) = client
+            .finalize_conversation_messages(&request)
+            .map_err(crate::sampling::error::map_sampling_err_to_acp)?;
+        let carrier = NativeFinalCarrier::capture(encoded.as_bytes().into()).map_err(|reason| {
+            crate::sampling::error::local_error(
+                "native_history_carrier_refused",
+                format!("native carrier refused: {reason:?}"),
+            )
+        })?;
+        let post: std::sync::Arc<[u8]> = serde_json::to_vec(&normalized.items)
+            .map_err(|_| {
+                crate::sampling::error::local_error(
+                    "native_history_post_refused",
+                    "native send history could not be encoded",
+                )
+            })?
+            .into();
+        let accounting = completion.core.accounting.clone();
+        let reporting_certificate = completion.certificate.clone();
+        let plan = NativeHistoryPlan::checked_bound(
+            completion.preparation,
+            completion.certificate,
+            NativeHistoryPlanInput {
+                record: completion.send_record,
+                input_history_bytes: completion.send_before,
+                ledger_bytes: completion.send_ledger_bytes,
+                lowering_request: &normalized,
+                post_history_bytes: post,
+                carrier,
+                identities: Vec::new(),
+                qualification: completion.core.accounting.qualification.clone(),
+                core: completion.core,
+            },
+        )
+        .map_err(|reason| {
+            crate::sampling::error::local_error(
+                "native_history_plan_refused",
+                format!("native plan refused: {reason:?}"),
+            )
+        })?;
+        self.publish_native_history_accounting(
+            &accounting,
+            &reporting_certificate,
+            "owning_primary",
+        )
+        .map_err(|reason| {
+            crate::sampling::error::local_error(
+                "native_history_reporting_refused",
+                format!("native accounting report refused: {reason:?}"),
+            )
+        })?;
+        normalized.native_history = Some(
+            xai_grok_sampling_types::request_validation::NativeHistoryRequest::new(
+                plan.context().clone(),
+                Some(plan),
+            ),
+        );
+        normalized.encoded = Some(encoded);
+        Ok(normalized)
     }
 }

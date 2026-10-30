@@ -86,6 +86,13 @@ fn projection_changed_count(
 }
 
 impl ChatStateActor {
+    fn note_native_history_change(&mut self) {
+        if let Some(revision) = self.state.native.history_revision.checked_add(1) {
+            self.state.native.history_revision = revision;
+        } else {
+            self.state.native.unavailable = Some(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Capacity);
+        }
+    }
     /// Apply `mutate` and drive the derived-state matrix for `kind`.
     /// Persists only when `mutate` reports a nonzero change count.
     /// Returns that count plus, for the strip flavor, the disk acknowledgement.
@@ -109,6 +116,7 @@ impl ChatStateActor {
         let changed = mutate(&mut self.state.conversation);
         let mut disk_ack = None;
         if changed > 0 {
+            self.note_native_history_change();
             match kind {
                 HistoryRewrite::IntegrityRepair | HistoryRewrite::RetainedPrune => {
                     self.persistence.replace_history(&self.state.conversation);
@@ -144,6 +152,31 @@ impl ChatStateActor {
                 }
                 self.state.native.lineage = Some(read.lineage);
                 self.state.native.checkpoint = read.checkpoint;
+                let producing = self
+                    .state
+                    .native
+                    .checkpoint
+                    .as_ref()
+                    .map_or(0, |checkpoint| {
+                        checkpoint
+                            .source
+                            .producing_bindings
+                            .iter()
+                            .filter_map(|binding| binding.generation)
+                            .max()
+                            .unwrap_or(0)
+                    });
+                let compound = self
+                    .state
+                    .native
+                    .checkpoint
+                    .as_ref()
+                    .and_then(|checkpoint| checkpoint.compound_proof.as_ref())
+                    .map_or(0, |proof| proof.metadata().binding_generation);
+                match producing.max(compound).checked_add(1) {
+                    Some(floor) => { self.state.native.install_generation = floor; self.state.native.binding_generation = floor; }
+                    None => self.state.native.unavailable = Some(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Capacity),
+                }
             }
             Ok(Ok(Err(reason))) => self.state.native.unavailable = Some(reason),
             _ => self.state.native.unavailable = Some(NativeUnavailable::Indeterminate),
@@ -393,7 +426,20 @@ impl ChatStateActor {
         };
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            self.persistence.persist_native_generation_and_ack(write),
+            if self
+                .state
+                .native
+                .checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint.compound_lineage)
+            {
+                self.persistence.persist_native_checkpoint_and_ack(
+                    write,
+                    crate::persistence::native::NativePendingProtection::default(),
+                )
+            } else {
+                self.persistence.persist_native_generation_and_ack(write)
+            },
         )
         .await;
         match result {
@@ -493,7 +539,20 @@ impl ChatStateActor {
         };
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            self.persistence.persist_native_generation_and_ack(write),
+            if self
+                .state
+                .native
+                .checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint.compound_lineage)
+            {
+                self.persistence.persist_native_checkpoint_and_ack(
+                    write,
+                    crate::persistence::native::NativePendingProtection::default(),
+                )
+            } else {
+                self.persistence.persist_native_generation_and_ack(write)
+            },
         )
         .await;
         match result {
@@ -787,6 +846,7 @@ impl ChatStateActor {
     fn persist_and_push_message(&mut self, item: ConversationItem) {
         self.persistence.persist_message(&item);
         self.state.conversation.push(item);
+        self.note_native_history_change();
     }
 
     /// Push a user message, repairing dangling tool calls first so cancel/crash tails stay consistent.
@@ -836,6 +896,7 @@ impl ChatStateActor {
         );
         self.persistence.persist_message(&item);
         self.state.conversation.push(item);
+        self.note_native_history_change();
         self.prune_retained_conversation();
     }
 
@@ -1071,6 +1132,7 @@ impl ChatStateActor {
         let base_estimate = super::state::estimate_conversation_tokens(&items);
         let estimated_tokens = self.reseed_total_tokens(base_estimate);
         self.state.conversation = items;
+        self.note_native_history_change();
         self.state.estimated_tokens_since_model = 0;
         self.state.total_tokens = estimated_tokens;
         self.state.estimate_at_last_response = base_estimate;
@@ -1106,6 +1168,9 @@ impl ChatStateActor {
         // Harness trace buffers are transient (not part of the snapshot) and
         // intentionally survive a restore — see `replace_conversation`.
         self.state.conversation = snap.conversation;
+        self.note_native_history_change();
+        self.state.native.install_generation =
+            self.state.native.install_generation.saturating_add(1);
         self.rebase_turn_capture_offset();
         self.state.sampling_config = snap.sampling_config;
         // The snapshot's config carries its row's `supports_search_tool` flag and

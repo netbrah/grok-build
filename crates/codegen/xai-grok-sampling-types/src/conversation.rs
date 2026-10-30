@@ -1196,6 +1196,11 @@ pub struct ConversationRequest {
     pub encoded: Option<crate::request_validation::EncodedMessagesRequest>,
     /// Request-local authority, independent of the optional encoded body and proof.
     pub native_history: Option<crate::request_validation::NativeHistoryRequest>,
+    /// Tentative preparation for a Selected bound build (waj2-U8), captured
+    /// independently of the final plan. `Default` stays `None`; the Inactive
+    /// route keeps it `None`, so legacy and bound request Debug stay identical.
+    pub native_bound_preparation:
+        Option<crate::conversation::native_search_history::NativeBoundPreparation>,
 }
 
 impl ConversationRequest {
@@ -1210,6 +1215,7 @@ impl ConversationRequest {
     /// so the next attempt re-encodes the mutated request.
     pub fn invalidate_encoded(&mut self) {
         self.encoded = None;
+        // Retain the immutable capture; only the final carrier proof is invalidated.
         if let Some(native) = &mut self.native_history {
             native.invalidate_plan();
         }

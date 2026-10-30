@@ -35,6 +35,9 @@ pub struct JsonlStorageAdapter {
     file_sync_probe: Option<std::sync::Arc<FileSyncProbe>>,
     #[cfg(test)]
     parent_sync_probe: Option<std::sync::Arc<ParentSyncProbe>>,
+    #[cfg(test)]
+    native_projection_probe:
+        Option<std::sync::Arc<dyn Fn(&'static str) -> io::Result<()> + Send + Sync>>,
 }
 #[cfg(test)]
 type AppendProbe = dyn Fn(AppendDurability) -> io::Result<()> + Send + Sync;
@@ -76,6 +79,92 @@ impl Default for JsonlStorageAdapter {
     }
 }
 impl JsonlStorageAdapter {
+    fn replace_chat_history_for_strip_sync_with(
+        &self,
+        info: &Info,
+        bytes: &[u8],
+        count: usize,
+        write_chat: impl FnOnce(&Path, &[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let chat = self.chat_file(info);
+        let _locks = HistoryIoLocks::acquire(&chat, "ordinary", None)?;
+        let original = match std::fs::read(&chat) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let backup = chat.with_extension("jsonl.pre-strip");
+        if original.is_some() && !backup.exists() {
+            let staging = chat.with_extension("jsonl.pre-strip.tmp");
+            std::fs::copy(&chat, &staging)?;
+            let file = OpenOptions::new().write(true).open(&staging)?;
+            super::sync_file_durable(&file)?;
+            std::fs::rename(&staging, &backup)?;
+            super::sync_parent_dir_durable(&backup)?;
+        }
+        // The summary lock is last; rollback cannot discard another writer's fields.
+        let summary_path = self.summary_file(info);
+        let summary_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.summary_lock_file(info))?;
+        summary_lock.lock_exclusive()?;
+        let original_summary = std::fs::read(&summary_path)?;
+        let mut summary: Summary = serde_json::from_slice(&original_summary)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        summary.apply_patch(
+            &super::summary_write::SummaryPatch {
+                chat_messages: Some(super::summary_write::CounterOp::Set(count)),
+                chat_format_version: Some(CHAT_FORMAT_VERSION),
+                ..Default::default()
+            },
+            chrono::Utc::now(),
+        );
+        let summary_bytes = serde_json::to_vec_pretty(&summary)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let result = super::write_bytes_atomic(&summary_path, &summary_bytes)
+            .and_then(|()| write_chat(&chat, bytes));
+        if let Err(error) = result {
+            // A failed directory barrier can follow a successful rename.
+            let restored = (|| -> io::Result<()> {
+                match &original {
+                    Some(original) => {
+                        if std::fs::read(&chat).ok().as_deref() != Some(original.as_slice()) {
+                            super::write_bytes_atomic(&chat, original)?;
+                        }
+                    }
+                    None => match std::fs::remove_file(&chat) {
+                        Ok(()) => super::sync_parent_dir_durable(&chat)?,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
+                    },
+                }
+                if std::fs::read(&summary_path).ok().as_deref() != Some(original_summary.as_slice())
+                {
+                    super::write_bytes_atomic(&summary_path, &original_summary)?;
+                }
+                Ok(())
+            })();
+            return match restored {
+                Ok(()) => Err(error),
+                Err(restore_error) => Err(io::Error::other(format!(
+                    "strip failed ({error}); rollback failed ({restore_error})"
+                ))),
+            };
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_native_projection_probe(
+        mut self,
+        probe: impl Fn(&'static str) -> io::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.native_projection_probe = Some(std::sync::Arc::new(probe));
+        self
+    }
     pub fn new() -> Self {
         Self {
             dir_mode: SessionDirMode::FromRoot(crate::util::grok_home::grok_home()),
@@ -87,6 +176,8 @@ impl JsonlStorageAdapter {
             file_sync_probe: None,
             #[cfg(test)]
             parent_sync_probe: None,
+            #[cfg(test)]
+            native_projection_probe: None,
         }
     }
     pub fn with_root(root_dir: PathBuf) -> Self {
@@ -100,6 +191,8 @@ impl JsonlStorageAdapter {
             file_sync_probe: None,
             #[cfg(test)]
             parent_sync_probe: None,
+            #[cfg(test)]
+            native_projection_probe: None,
         }
     }
     /// Create an adapter that writes directly to `session_dir`, bypassing the `{root}/sessions/{cwd}/{id}/` path computation.
@@ -115,6 +208,8 @@ impl JsonlStorageAdapter {
             file_sync_probe: None,
             #[cfg(test)]
             parent_sync_probe: None,
+            #[cfg(test)]
+            native_projection_probe: None,
         }
     }
     #[cfg(test)]
@@ -128,6 +223,8 @@ impl JsonlStorageAdapter {
             session_sync_probe: None,
             file_sync_probe: None,
             parent_sync_probe: None,
+            #[cfg(test)]
+            native_projection_probe: None,
         }
     }
     /// [`Self::with_update_append_probe`] plus a probe observing (and able to fail) every [`StorageAdapter::sync_session_files_selected`] barrier.
@@ -144,6 +241,8 @@ impl JsonlStorageAdapter {
             session_sync_probe: Some(std::sync::Arc::new(session_sync_probe)),
             file_sync_probe: None,
             parent_sync_probe: None,
+            #[cfg(test)]
+            native_projection_probe: None,
         }
     }
     /// Fail (or observe) the per-append file barrier after `write_all`.
@@ -210,10 +309,25 @@ impl JsonlStorageAdapter {
         }
         let chat_file = self.chat_file(info);
         if std::fs::metadata(&chat_file).map(|m| m.len()).unwrap_or(0) == 0 {
-            if !matches!(
-                Self::native_generation_sync(&self.session_dir(info).join("native_history")),
-                Ok(None)
-            ) {
+            let native = self.session_dir(info).join("native_history");
+            let compound = crate::session::workflow::store::read_bounded_nofollow(
+                &native.join("authority.json"),
+                xai_grok_sampling_types::conversation::native_search_history::NATIVE_CONTROL_BYTES,
+            )
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|head| head.get("record_kind").is_some());
+            if compound {
+                let _locks = HistoryIoLocks::acquire(
+                    &chat_file,
+                    "read",
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(1000)),
+                )?;
+                if std::fs::metadata(&chat_file).is_ok_and(|metadata| metadata.is_file()) {
+                    return Ok(());
+                }
+            }
+            if !matches!(Self::native_generation_sync(&native), Ok(None)) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "required native history cannot be rebuilt from ACP updates",
@@ -590,15 +704,8 @@ impl JsonlStorageAdapter {
     }
     /// Lock tail healing, append, and barriers through `<target>.jsonl.lock`.
     /// Full-file [`Self::write_jsonl`] atomic-rename rewrites bypass this append-only lock.
-    fn lock_append(path: &Path) -> io::Result<std::fs::File> {
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path.with_extension("jsonl.lock"))?;
-        lock.lock_exclusive()?;
-        Ok(lock)
+    fn lock_append(path: &Path) -> io::Result<HistoryIoLocks> {
+        HistoryIoLocks::acquire(path, "ordinary", None)
     }
     fn sync_file_durable(file: &std::fs::File) -> io::Result<()> {
         super::sync_file_durable(file)
@@ -609,7 +716,20 @@ impl JsonlStorageAdapter {
     /// Write a full JSONL file (rewriting all items), crash-atomically: serialize to a temp file then rename over the target.
     /// A crash / `ENOSPC` mid-write therefore can't truncate the existing file (e.g. lose `rewind_points.jsonl` history).
     async fn write_jsonl<T: serde::Serialize>(&self, path: PathBuf, items: &[T]) -> io::Result<()> {
-        super::write_jsonl_atomic_async(&path, items).await
+        if path.file_name().and_then(|name| name.to_str()) != Some("chat_history.jsonl") {
+            return super::write_jsonl_atomic_async(&path, items).await;
+        }
+        let mut bytes = Vec::new();
+        for item in items {
+            serde_json::to_writer(&mut bytes, item).map_err(io::Error::other)?;
+            bytes.push(b'\n');
+        }
+        tokio::task::spawn_blocking(move || {
+            let _locks = HistoryIoLocks::acquire(&path, "ordinary", None)?;
+            super::write_bytes_atomic(&path, &bytes)
+        })
+        .await
+        .map_err(io::Error::other)?
     }
     fn read_jsonl<T: serde::de::DeserializeOwned>(&self, path: PathBuf) -> io::Result<Vec<T>> {
         if !path.exists() {
@@ -958,6 +1078,11 @@ impl JsonlStorageAdapter {
         path: PathBuf,
         chat_format_version: u8,
     ) -> io::Result<Vec<ConversationItem>> {
+        let _locks = HistoryIoLocks::acquire(
+            &path,
+            "read",
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(1000)),
+        )?;
         let invalid = || {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1731,15 +1856,21 @@ impl StorageAdapter for JsonlStorageAdapter {
         let info = info.clone();
         tokio::task::spawn_blocking(move || {
             let lineage = info.id.to_string();
+            let chat = adapter.chat_file(&info);
+            let _locks = HistoryIoLocks::acquire(
+                &chat,
+                "read",
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(1000)),
+            )
+            .map_err(native_io_error)?;
             let checkpoint =
                 Self::native_generation_sync(&adapter.session_dir(&info).join("native_history"))?;
             if let Some((_, checkpoint)) = checkpoint {
                 if checkpoint.record.lineage.id != lineage {
                     return Err(NativeUnavailable::StaleHistory);
                 }
-                let history = adapter
-                    .read_chat_history_sync(adapter.chat_file(&info), CHAT_FORMAT_VERSION)
-                    .map_err(|_| NativeUnavailable::StaleHistory)?;
+                let bytes = std::fs::read(&chat).map_err(|_| NativeUnavailable::StaleHistory)?;
+                let history = xai_chat_state::persistence::native::strict_history_jsonl(&bytes)?;
                 checkpoint.matches_history(&history)?;
                 Ok(xai_chat_state::persistence::native::NativeRead {
                     lineage,
@@ -1751,6 +1882,522 @@ impl StorageAdapter for JsonlStorageAdapter {
                     checkpoint: None,
                 })
             }
+        })
+        .await
+        .map_err(|_| NativeUnavailable::Indeterminate)?
+    }
+
+    async fn persist_native_projection_and_ack(
+        &self,
+        info: &Info,
+        write: xai_chat_state::persistence::native::NativeProjectionWrite,
+    ) -> Result<
+        xai_grok_sampling_types::conversation::native_search_history::NativeCompoundAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_chat_state::persistence::native::{digest, strict_history_jsonl, history_boundary};
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        write.validate()?;
+        let adapter = self.clone();
+        let info = info.clone();
+        tokio::task::spawn_blocking(move || {
+            let session = adapter
+                .create_session_dir_owner_only(&info)
+                .map_err(native_io_error)?;
+            let native = session.join("native_history");
+            let chat = adapter.chat_file(&info);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1000);
+            let _locks = NativeDiskLocks::acquire(&native, &chat, "projection", Some(deadline))
+                .map_err(native_io_error)?;
+            let current_bytes = match crate::session::workflow::store::read_bounded_nofollow(
+                &native.join("authority.json"),
+                NATIVE_CONTROL_BYTES,
+            ) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(_) => return Err(NativeUnavailable::InvalidReference),
+            };
+            if let Some(bytes) = &current_bytes {
+                if let Ok(commit) = serde_json::from_slice::<NativeCompoundCommit>(bytes) {
+                    if commit.transaction == write.commit.transaction {
+                        if bytes.as_slice() != write.authority_bytes.as_ref() {
+                            return Err(NativeUnavailable::InvalidReference);
+                        }
+                        for (hash, bytes) in write.checkpoint.blobs.iter().chain(std::iter::once((
+                            &write.commit.checkpoint.digest,
+                            &write.checkpoint.bytes,
+                        ))) {
+                            adapter
+                                .s3_write_file(
+                                    &native.join("blobs").join(format!("{hash}.json")),
+                                    bytes,
+                                    "checkpoint",
+                                    true,
+                                )
+                                .map_err(native_io_error)?;
+                        }
+                        adapter
+                            .s3_write_file(
+                                &native.join("blobs").join(format!(
+                                    "{}.json",
+                                    write
+                                        .commit
+                                        .projection
+                                        .as_ref()
+                                        .ok_or(NativeUnavailable::InvalidReference)?
+                                        .digest
+                                )),
+                                &write.metadata_bytes,
+                                "metadata",
+                                true,
+                            )
+                            .map_err(native_io_error)?;
+                        adapter
+                            .s3_write_file(
+                                &native.join("history").join(format!(
+                                    "{}.jsonl",
+                                    write
+                                        .commit
+                                        .after_image
+                                        .as_ref()
+                                        .ok_or(NativeUnavailable::InvalidReference)?
+                                        .blob
+                                        .digest
+                                )),
+                                &write.image_bytes,
+                                "image",
+                                true,
+                            )
+                            .map_err(native_io_error)?;
+                        adapter
+                            .s3_write_file(
+                                &native
+                                    .join("blobs")
+                                    .join(format!("{}.json", digest(&write.authority_bytes))),
+                                &write.authority_bytes,
+                                "commit",
+                                true,
+                            )
+                            .map_err(native_io_error)?;
+                        super::sync_dir_durable(&native).map_err(native_io_error)?;
+                        adapter.s3_recover_selected(&native, &chat)?;
+                        return NativeCompoundAck::from_commit(&commit, bytes);
+                    }
+                }
+            }
+            if current_bytes.as_ref().map(|bytes| digest(bytes))
+                != write.commit.previous_authority_digest
+            {
+                return Err(NativeUnavailable::StaleHistory);
+            }
+            adapter.s3_recover_selected(&native, &chat)?;
+            let previous = Self::native_generation_sync(&native)?;
+            if let Some((authority, previous)) = &previous {
+                if authority.high_water != write.commit.previous_generation {
+                    return Err(NativeUnavailable::StaleHistory);
+                }
+                write.checkpoint.extends(previous)?;
+            } else if write.commit.previous_generation != 0 {
+                return Err(NativeUnavailable::StaleHistory);
+            }
+            adapter
+                .native_phase("before_history_file_sync")
+                .map_err(native_io_error)?;
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            let mirror = options.open(&chat).map_err(native_io_error)?;
+            super::sync_file_durable(&mirror).map_err(native_io_error)?;
+            adapter
+                .native_phase("before_history_directory_sync")
+                .map_err(native_io_error)?;
+            super::sync_parent_dir_durable(&chat).map_err(native_io_error)?;
+            let bytes = crate::session::workflow::store::read_bounded_nofollow(
+                &chat,
+                write.commit.before.byte_len,
+            )
+            .map_err(|_| NativeUnavailable::StaleHistory)?;
+            if bytes.len() as u64 != write.commit.before.byte_len
+                || digest(&bytes) != write.commit.before.raw_digest
+                || history_boundary(&strict_history_jsonl(&bytes)?)? != write.commit.before.boundary
+            {
+                return Err(NativeUnavailable::StaleHistory);
+            }
+            adapter.s3_cleanup(&native, Some(&write.pending))?;
+            Self::s3_reserve(
+                &native,
+                &write.checkpoint,
+                Some(&write.metadata_bytes),
+                Some(&write.image_bytes),
+                &write.authority_bytes,
+            )?;
+            if let Some((_, checkpoint)) = &previous {
+                adapter.native_phase("backup").map_err(native_io_error)?;
+                adapter
+                    .s3_write_file(
+                        &native.join("backup.json"),
+                        &checkpoint.bytes,
+                        "backup",
+                        false,
+                    )
+                    .map_err(native_io_error)?;
+            }
+            for (hash, bytes) in &write.checkpoint.blobs {
+                let kind = match write.checkpoint.blob_kinds.get(hash).map(String::as_str) {
+                    Some(
+                        "raw_block" | "partial_input_json" | "producing_binding"
+                        | "eligible_schema" | "eligible_snapshot" | "source",
+                    ) => "source",
+                    Some("active") => "active",
+                    Some("ledger") => "ledger",
+                    Some("snapshot" | "snapshot_body") => "snapshot",
+                    Some("checkpoint") => "checkpoint",
+                    _ => return Err(NativeUnavailable::InvalidReference),
+                };
+                adapter
+                    .s3_write_file(
+                        &native.join("blobs").join(format!("{hash}.json")),
+                        bytes,
+                        kind,
+                        true,
+                    )
+                    .map_err(native_io_error)?;
+            }
+            adapter
+                .s3_write_file(
+                    &native
+                        .join("blobs")
+                        .join(format!("{}.json", write.commit.checkpoint.digest)),
+                    &write.checkpoint.bytes,
+                    "checkpoint",
+                    true,
+                )
+                .map_err(native_io_error)?;
+            adapter
+                .s3_write_file(
+                    &native.join("blobs").join(format!(
+                        "{}.json",
+                        write
+                            .commit
+                            .projection
+                            .as_ref()
+                            .ok_or(NativeUnavailable::InvalidReference)?
+                            .digest
+                    )),
+                    &write.metadata_bytes,
+                    "metadata",
+                    true,
+                )
+                .map_err(native_io_error)?;
+            adapter
+                .s3_write_file(
+                    &native.join("history").join(format!(
+                        "{}.jsonl",
+                        write
+                            .commit
+                            .after_image
+                            .as_ref()
+                            .ok_or(NativeUnavailable::InvalidReference)?
+                            .blob
+                            .digest
+                    )),
+                    &write.image_bytes,
+                    "image",
+                    true,
+                )
+                .map_err(native_io_error)?;
+            adapter
+                .s3_write_file(
+                    &native
+                        .join("blobs")
+                        .join(format!("{}.json", digest(&write.authority_bytes))),
+                    &write.authority_bytes,
+                    "commit",
+                    true,
+                )
+                .map_err(native_io_error)?;
+            adapter.native_phase("staging").map_err(native_io_error)?;
+            adapter
+                .s3_write_file(
+                    &native.join("staging.json"),
+                    &write.checkpoint.bytes,
+                    "staging",
+                    false,
+                )
+                .map_err(native_io_error)?;
+            let current = crate::session::workflow::store::read_bounded_nofollow(
+                &native.join("authority.json"),
+                NATIVE_CONTROL_BYTES,
+            )
+            .ok()
+            .map(|bytes| digest(&bytes));
+            let before = crate::session::workflow::store::read_bounded_nofollow(
+                &chat,
+                write.commit.before.byte_len,
+            )
+            .map_err(|_| NativeUnavailable::StaleHistory)?;
+            if current != write.commit.previous_authority_digest
+                || digest(&before) != write.commit.before.raw_digest
+            {
+                return Err(NativeUnavailable::StaleHistory);
+            }
+            adapter
+                .native_phase("authority_rename")
+                .map_err(native_io_error)?;
+            adapter
+                .s3_authority_rename(&native, &write.authority_bytes)
+                .map_err(|_| NativeUnavailable::Indeterminate)?;
+            adapter
+                .native_phase("head_parent_sync")
+                .map_err(|_| NativeUnavailable::Indeterminate)?;
+            super::sync_dir_durable(&native).map_err(|_| NativeUnavailable::Indeterminate)?;
+            adapter.s3_recover_selected(&native, &chat)?;
+            adapter
+                .native_phase("acknowledgement")
+                .map_err(|_| NativeUnavailable::Indeterminate)?;
+            NativeCompoundAck::from_commit(&write.commit, &write.authority_bytes)
+        })
+        .await
+        .map_err(|_| NativeUnavailable::Indeterminate)?
+    }
+
+    async fn retire_native_projection_recovery(
+        &self,
+        info: &Info,
+        pending: xai_chat_state::persistence::native::NativePendingProtection,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let adapter = self.clone();
+        let info = info.clone();
+        tokio::task::spawn_blocking(move || {
+            let native = adapter.session_dir(&info).join("native_history");
+            let _locks = NativeDiskLocks::acquire(
+                &native,
+                &adapter.chat_file(&info),
+                "projection",
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(1000)),
+            )
+            .map_err(native_io_error)?;
+            adapter
+                .native_phase("retirement")
+                .map_err(native_io_error)?;
+            adapter.s3_cleanup(&native, Some(&pending))
+        })
+        .await
+        .map_err(|_| NativeUnavailable::Indeterminate)?
+    }
+
+    async fn persist_native_checkpoint_and_ack(
+        &self,
+        info: &Info,
+        write: xai_chat_state::persistence::native::NativeWrite,
+        pending: Option<xai_chat_state::persistence::native::NativePendingProtection>,
+    ) -> Result<
+        xai_chat_state::persistence::native::NativeAppendAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_chat_state::persistence::native::{
+            NativeAppendAck, digest, strict_history_jsonl, history_boundary,
+        };
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let native = self.session_dir(info).join("native_history");
+        let header = crate::session::workflow::store::read_bounded_nofollow(
+            &native.join("authority.json"),
+            NATIVE_CONTROL_BYTES,
+        )
+        .ok();
+        if !header
+            .as_ref()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+            .is_some_and(|header| header.get("record_kind").is_some())
+        {
+            return self.persist_native_generation_and_ack(info, write).await;
+        }
+        let pending = pending.ok_or(NativeUnavailable::Incomplete)?;
+        let adapter = self.clone();
+        let info = info.clone();
+        tokio::task::spawn_blocking(move || {
+            let native = adapter.session_dir(&info).join("native_history");
+            let chat = adapter.chat_file(&info);
+            let _locks = NativeDiskLocks::acquire(
+                &native,
+                &chat,
+                "native_checkpoint",
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(1000)),
+            )
+            .map_err(native_io_error)?;
+            write.checkpoint.validate()?;
+            let authority_bytes = crate::session::workflow::store::read_bounded_nofollow(
+                &native.join("authority.json"),
+                NATIVE_CONTROL_BYTES,
+            )
+            .map_err(|_| NativeUnavailable::InvalidReference)?;
+            let current: NativeCompoundCommit = serde_json::from_slice(&authority_bytes)
+                .map_err(|_| NativeUnavailable::InvalidReference)?;
+            current.validate()?;
+            let candidate_digest = digest(&write.checkpoint.bytes);
+            let matching_current_checkpoint_retry = current.operation
+                == NativeCompoundOperation::NativeCheckpoint
+                && current.transaction == write.transaction
+                && current.previous_generation == write.previous_generation
+                && current.checkpoint.digest == candidate_digest;
+            if matching_current_checkpoint_retry {
+                Self::s3_generation_sync(&native, &authority_bytes)?;
+                for (hash, bytes) in &write.checkpoint.blobs {
+                    adapter
+                        .s3_write_file(
+                            &native.join("blobs").join(format!("{hash}.json")),
+                            bytes,
+                            "source",
+                            true,
+                        )
+                        .map_err(native_io_error)?;
+                }
+                adapter
+                    .s3_write_file(
+                        &native
+                            .join("blobs")
+                            .join(format!("{candidate_digest}.json")),
+                        &write.checkpoint.bytes,
+                        "checkpoint",
+                        true,
+                    )
+                    .map_err(native_io_error)?;
+                adapter
+                    .s3_write_file(
+                        &native
+                            .join("blobs")
+                            .join(format!("{}.json", digest(&authority_bytes))),
+                        &authority_bytes,
+                        "commit",
+                        true,
+                    )
+                    .map_err(native_io_error)?;
+                super::sync_dir_durable(&native).map_err(native_io_error)?;
+                adapter.s3_recover_selected(&native, &chat)?;
+                return Ok(NativeAppendAck::Applied {
+                    generation: current.high_water,
+                    digest: candidate_digest,
+                });
+            }
+            if current.high_water != write.previous_generation
+                || current.transaction == write.transaction
+            {
+                return Err(NativeUnavailable::StaleHistory);
+            }
+            adapter.s3_recover_selected(&native, &chat)?;
+            let (_, previous) = Self::s3_generation_sync(&native, &authority_bytes)?;
+            write.checkpoint.extends(&previous)?;
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW);
+            }
+            let file = options.open(&chat).map_err(native_io_error)?;
+            adapter
+                .native_phase("before_history_file_sync")
+                .map_err(native_io_error)?;
+            super::sync_file_durable(&file).map_err(native_io_error)?;
+            adapter
+                .native_phase("before_history_directory_sync")
+                .map_err(native_io_error)?;
+            super::sync_parent_dir_durable(&chat).map_err(native_io_error)?;
+            let mirror = crate::session::workflow::store::read_bounded_nofollow(&chat, u64::MAX)
+                .map_err(native_io_error)?;
+            let history = strict_history_jsonl(&mirror)?;
+            write.checkpoint.matches_pending_history(&history)?;
+            let commit = NativeCompoundCommit {
+                record_kind: "native_compound_commit".into(),
+                schema_version: 3,
+                policy_revision: 1,
+                reader_floor: 3,
+                limits_revision: 2,
+                lineage: info.id.to_string(),
+                high_water: write.checkpoint.record.high_water,
+                checkpoint: NativeBlobRef {
+                    kind: "checkpoint".into(),
+                    byte_len: write.checkpoint.bytes.len() as u64,
+                    digest: candidate_digest.clone(),
+                },
+                transaction: write.transaction.clone(),
+                operation: NativeCompoundOperation::NativeCheckpoint,
+                previous_generation: write.previous_generation,
+                previous_checkpoint: write.checkpoint.record.previous_checkpoint.clone(),
+                previous_authority_digest: Some(digest(&authority_bytes)),
+                before: NativeHistoryBefore {
+                    boundary: history_boundary(&history)?,
+                    byte_len: mirror.len() as u64,
+                    raw_digest: digest(&mirror),
+                },
+                after_image: None,
+                projection: None,
+            };
+            commit.validate()?;
+            let bytes = encode_native(&commit, NATIVE_CONTROL_BYTES)?;
+            adapter.s3_cleanup(&native, Some(&pending))?;
+            Self::s3_reserve(&native, &write.checkpoint, None, None, &bytes)?;
+            adapter
+                .s3_write_file(
+                    &native.join("backup.json"),
+                    &previous.bytes,
+                    "backup",
+                    false,
+                )
+                .map_err(native_io_error)?;
+            for (hash, bytes) in &write.checkpoint.blobs {
+                adapter
+                    .s3_write_file(
+                        &native.join("blobs").join(format!("{hash}.json")),
+                        bytes,
+                        "source",
+                        true,
+                    )
+                    .map_err(native_io_error)?;
+            }
+            adapter
+                .s3_write_file(
+                    &native
+                        .join("blobs")
+                        .join(format!("{candidate_digest}.json")),
+                    &write.checkpoint.bytes,
+                    "checkpoint",
+                    true,
+                )
+                .map_err(native_io_error)?;
+            adapter
+                .s3_write_file(
+                    &native.join("staging.json"),
+                    &write.checkpoint.bytes,
+                    "staging",
+                    false,
+                )
+                .map_err(native_io_error)?;
+            adapter
+                .s3_write_file(
+                    &native
+                        .join("blobs")
+                        .join(format!("{}.json", digest(&bytes))),
+                    &bytes,
+                    "commit",
+                    true,
+                )
+                .map_err(native_io_error)?;
+            adapter
+                .s3_authority_rename(&native, &bytes)
+                .map_err(|_| NativeUnavailable::Indeterminate)?;
+            super::sync_dir_durable(&native).map_err(|_| NativeUnavailable::Indeterminate)?;
+            adapter.s3_recover_selected(&native, &chat)?;
+            Ok(NativeAppendAck::Applied {
+                generation: commit.high_water,
+                digest: candidate_digest,
+            })
         })
         .await
         .map_err(|_| NativeUnavailable::Indeterminate)?
@@ -1794,19 +2441,13 @@ impl StorageAdapter for JsonlStorageAdapter {
                 crate::util::grok_home::create_dir_all_owner_only,
             )
             .map_err(|_| NativeUnavailable::Persistence)?;
-            let mut options = OpenOptions::new();
-            options.read(true).write(true).create(true).truncate(false);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-            }
-            let lock = options
-                .open(directory.join("transaction.lock"))
-                .map_err(|_| NativeUnavailable::Persistence)?;
-            fs2::FileExt::try_lock_exclusive(&lock)
-                .map_err(|_| NativeUnavailable::Indeterminate)?;
-            let _lock = NativeTransactionLock(lock);
+            let _lock = NativeDiskLocks::acquire(
+                &directory,
+                &adapter.chat_file(&info),
+                "native_checkpoint",
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(1000)),
+            )
+            .map_err(native_io_error)?;
             let authority_path = directory.join("authority.json");
             let previous = Self::native_generation_sync(&directory)?;
             let candidate_digest = digest(&checkpoint.bytes);
@@ -1957,6 +2598,79 @@ impl StorageAdapter for JsonlStorageAdapter {
         .await
         .map_err(|_| NativeUnavailable::Indeterminate)?
     }
+    async fn guarded_legacy_replace(
+        &self,
+        info: &Info,
+        history: &[ConversationItem],
+    ) -> io::Result<()> {
+        let adapter = self.clone();
+        let info = info.clone();
+        let bytes =
+            xai_chat_state::persistence::native::history_jsonl(history).map_err(|reason| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("legacy history encode refused: {reason:?}"),
+                )
+            })?;
+        let count = history.len();
+        tokio::task::spawn_blocking(move || {
+            let session = adapter.create_session_dir_owner_only(&info)?;
+            let chat = adapter.chat_file(&info);
+            let _locks = HistoryIoLocks::acquire(&chat, "ordinary", None)?;
+            let native = session.join("native_history");
+            for name in [
+                "authority.json",
+                "authority.required",
+                "current.json",
+                "backup.json",
+            ] {
+                if std::fs::symlink_metadata(native.join(name)).is_ok() {
+                    return Ok(());
+                }
+            }
+            super::write_bytes_atomic(&chat, &bytes)?;
+            super::summary_write::apply_patch_locked(
+                &adapter.summary_file(&info),
+                &adapter.summary_lock_file(&info),
+                &super::summary_write::SummaryPatch {
+                    chat_messages: Some(super::summary_write::CounterOp::Set(count)),
+                    chat_format_version: Some(CHAT_FORMAT_VERSION),
+                    ..Default::default()
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    async fn replace_chat_history_for_strip(
+        &self,
+        info: &Info,
+        history: &[ConversationItem],
+    ) -> io::Result<()> {
+        let adapter = self.clone();
+        let info = info.clone();
+        let bytes =
+            xai_chat_state::persistence::native::history_jsonl(history).map_err(|reason| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("strip history encode refused: {reason:?}"),
+                )
+            })?;
+        let count = history.len();
+        tokio::task::spawn_blocking(move || {
+            adapter.replace_chat_history_for_strip_sync_with(
+                &info,
+                &bytes,
+                count,
+                super::write_bytes_atomic,
+            )
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
     async fn backup_chat_history_before_strip(&self, info: &Info) -> io::Result<()> {
         let path = self.chat_file(info);
         let backup = path.with_extension("jsonl.pre-strip");
@@ -2341,6 +3055,11 @@ impl JsonlStorageAdapter {
             }
             Err(_) => return Err(NativeUnavailable::InvalidReference),
         };
+        let header: serde_json::Value = serde_json::from_slice(&authority_bytes)
+            .map_err(|_| NativeUnavailable::InvalidReference)?;
+        if header.get("record_kind").is_some() {
+            return Self::s3_generation_sync(directory, &authority_bytes).map(Some);
+        }
         let authority: NativeGenerationAuthority = serde_json::from_slice(&authority_bytes)
             .map_err(|_| NativeUnavailable::InvalidReference)?;
         if !matches!(authority.schema_version, 1 | 2)
@@ -2389,6 +3108,8 @@ impl JsonlStorageAdapter {
         {
             return Err(NativeUnavailable::InvalidReference);
         }
+        let mut checkpoint = checkpoint;
+        checkpoint.authority_digest = Some(digest(&authority_bytes));
         Ok(Some((authority, checkpoint)))
     }
 
@@ -2627,3 +3348,1154 @@ fn parse_chat_history_lines(contents: &[u8], chat_format_version: u8) -> ChatHis
 mod tests;
 #[cfg(test)]
 mod worktree_heal_tests;
+
+struct NativeDiskLocks {
+    transaction: std::fs::File,
+    chat: std::fs::File,
+}
+
+impl Drop for NativeDiskLocks {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.chat);
+        let _ = fs2::FileExt::unlock(&self.transaction);
+    }
+}
+
+impl NativeDiskLocks {
+    fn acquire(
+        native: &Path,
+        chat: &Path,
+        operation: &'static str,
+        deadline: Option<std::time::Instant>,
+    ) -> io::Result<Self> {
+        fn open_lock(path: &Path) -> io::Result<std::fs::File> {
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            options.open(path)
+        }
+        fn lock(
+            file: &std::fs::File,
+            operation: &'static str,
+            name: &'static str,
+            deadline: Option<std::time::Instant>,
+        ) -> io::Result<()> {
+            if let Some(deadline) = deadline {
+                loop {
+                    if std::time::Instant::now() >= deadline {
+                        tracing::warn!(
+                            classification = "native_lock_busy",
+                            operation,
+                            lock = name,
+                            timeout_ms = 1000u64,
+                            "native history lock deadline expired"
+                        );
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "native_lock_busy"));
+                    }
+                    match fs2::FileExt::try_lock_exclusive(file) {
+                        Ok(()) => return Ok(()),
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                        Err(error) => return Err(error),
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        tracing::warn!(
+                            classification = "native_lock_busy",
+                            operation,
+                            lock = name,
+                            timeout_ms = 1000u64,
+                            "native history lock deadline expired"
+                        );
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "native_lock_busy"));
+                    }
+                    std::thread::sleep(
+                        std::time::Duration::from_millis(10)
+                            .min(deadline.saturating_duration_since(std::time::Instant::now())),
+                    );
+                }
+            }
+            fs2::FileExt::lock_exclusive(file)
+        }
+        super::create_dir_all_durable(native, crate::util::grok_home::create_dir_all_owner_only)?;
+        let transaction = open_lock(&native.join("transaction.lock"))?;
+        lock(&transaction, operation, "transaction", deadline)?;
+        let chat = match open_lock(&chat.with_extension("jsonl.lock")) {
+            Ok(chat) => chat,
+            Err(error) => {
+                let _ = fs2::FileExt::unlock(&transaction);
+                return Err(error);
+            }
+        };
+        if let Err(error) = lock(&chat, operation, "chat", deadline) {
+            let _ = fs2::FileExt::unlock(&transaction);
+            return Err(error);
+        }
+        Ok(Self { transaction, chat })
+    }
+}
+
+fn native_io_error(
+    error: io::Error,
+) -> xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+    if error.kind() == io::ErrorKind::TimedOut {
+        NativeUnavailable::Indeterminate
+    } else {
+        NativeUnavailable::Persistence
+    }
+}
+
+impl JsonlStorageAdapter {
+    fn native_phase(&self, phase: &'static str) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(probe) = &self.native_projection_probe {
+            probe(phase)?;
+        }
+        let _ = phase;
+        Ok(())
+    }
+
+    fn s3_write_file(
+        &self,
+        destination: &Path,
+        bytes: &[u8],
+        kind: &str,
+        immutable: bool,
+    ) -> io::Result<()> {
+        use xai_chat_state::persistence::native::digest;
+        if immutable && destination.exists() {
+            let actual = crate::session::workflow::store::read_bounded_nofollow(
+                destination,
+                bytes.len() as u64,
+            )?;
+            if actual != bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "native dependency bytes changed",
+                ));
+            }
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW);
+            }
+            let file = options.open(destination)?;
+            self.native_phase("dependency_file_sync")?;
+            super::sync_file_durable(&file)?;
+            self.native_phase("dependency_directory_sync")?;
+            return super::sync_parent_dir_durable(destination);
+        }
+        let parent = destination.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "native destination has no parent",
+            )
+        })?;
+        super::create_dir_all_durable(parent, crate::util::grok_home::create_dir_all_owner_only)?;
+        let name = format!(
+            ".s3-{kind}-{}-{}.tmp",
+            digest(bytes),
+            uuid::Uuid::new_v4().simple()
+        );
+        let temporary = parent.join(name);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(bytes)?;
+        self.native_phase("dependency_file_sync")?;
+        super::sync_file_durable(&file)?;
+        drop(file);
+        std::fs::rename(&temporary, destination)?;
+        self.native_phase("dependency_directory_sync")?;
+        super::sync_parent_dir_durable(destination)
+    }
+
+    fn s3_authority_rename(&self, native: &Path, bytes: &[u8]) -> io::Result<()> {
+        use xai_chat_state::persistence::native::digest;
+        let temporary = native.join(format!(
+            ".s3-authority-{}-{}.tmp",
+            digest(bytes),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(bytes)?;
+        super::sync_file_durable(&file)?;
+        drop(file);
+        std::fs::rename(temporary, native.join("authority.json"))
+    }
+
+    fn s3_read_reference(
+        native: &Path,
+        reference: &xai_grok_sampling_types::conversation::native_search_history::NativeBlobRef,
+    ) -> Result<
+        Vec<u8>,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_chat_state::persistence::native::digest;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        if reference.digest.len() != 64
+            || !reference
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let path = match reference.kind.as_str() {
+            "ordinary_history_jsonl" => native
+                .join("history")
+                .join(format!("{}.jsonl", reference.digest)),
+            "checkpoint"
+            | "projection_metadata"
+            | "compound_commit"
+            | "source"
+            | "active"
+            | "ledger"
+            | "raw_block"
+            | "partial_input_json"
+            | "producing_binding"
+            | "eligible_snapshot"
+            | "eligible_schema"
+            | "snapshot"
+            | "snapshot_body" => native
+                .join("blobs")
+                .join(format!("{}.json", reference.digest)),
+            _ => return Err(NativeUnavailable::InvalidReference),
+        };
+        let bytes =
+            match crate::session::workflow::store::read_bounded_nofollow(&path, reference.byte_len)
+            {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    Self::s3_recover_reference_temp(native, reference, &path)?
+                }
+                Err(_) => return Err(NativeUnavailable::InvalidReference),
+            };
+        if bytes.len() as u64 != reference.byte_len || digest(&bytes) != reference.digest {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        Ok(bytes)
+    }
+}
+
+impl JsonlStorageAdapter {
+    fn s3_generation_sync(
+        native: &Path,
+        authority_bytes: &[u8],
+    ) -> Result<
+        (
+            xai_grok_sampling_types::conversation::native_search_history::NativeGenerationAuthority,
+            xai_chat_state::persistence::native::NativeCheckpoint,
+        ),
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_chat_state::persistence::native::{NativeCheckpoint, NativeCompoundProofInput, digest};
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let commit: NativeCompoundCommit = serde_json::from_slice(authority_bytes)
+            .map_err(|_| NativeUnavailable::InvalidReference)?;
+        commit.validate()?;
+        let reference = NativeBlobRef {
+            kind: "compound_commit".into(),
+            byte_len: authority_bytes.len() as u64,
+            digest: digest(authority_bytes),
+        };
+        if Self::s3_read_reference(native, &reference)? != authority_bytes {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let checkpoint_bytes = Self::s3_read_reference(native, &commit.checkpoint)?;
+        let mut checkpoint = if commit.operation == NativeCompoundOperation::Projection {
+            let metadata = Self::s3_read_reference(
+                native,
+                commit
+                    .projection
+                    .as_ref()
+                    .ok_or(NativeUnavailable::InvalidReference)?,
+            )?;
+            let image = Self::s3_read_reference(
+                native,
+                &commit
+                    .after_image
+                    .as_ref()
+                    .ok_or(NativeUnavailable::InvalidReference)?
+                    .blob,
+            )?;
+            NativeCheckpoint::decode_with_compound_proof(
+                checkpoint_bytes,
+                NativeCompoundProofInput {
+                    commit: commit.clone(),
+                    authority_bytes: authority_bytes.into(),
+                    metadata_bytes: metadata.into(),
+                    image_bytes: image.into(),
+                },
+                |reference| Self::s3_read_reference(native, reference),
+            )?
+        } else {
+            NativeCheckpoint::decode(checkpoint_bytes, |reference| {
+                Self::s3_read_reference(native, reference)
+            })?
+        };
+        if checkpoint.record.lineage.id != commit.lineage
+            || checkpoint.record.generation != commit.high_water
+            || checkpoint.record.high_water != commit.high_water
+            || checkpoint.record.previous_checkpoint != commit.previous_checkpoint
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        checkpoint.authority_digest = Some(digest(authority_bytes));
+        checkpoint.compound_lineage = true;
+        Ok((
+            NativeGenerationAuthority {
+                schema_version: checkpoint.record.schema_version,
+                lineage: commit.lineage,
+                high_water: commit.high_water,
+                checkpoint: commit.checkpoint,
+                transaction: commit.transaction,
+            },
+            checkpoint,
+        ))
+    }
+
+    fn s3_recover_selected(
+        &self,
+        native: &Path,
+        chat: &Path,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_chat_state::persistence::native::{digest, strict_history_jsonl};
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let authority_bytes = match crate::session::workflow::store::read_bounded_nofollow(
+            &native.join("authority.json"),
+            NATIVE_CONTROL_BYTES,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(NativeUnavailable::InvalidReference),
+        };
+        let header: serde_json::Value = serde_json::from_slice(&authority_bytes)
+            .map_err(|_| NativeUnavailable::InvalidReference)?;
+        if header.get("record_kind").is_none() {
+            return Ok(());
+        }
+        let commit: NativeCompoundCommit = serde_json::from_slice(&authority_bytes)
+            .map_err(|_| NativeUnavailable::InvalidReference)?;
+        commit.validate()?;
+        let (_, checkpoint) = Self::s3_generation_sync(native, &authority_bytes)?;
+        let authority_digest = digest(&authority_bytes);
+        let (base_digest, base_len) = commit.after_image.as_ref().map_or(
+            (commit.before.raw_digest.clone(), commit.before.byte_len),
+            |image| (image.blob.digest.clone(), image.blob.byte_len),
+        );
+        let marker = match crate::session::workflow::store::read_bounded_nofollow(
+            &native.join("materialized.json"),
+            NATIVE_CONTROL_BYTES,
+        ) {
+            Ok(bytes) => Some(
+                serde_json::from_slice::<NativeMaterialized>(&bytes)
+                    .map_err(|_| NativeUnavailable::InvalidReference)?,
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(_) => return Err(NativeUnavailable::InvalidReference),
+        };
+        let matching_materialized_marker = marker.as_ref().is_some_and(|marker| {
+            marker.format_version == 1
+                && marker.authority_digest == authority_digest
+                && marker.history_digest == base_digest
+                && marker.history_byte_len == base_len
+        });
+        if matching_materialized_marker {
+            return self.s3_finish_materialized(native, chat, &checkpoint);
+        }
+        if marker.as_ref().is_some_and(|marker| {
+            marker.format_version != 1
+                || Some(marker.authority_digest.as_str())
+                    != commit.previous_authority_digest.as_deref()
+        }) {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let mut mirror =
+            match crate::session::workflow::store::read_bounded_nofollow(chat, u64::MAX) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+                Err(_) => return Err(NativeUnavailable::Persistence),
+            };
+        let mirror_digest = digest(&mirror);
+        if commit.operation == NativeCompoundOperation::Projection {
+            if mirror_digest == commit.before.raw_digest
+                && mirror.len() as u64 == commit.before.byte_len
+            {
+                let image = commit
+                    .after_image
+                    .as_ref()
+                    .ok_or(NativeUnavailable::InvalidReference)?;
+                mirror = Self::s3_read_reference(native, &image.blob)?;
+                self.native_phase("materialization")
+                    .map_err(native_io_error)?;
+                self.s3_write_file(chat, &mirror, "mirror", false)
+                    .map_err(native_io_error)?;
+            } else if mirror_digest != base_digest || mirror.len() as u64 != base_len {
+                tracing::warn!(
+                    classification = "operator_repair_required",
+                    "selected native history has a divergent ordinary mirror"
+                );
+                return Err(NativeUnavailable::Indeterminate);
+            }
+        } else if mirror_digest != base_digest || mirror.len() as u64 != base_len {
+            tracing::warn!(
+                classification = "operator_repair_required",
+                "native checkpoint requires its exact ordinary mirror"
+            );
+            return Err(NativeUnavailable::Indeterminate);
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .open(chat)
+            .map_err(native_io_error)?;
+        super::sync_file_durable(&file)
+            .and_then(|()| super::sync_parent_dir_durable(chat))
+            .map_err(native_io_error)?;
+        let marker = NativeMaterialized {
+            format_version: 1,
+            authority_digest,
+            history_digest: base_digest,
+            history_byte_len: base_len,
+        };
+        self.native_phase("materialized_marker")
+            .map_err(native_io_error)?;
+        self.s3_write_file(
+            &native.join("materialized.json"),
+            &encode_native(&marker, NATIVE_CONTROL_BYTES)?,
+            "materialized",
+            false,
+        )
+        .map_err(native_io_error)?;
+        self.s3_finish_materialized(native, chat, &checkpoint)
+    }
+}
+
+impl JsonlStorageAdapter {
+    fn s3_temporary(name: &str, location: &str) -> Option<(String, String)> {
+        let value = name.strip_prefix(".s3-")?.strip_suffix(".tmp")?;
+        let (left, nonce) = value.rsplit_once('-')?;
+        let (kind, digest) = left.rsplit_once('-')?;
+        let hex = |value: &str, length: usize| {
+            value.len() == length
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        if !hex(digest, 64) || !hex(nonce, 32) {
+            return None;
+        }
+        let allowed = match location {
+            "blobs" => matches!(
+                kind,
+                "source" | "active" | "ledger" | "snapshot" | "checkpoint" | "commit" | "metadata"
+            ),
+            "history" => kind == "image",
+            "native" => matches!(
+                kind,
+                "authority" | "materialized" | "current" | "staging" | "backup" | "required"
+            ),
+            "session" => kind == "mirror",
+            _ => false,
+        };
+        allowed.then(|| (kind.into(), digest.into()))
+    }
+
+    fn s3_cleanup(
+        &self,
+        native: &Path,
+        pending: Option<&xai_chat_state::persistence::native::NativePendingProtection>,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_chat_state::persistence::native::digest;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let pending = pending.ok_or(NativeUnavailable::Incomplete)?;
+        let mut roots = pending.dependencies.clone();
+        if let Ok(bytes) = crate::session::workflow::store::read_bounded_nofollow(
+            &native.join("authority.json"),
+            NATIVE_CONTROL_BYTES,
+        ) {
+            roots.insert(digest(&bytes));
+            let header: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| NativeUnavailable::InvalidReference)?;
+            if header.get("record_kind").is_some() {
+                let commit: NativeCompoundCommit = serde_json::from_slice(&bytes)
+                    .map_err(|_| NativeUnavailable::InvalidReference)?;
+                commit.validate()?;
+                let (_, selected) = Self::s3_generation_sync(native, &bytes)?;
+                roots.extend(selected.blobs.keys().cloned());
+                roots.insert(commit.checkpoint.digest);
+                if let Some(image) = commit.after_image {
+                    roots.insert(image.blob.digest);
+                }
+                if let Some(metadata) = commit.projection {
+                    roots.insert(metadata.digest);
+                }
+            } else if let Some((_, selected)) = Self::native_generation_sync(native)? {
+                roots.extend(selected.blobs.keys().cloned());
+            }
+        }
+        let session = native.parent().ok_or(NativeUnavailable::InvalidReference)?;
+        for (directory, location) in [
+            (native.to_path_buf(), "native"),
+            (native.join("blobs"), "blobs"),
+            (native.join("history"), "history"),
+            (session.to_path_buf(), "session"),
+        ] {
+            let entries = match std::fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(NativeUnavailable::Persistence),
+            };
+            let mut removed = false;
+            for entry in entries {
+                let entry = entry.map_err(|_| NativeUnavailable::Persistence)?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let metadata = std::fs::symlink_metadata(entry.path())
+                    .map_err(|_| NativeUnavailable::Persistence)?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    continue;
+                }
+                let temporary = Self::s3_temporary(&name, location);
+                let canonical = if location == "history" {
+                    name.strip_suffix(".jsonl")
+                        .filter(|hash| {
+                            hash.len() == 64
+                                && hash.bytes().all(|byte| {
+                                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                                })
+                        })
+                        .map(str::to_owned)
+                } else if location == "blobs" && name.ends_with(".json") {
+                    let bytes = crate::session::workflow::store::read_bounded_nofollow(
+                        &entry.path(),
+                        metadata.len(),
+                    )
+                    .map_err(|_| NativeUnavailable::Persistence)?;
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+                    let kind = value.get("record_kind").and_then(serde_json::Value::as_str);
+                    if matches!(
+                        kind,
+                        Some("native_compound_commit" | "native_projection_metadata")
+                    ) {
+                        let hash = name.trim_end_matches(".json");
+                        (digest(&bytes) == hash).then(|| hash.to_owned())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let candidate = temporary
+                    .as_ref()
+                    .map(|(_, hash)| hash)
+                    .or(canonical.as_ref());
+                if let Some(hash) = candidate {
+                    if roots.contains(hash) || pending.temporaries.contains(&name) {
+                        continue;
+                    }
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt;
+                        if metadata.uid() != unsafe { libc::geteuid() }
+                            || metadata.mode() & 0o077 != 0
+                        {
+                            continue;
+                        }
+                    }
+                    std::fs::remove_file(entry.path())
+                        .map_err(|_| NativeUnavailable::Persistence)?;
+                    removed = true;
+                }
+            }
+            if removed {
+                super::sync_dir_durable(&directory).map_err(native_io_error)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl JsonlStorageAdapter {
+    fn s3_reserve(
+        native: &Path,
+        checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint,
+        metadata: Option<&[u8]>,
+        image: Option<&[u8]>,
+        authority: &[u8],
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_chat_state::persistence::native::digest;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let mut role = NativeRoleReservation::default();
+        let mut control = 0u64;
+        let mut images = 0u64;
+        let mut present = std::collections::BTreeSet::new();
+        let mut selected_image = 0u64;
+        let mut selected_metadata = 0u64;
+        let mut selected_image_digest = None;
+        let mut selected_metadata_digest = None;
+        if let Ok(bytes) = crate::session::workflow::store::read_bounded_nofollow(
+            &native.join("authority.json"),
+            NATIVE_CONTROL_BYTES,
+        ) {
+            if let Ok(commit) = serde_json::from_slice::<NativeCompoundCommit>(&bytes) {
+                commit.validate()?;
+                if let Some(image) = commit.after_image {
+                    selected_image = image.blob.byte_len;
+                    selected_image_digest = Some(image.blob.digest);
+                }
+                if let Some(metadata) = commit.projection {
+                    selected_metadata = metadata.byte_len;
+                    selected_metadata_digest = Some(metadata.digest);
+                }
+            }
+        }
+        let charge = |kind: &str,
+                      bytes: u64,
+                      role: &mut NativeRoleReservation,
+                      control: &mut u64|
+         -> Result<(), NativeUnavailable> {
+            match kind {
+                "active" => {
+                    role.active_bytes =
+                        NativeResource::ActiveBytes.admit(role.active_bytes, bytes)?;
+                }
+                "ledger" | "projection_metadata" => {
+                    role.ledger_bytes =
+                        NativeResource::LedgerBytes.admit(role.ledger_bytes, bytes)?;
+                }
+                "snapshot" | "snapshot_body" => {
+                    role.snapshot_bytes =
+                        NativeResource::SnapshotBytes.admit(role.snapshot_bytes, bytes)?;
+                }
+                "checkpoint" | "compound_commit" | "control" => {
+                    *control = NativeResource::ControlBytes.admit(*control, bytes)?;
+                }
+                _ => {
+                    role.source_bytes =
+                        NativeResource::SourceBytes.admit(role.source_bytes, bytes)?;
+                }
+            }
+            Ok(())
+        };
+        for entry in std::fs::read_dir(native).map_err(|_| NativeUnavailable::Persistence)? {
+            let entry = entry.map_err(|_| NativeUnavailable::Persistence)?;
+            let data = std::fs::symlink_metadata(entry.path())
+                .map_err(|_| NativeUnavailable::Persistence)?;
+            if data.file_type().is_symlink() {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            if data.is_dir() && entry.file_name() == "history" {
+                for image in
+                    std::fs::read_dir(entry.path()).map_err(|_| NativeUnavailable::Persistence)?
+                {
+                    let image = image.map_err(|_| NativeUnavailable::Persistence)?;
+                    let data = std::fs::symlink_metadata(image.path())
+                        .map_err(|_| NativeUnavailable::Persistence)?;
+                    if !data.is_file() || data.file_type().is_symlink() {
+                        return Err(NativeUnavailable::InvalidReference);
+                    }
+                    images = images
+                        .checked_add(data.len())
+                        .ok_or(NativeUnavailable::Capacity)?;
+                    present.insert(
+                        image
+                            .file_name()
+                            .to_string_lossy()
+                            .trim_end_matches(".jsonl")
+                            .to_owned(),
+                    );
+                }
+            } else if data.is_dir() && entry.file_name() == "blobs" {
+                for blob in
+                    std::fs::read_dir(entry.path()).map_err(|_| NativeUnavailable::Persistence)?
+                {
+                    let blob = blob.map_err(|_| NativeUnavailable::Persistence)?;
+                    let data = std::fs::symlink_metadata(blob.path())
+                        .map_err(|_| NativeUnavailable::Persistence)?;
+                    if !data.is_file() || data.file_type().is_symlink() {
+                        return Err(NativeUnavailable::InvalidReference);
+                    }
+                    let name = blob.file_name().to_string_lossy().into_owned();
+                    let hash = name.trim_end_matches(".json").to_owned();
+                    let temporary = Self::s3_temporary(&name, "blobs");
+                    let kind = if let Some((kind, _)) = &temporary {
+                        match kind.as_str() {
+                            "active" => "active",
+                            "ledger" => "ledger",
+                            "snapshot" => "snapshot",
+                            "checkpoint" => "checkpoint",
+                            "commit" => "compound_commit",
+                            "metadata" => "projection_metadata",
+                            "source" => "source",
+                            _ => return Err(NativeUnavailable::InvalidReference),
+                        }
+                    } else if hash == digest(&checkpoint.bytes) {
+                        "checkpoint"
+                    } else if let Some(kind) = checkpoint.blob_kinds.get(&hash) {
+                        kind.as_str()
+                    } else {
+                        let bytes = crate::session::workflow::store::read_bounded_nofollow(
+                            &blob.path(),
+                            data.len(),
+                        )
+                        .map_err(|_| NativeUnavailable::Persistence)?;
+                        let value: serde_json::Value =
+                            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+                        match value.get("record_kind").and_then(serde_json::Value::as_str) {
+                            Some("native_projection_metadata") => "projection_metadata",
+                            Some("native_compound_commit") => "compound_commit",
+                            _ => "orphan",
+                        }
+                    };
+                    charge(kind, data.len(), &mut role, &mut control)?;
+                    present.insert(hash);
+                }
+            } else if data.is_file() {
+                charge("control", data.len(), &mut role, &mut control)?;
+            } else {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+        }
+        for (hash, bytes) in &checkpoint.blobs {
+            if !present.contains(hash) {
+                charge(
+                    checkpoint
+                        .blob_kinds
+                        .get(hash)
+                        .ok_or(NativeUnavailable::InvalidReference)?,
+                    bytes.len() as u64,
+                    &mut role,
+                    &mut control,
+                )?;
+            }
+        }
+        if let Some(metadata) = metadata {
+            if !present.contains(&digest(metadata)) {
+                charge(
+                    "projection_metadata",
+                    metadata.len() as u64,
+                    &mut role,
+                    &mut control,
+                )?;
+            }
+        }
+        let new_image = image.map_or(0, |image| image.len() as u64);
+        if let Some(image) = image {
+            if !present.contains(&digest(image)) {
+                images = images
+                    .checked_add(image.len() as u64)
+                    .ok_or(NativeUnavailable::Capacity)?;
+            }
+        }
+        control = NativeResource::ControlBytes.admit(
+            control,
+            (checkpoint.bytes.len() as u64)
+                .checked_mul(4)
+                .ok_or(NativeUnavailable::Capacity)?,
+        )?;
+        control = NativeResource::ControlBytes.admit(
+            control,
+            (authority.len() as u64)
+                .checked_mul(2)
+                .ok_or(NativeUnavailable::Capacity)?,
+        )?;
+        let terminal_active = *checkpoint
+            .record
+            .capacity
+            .get("terminal_active_bytes")
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        let terminal_ledger = *checkpoint
+            .record
+            .capacity
+            .get("terminal_ledger_bytes")
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        role.active_bytes =
+            NativeResource::ActiveBytes.admit(role.active_bytes, terminal_active)?;
+        role.ledger_bytes =
+            NativeResource::LedgerBytes.admit(role.ledger_bytes, terminal_ledger)?;
+        let bytes = role.bytes()?;
+        let current = NativeResource::CurrentBytes.admit(bytes, images)?;
+        let mut mirror_temporaries = 0u64;
+        let session = native.parent().ok_or(NativeUnavailable::InvalidReference)?;
+        for entry in std::fs::read_dir(session).map_err(|_| NativeUnavailable::Persistence)? {
+            let entry = entry.map_err(|_| NativeUnavailable::Persistence)?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if Self::s3_temporary(&name, "session").is_some() {
+                let metadata = std::fs::symlink_metadata(entry.path())
+                    .map_err(|_| NativeUnavailable::Persistence)?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+                mirror_temporaries = mirror_temporaries
+                    .checked_add(metadata.len())
+                    .ok_or(NativeUnavailable::Capacity)?;
+            }
+        }
+        let staging = NativeResource::StagingBytes.admit(
+            bytes,
+            new_image
+                .checked_add(mirror_temporaries)
+                .ok_or(NativeUnavailable::Capacity)?,
+        )?;
+        let backup = NativeResource::BackupBytes.admit(bytes, selected_image)?;
+        let total = current
+            .checked_add(staging)
+            .and_then(|bytes| bytes.checked_add(backup))
+            .and_then(|bytes| bytes.checked_add(control))
+            .ok_or(NativeUnavailable::Capacity)?;
+        NativeResource::LineageBytes.admit(total, 0)?;
+        let _ = (
+            selected_metadata,
+            selected_image_digest,
+            selected_metadata_digest,
+        );
+        Ok(())
+    }
+}
+
+impl JsonlStorageAdapter {
+    fn s3_recover_reference_temp(
+        native: &Path,
+        reference: &xai_grok_sampling_types::conversation::native_search_history::NativeBlobRef,
+        destination: &Path,
+    ) -> Result<
+        Vec<u8>,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_chat_state::persistence::native::digest;
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let (kind, location) = match reference.kind.as_str() {
+            "ordinary_history_jsonl" => ("image", "history"),
+            "projection_metadata" => ("metadata", "blobs"),
+            "compound_commit" => ("commit", "blobs"),
+            "checkpoint" => ("checkpoint", "blobs"),
+            "active" => ("active", "blobs"),
+            "ledger" => ("ledger", "blobs"),
+            "snapshot" | "snapshot_body" => ("snapshot", "blobs"),
+            "source" | "raw_block" | "partial_input_json" | "producing_binding"
+            | "eligible_snapshot" | "eligible_schema" => ("source", "blobs"),
+            _ => return Err(NativeUnavailable::InvalidReference),
+        };
+        let directory = destination
+            .parent()
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        let entries =
+            std::fs::read_dir(directory).map_err(|_| NativeUnavailable::InvalidReference)?;
+        for entry in entries {
+            let entry = entry.map_err(|_| NativeUnavailable::InvalidReference)?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if Self::s3_temporary(&name, location) != Some((kind.into(), reference.digest.clone()))
+            {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(entry.path())
+                .map_err(|_| NativeUnavailable::InvalidReference)?;
+            if !metadata.is_file()
+                || metadata.file_type().is_symlink()
+                || metadata.len() != reference.byte_len
+            {
+                continue;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+                    continue;
+                }
+            }
+            let bytes = crate::session::workflow::store::read_bounded_nofollow(
+                &entry.path(),
+                reference.byte_len,
+            )
+            .map_err(|_| NativeUnavailable::InvalidReference)?;
+            if digest(&bytes) != reference.digest {
+                continue;
+            }
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW);
+            }
+            let file = options.open(entry.path()).map_err(native_io_error)?;
+            super::sync_file_durable(&file).map_err(native_io_error)?;
+            std::fs::rename(entry.path(), destination).map_err(native_io_error)?;
+            super::sync_parent_dir_durable(destination).map_err(native_io_error)?;
+            let _ = native;
+            return Ok(bytes);
+        }
+        Err(NativeUnavailable::InvalidReference)
+    }
+
+    fn s3_finish_materialized(
+        &self,
+        native: &Path,
+        chat: &Path,
+        checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_chat_state::persistence::native::strict_history_jsonl;
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let mirror = crate::session::workflow::store::read_bounded_nofollow(chat, u64::MAX)
+            .map_err(native_io_error)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options.open(chat).map_err(native_io_error)?;
+        super::sync_file_durable(&file)
+            .and_then(|()| super::sync_parent_dir_durable(chat))
+            .map_err(native_io_error)?;
+        self.native_phase("current_checkpoint_mirror")
+            .map_err(native_io_error)?;
+        self.s3_write_file(
+            &native.join("current.json"),
+            &checkpoint.bytes,
+            "current",
+            false,
+        )
+        .map_err(native_io_error)?;
+        self.native_phase("required_marker")
+            .map_err(native_io_error)?;
+        Self::ensure_native_authority_marker(native)?;
+        let history = strict_history_jsonl(&mirror)?;
+        let session = native.parent().ok_or(NativeUnavailable::InvalidReference)?;
+        self.native_phase("summary").map_err(native_io_error)?;
+        super::summary_write::apply_patch_locked(
+            &session.join(super::SUMMARY_FILE),
+            &session.join(format!("{}.lock", super::SUMMARY_FILE)),
+            &super::summary_write::SummaryPatch {
+                chat_messages: Some(super::summary_write::CounterOp::Set(history.len())),
+                chat_format_version: Some(CHAT_FORMAT_VERSION),
+                ..Default::default()
+            },
+        )
+        .map_err(native_io_error)?;
+        Ok(())
+    }
+
+    fn s3_before_ordinary(
+        &self,
+        native: &Path,
+        chat: &Path,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_chat_state::persistence::native::digest;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let bytes = match crate::session::workflow::store::read_bounded_nofollow(
+            &native.join("authority.json"),
+            NATIVE_CONTROL_BYTES,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(NativeUnavailable::InvalidReference),
+        };
+        let header: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| NativeUnavailable::InvalidReference)?;
+        if header.get("record_kind").is_none() {
+            return Ok(());
+        }
+        let commit: NativeCompoundCommit =
+            serde_json::from_slice(&bytes).map_err(|_| NativeUnavailable::InvalidReference)?;
+        commit.validate()?;
+        let marker = crate::session::workflow::store::read_bounded_nofollow(
+            &native.join("materialized.json"),
+            NATIVE_CONTROL_BYTES,
+        )
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<NativeMaterialized>(&bytes).ok());
+        let (base_digest, base_len) = commit.after_image.as_ref().map_or(
+            (commit.before.raw_digest.as_str(), commit.before.byte_len),
+            |image| (image.blob.digest.as_str(), image.blob.byte_len),
+        );
+        if marker.as_ref().is_some_and(|marker| {
+            marker.format_version == 1
+                && marker.authority_digest == digest(&bytes)
+                && marker.history_digest == base_digest
+                && marker.history_byte_len == base_len
+        }) && std::fs::read(native.join("authority.required"))
+            .ok()
+            .as_deref()
+            == Some(&b"1"[..])
+        {
+            return Ok(());
+        }
+        self.s3_recover_selected(native, chat)
+    }
+}
+
+enum HistoryIoLocks {
+    Generic(std::fs::File),
+    Native(NativeDiskLocks),
+}
+
+impl HistoryIoLocks {
+    fn acquire(
+        path: &Path,
+        operation: &'static str,
+        deadline: Option<std::time::Instant>,
+    ) -> io::Result<Self> {
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "history path has no parent")
+        })?;
+        let native = parent.join("native_history");
+        let canonical =
+            path.file_name().and_then(|name| name.to_str()) == Some("chat_history.jsonl");
+        if canonical && native.exists() {
+            let locks = NativeDiskLocks::acquire(&native, path, operation, deadline)?;
+            let adapter = JsonlStorageAdapter::with_explicit_session_dir(parent.to_path_buf());
+            let recovered = if operation == "ordinary" {
+                adapter.s3_before_ordinary(&native, path)
+            } else {
+                adapter.s3_recover_selected(&native, path)
+            };
+            recovered.map_err(|reason| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("native history recovery refused: {reason:?}"),
+                )
+            })?;
+            return Ok(Self::Native(locks));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let lock = options.open(path.with_extension("jsonl.lock"))?;
+        if let Some(deadline) = deadline {
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    tracing::warn!(
+                        classification = "native_lock_busy",
+                        operation,
+                        lock = "chat",
+                        timeout_ms = 1000u64,
+                        "history reader lock deadline expired"
+                    );
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "native_lock_busy"));
+                }
+                match fs2::FileExt::try_lock_exclusive(&lock) {
+                    Ok(()) => break,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(
+                        std::time::Duration::from_millis(10)
+                            .min(deadline.saturating_duration_since(std::time::Instant::now())),
+                    ),
+                    Err(error) => return Err(error),
+                }
+            }
+        } else {
+            fs2::FileExt::lock_exclusive(&lock)?;
+        }
+        if canonical && native.exists() {
+            fs2::FileExt::unlock(&lock)?;
+            let locks = NativeDiskLocks::acquire(&native, path, operation, deadline)?;
+            let adapter = JsonlStorageAdapter::with_explicit_session_dir(parent.to_path_buf());
+            let recovered = if operation == "ordinary" {
+                adapter.s3_before_ordinary(&native, path)
+            } else {
+                adapter.s3_recover_selected(&native, path)
+            };
+            recovered.map_err(|reason| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("native history recovery refused: {reason:?}"),
+                )
+            })?;
+            Ok(Self::Native(locks))
+        } else {
+            Ok(Self::Generic(lock))
+        }
+    }
+    fn unlock(&self) -> io::Result<()> {
+        match self {
+            Self::Generic(lock) => fs2::FileExt::unlock(lock),
+            Self::Native(locks) => {
+                fs2::FileExt::unlock(&locks.chat)?;
+                fs2::FileExt::unlock(&locks.transaction)
+            }
+        }
+    }
+}
+
+impl Drop for HistoryIoLocks {
+    fn drop(&mut self) {
+        let _ = self.unlock();
+    }
+}
+
+pub(super) struct NonNativeHistoryGuard {
+    _locks: HistoryIoLocks,
+}
+
+pub(super) fn guard_non_native_history_target(chat: &Path) -> io::Result<NonNativeHistoryGuard> {
+    fn reject(native: &Path) -> io::Result<()> {
+        for name in [
+            "authority.json",
+            "authority.required",
+            "current.json",
+            "backup.json",
+        ] {
+            if std::fs::symlink_metadata(native.join(name)).is_ok() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "native history authority forbids legacy copy/rebuild",
+                ));
+            }
+        }
+        Ok(())
+    }
+    let session = chat
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "chat target has no parent"))?;
+    let native = session.join("native_history");
+    reject(&native)?;
+    let locks = if native.exists() {
+        HistoryIoLocks::Native(NativeDiskLocks::acquire(&native, chat, "ordinary", None)?)
+    } else {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let lock = options.open(chat.with_extension("jsonl.lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        if native.exists() {
+            fs2::FileExt::unlock(&lock)?;
+            HistoryIoLocks::Native(NativeDiskLocks::acquire(&native, chat, "ordinary", None)?)
+        } else {
+            HistoryIoLocks::Generic(lock)
+        }
+    };
+    reject(&native)?;
+    Ok(NonNativeHistoryGuard { _locks: locks })
+}

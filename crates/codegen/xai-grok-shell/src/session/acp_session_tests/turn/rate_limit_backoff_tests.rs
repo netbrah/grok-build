@@ -157,7 +157,9 @@ pub(super) async fn bound_conversation_request(
     actor
         .chat_state_handle
         .build_request_with_binding(
-            xai_chat_state::NativeToolCandidates::builtins_only(Vec::new()),
+            u8_with_entry(xai_chat_state::NativeToolCandidates::builtins_only(
+                Vec::new(),
+            )),
             None,
             false,
             None,
@@ -628,7 +630,9 @@ async fn bound_submit_and_paced_resubmit_stay_on_built_row() {
                     let (request, binding) = actor
                         .chat_state_handle
                         .build_request_with_binding(
-                            xai_chat_state::NativeToolCandidates::builtins_only(tools.clone()),
+                            u8_with_entry(xai_chat_state::NativeToolCandidates::builtins_only(
+                                tools.clone(),
+                            )),
                             None,
                             false,
                             None,
@@ -735,4 +739,21 @@ async fn bound_submit_and_paced_resubmit_stay_on_built_row() {
             }
         })
         .await;
+}
+
+/// waj2-U8 transport precondition: a bound build now needs an explicitly
+/// captured entry. These fixtures drive the legacy-equivalent route, so they
+/// attach Inactive/SendOnly; every assertion stays as written.
+fn u8_inactive_entry() -> xai_chat_state::NativeHistoryEntry {
+    xai_chat_state::NativeHistoryEntry::send_only(
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive,
+    )
+}
+
+fn u8_with_entry(
+    candidates: xai_chat_state::NativeToolCandidates,
+) -> xai_chat_state::NativeToolCandidates {
+    candidates
+        .with_history_entry(u8_inactive_entry())
+        .expect("freshly built candidates carry no entry")
 }

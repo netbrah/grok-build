@@ -310,6 +310,8 @@ pub(crate) mod chat_rebuild {
     pub(crate) fn rebuild_chat_history(dir: &Path) -> io::Result<RebuildOutcome> {
         use std::io::{Seek, Write};
 
+        let _native_guard =
+            super::jsonl::guard_non_native_history_target(&dir.join(CHAT_HISTORY_FILE))?;
         let updates_path = dir.join(UPDATES_FILE);
         let Some(iter) = UpdatesIterator::open(&updates_path)? else {
             // No stream at all: nothing was rebuilt and nothing was lost.
@@ -1497,6 +1499,24 @@ pub trait StorageAdapter: Send + Sync {
     async fn merge_rewind_points_from(&self, info: &Info, target_index: usize) -> io::Result<()>;
 
     /// Replace the entire chat history (used for compaction and rewind)
+    async fn guarded_legacy_replace(
+        &self,
+        _info: &Info,
+        _history: &[ConversationItem],
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "storage cannot guard a legacy snapshot",
+        ))
+    }
+    async fn replace_chat_history_for_strip(
+        &self,
+        info: &Info,
+        history: &[ConversationItem],
+    ) -> io::Result<()> {
+        self.backup_chat_history_before_strip(info).await?;
+        self.replace_chat_history(info, history).await
+    }
     async fn replace_chat_history(
         &self,
         info: &Info,
@@ -1513,6 +1533,36 @@ pub trait StorageAdapter: Send + Sync {
         xai_chat_state::persistence::native::NativeRead,
         xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
     >;
+    async fn persist_native_projection_and_ack(
+        &self,
+        _info: &Info,
+        _write: xai_chat_state::persistence::native::NativeProjectionWrite,
+    ) -> Result<
+        xai_grok_sampling_types::conversation::native_search_history::NativeCompoundAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence)
+    }
+
+    async fn retire_native_projection_recovery(
+        &self,
+        _info: &Info,
+        _pending: xai_chat_state::persistence::native::NativePendingProtection,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence)
+    }
+    async fn persist_native_checkpoint_and_ack(
+        &self,
+        info: &Info,
+        write: xai_chat_state::persistence::native::NativeWrite,
+        _pending: Option<xai_chat_state::persistence::native::NativePendingProtection>,
+    ) -> Result<
+        xai_chat_state::persistence::native::NativeAppendAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.persist_native_generation_and_ack(info, write).await
+    }
     async fn persist_native_generation_and_ack(
         &self,
         info: &Info,
@@ -1613,8 +1663,7 @@ pub(crate) async fn strip_rewrite_gated(
     info: &Info,
     messages: &[ConversationItem],
 ) -> io::Result<()> {
-    storage.backup_chat_history_before_strip(info).await?;
-    storage.replace_chat_history(info, messages).await
+    storage.replace_chat_history_for_strip(info, messages).await
 }
 
 pub use jsonl::JsonlStorageAdapter;

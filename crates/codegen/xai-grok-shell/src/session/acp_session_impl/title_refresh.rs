@@ -131,18 +131,27 @@ impl SessionActor {
         // Deliberately tool-free: unlike the turn summary, the request carries no tools
         // The model then can't spend the call on a tool invocation that would leave empty text and burn the checkpoint
         // (The conversation prefix still shares the parent prompt-cache key.)
-        let request = self.parent_cached_request(AuxCall {
-            items,
-            tools: ToolSpecBundle::default(),
-            hosted_tools: Vec::new(),
-            model: setup.model.clone(),
-            supports_search_tool: setup.binding.config.supports_search_tool,
-            reasoning_effort: setup.reasoning_effort,
-            ultra_wire_effort: setup.ultra_wire_effort,
-            backend: setup.client.api_backend(),
-            conv_id: format!("title-refresh-{}", uuid::Uuid::new_v4()),
-            req_id: format!("xai-title-refresh-{}", uuid::Uuid::new_v4()),
-        });
+        let request = match self.parent_cached_request_with_history_entry(
+            AuxCall {
+                items,
+                tools: ToolSpecBundle::default(),
+                hosted_tools: Vec::new(),
+                model: setup.model.clone(),
+                supports_search_tool: setup.binding.config.supports_search_tool,
+                reasoning_effort: setup.reasoning_effort,
+                ultra_wire_effort: setup.ultra_wire_effort,
+                backend: setup.client.api_backend(),
+                conv_id: format!("title-refresh-{}", uuid::Uuid::new_v4()),
+                req_id: format!("xai-title-refresh-{}", uuid::Uuid::new_v4()),
+            },
+            setup.history_entry(),
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                tracing::warn!(error = %error, "title refresh: auxiliary history context refused");
+                return None;
+            }
+        };
 
         #[cfg(test)]
         super::side_call::tests::record_auxiliary_send("title", &request);

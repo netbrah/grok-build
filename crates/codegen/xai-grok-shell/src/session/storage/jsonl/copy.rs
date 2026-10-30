@@ -270,14 +270,29 @@ impl JsonlStorageAdapter {
         target_info: &Info,
         options: CopySessionOptions,
     ) -> io::Result<CopySessionResult> {
-        // Canonical creator: the fork target chain is born owner-only.
-        let target_dir = self.create_session_dir_owner_only(target_info)?;
-
         let source_summary = self.read_summary_sync(source_info)?;
         let chat_format_version = source_summary.chat_format_version;
 
         let mut chat_to_copy: Vec<ConversationItem> =
             self.read_chat_history_sync(self.chat_file(source_info), chat_format_version)?;
+        let existing_target = self.session_dir(target_info);
+        for name in [
+            "authority.json",
+            "authority.required",
+            "current.json",
+            "backup.json",
+        ] {
+            if std::fs::symlink_metadata(existing_target.join("native_history").join(name)).is_ok()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "copy target has native history authority",
+                ));
+            }
+        }
+        let target_dir = self.create_session_dir_owner_only(target_info)?;
+        let _native_target_guard =
+            super::guard_non_native_history_target(&self.chat_file(target_info))?;
 
         if let Some(target_idx) = options.target_prompt_index {
             // +1: the cut keeps the target prompt inclusive.

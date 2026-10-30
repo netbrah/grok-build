@@ -1,5 +1,9 @@
 //! ConversationRequest assembly — image compaction, pruning, repair, memory injection.
 
+use xai_grok_sampling_types::conversation::native_search_history::{
+    NativeHistoryBoundary, NativeHistoryMappingEntry, NativeHistoryTransform,
+    NativeHistoryTransformMapping, NativeUnavailable,
+};
 use xai_grok_sampling_types::{ConversationItem, ConversationRequest, ToolSpec, TraceContext};
 
 use super::ChatStateActor;
@@ -26,7 +30,9 @@ impl ChatStateActor {
         trace: Option<Box<dyn TraceContext>>,
         conv_id: String,
         req_id: String,
-    ) -> ConversationRequest {
+        native_capture: NativeBuildCapture,
+    ) -> BuiltRequest {
+        let capturing = matches!(native_capture, NativeBuildCapture::Selected);
         let needs_prune = should_prune(
             self.state.total_tokens,
             self.state.sampling_config.context_window,
@@ -45,6 +51,15 @@ impl ChatStateActor {
             }
             self.rebase_turn_capture_offset();
         }
+        // `D_pre` (design r4 §4.1): the retained history is frozen here — after
+        // this build's durable repairs and reminder effects and before any
+        // request-only transform. Nothing below mutates `self.state.conversation`.
+        let durable = capturing
+            .then(|| crate::persistence::native::history_boundary(&self.state.conversation).ok())
+            .flatten();
+        let mut ledger = capturing
+            .then(|| NativeMappingLedger::new(&self.state.conversation))
+            .flatten();
         let budgeted = apply_image_budget(self.state.conversation.clone());
         let ImageBudgetOutcome {
             body_bytes,
@@ -54,6 +69,9 @@ impl ChatStateActor {
             evicted,
         } = budgeted.outcome;
         let mut items = budgeted.items;
+        if let Some(ledger) = ledger.as_mut() {
+            ledger.apply_in_place(NativeHistoryTransform::ImageBudgetCompacted, None, &items);
+        }
         if inline_images > 0 {
             self.send_event(ChatStateEvent::ImageBudget {
                 body_bytes,
@@ -67,11 +85,28 @@ impl ChatStateActor {
         }
         if needs_prune {
             prune_conversation(&mut items, &self.pruning_config);
+            if let Some(ledger) = ledger.as_mut() {
+                ledger.apply_in_place(
+                    NativeHistoryTransform::PrunedSoftTrim,
+                    Some(HARD_CLEAR_PLACEHOLDER),
+                    &items,
+                );
+            }
         }
         if let Some(reminder) = memory_reminder {
             inject_memory_reminder(&mut items, &reminder);
+            if let Some(ledger) = ledger.as_mut() {
+                ledger.apply_memory_reminder(&reminder, &items);
+            }
         }
         items = crate::compaction_utils::ModelRequestHistory::from_raw(items).into_items();
+        if let Some(ledger) = ledger.as_mut() {
+            ledger.apply_in_place(
+                NativeHistoryTransform::AgentMessageLabelRepaired,
+                None,
+                &items,
+            );
+        }
 
         // Step 4: Assemble request
         // apex-waj.35 requirement 4: the admission rides the REQUEST. The row half is
@@ -89,7 +124,7 @@ impl ChatStateActor {
             self.state.sampling_config.supports_search_tool,
             &tool_definitions,
         ));
-        ConversationRequest {
+        let request = ConversationRequest {
             items,
             tools: tool_definitions,
             hosted_tools: vec![],
@@ -138,6 +173,18 @@ impl ChatStateActor {
             // (REQVALID-1 47b D-5); chat-state always starts a request fresh.
             encoded: None,
             native_history: None,
+            native_bound_preparation: None,
+        };
+        // The relation is only trustworthy if what the seams predicted is what
+        // the builder actually emitted, so the finished request is the check.
+        let mapping = match (ledger, durable.clone()) {
+            (Some(ledger), Some(durable)) => ledger.finish(durable, &request.items).ok(),
+            _ => None,
+        };
+        BuiltRequest {
+            request,
+            mapping,
+            durable,
         }
     }
 }
@@ -325,6 +372,211 @@ fn safe_char_slice_tail(s: &str, count: usize) -> String {
         return s.to_string();
     }
     s.chars().skip(total - count).collect()
+}
+
+// ============================================================================
+// Bound-build durable→send mapping (design r4 §4.1; waj2-U8)
+// ============================================================================
+
+/// Whether this builder run must also produce the durable→send relation a
+/// Selected bound preparation carries.
+pub(super) enum NativeBuildCapture {
+    /// The ordinary route: the pipeline runs exactly as before and derives no
+    /// relation.
+    Legacy,
+    /// A Selected bound build: freeze `D_pre`, follow every request-only seam,
+    /// and verify the resulting relation against the items actually sent.
+    Selected,
+}
+
+/// What one builder run produced for its caller.
+pub(super) struct BuiltRequest {
+    pub request: ConversationRequest,
+    /// `Some` only for a [`NativeBuildCapture::Selected`] build whose relation
+    /// verified; `None` means the caller must refuse a Selected preparation.
+    pub mapping: Option<NativeHistoryTransformMapping>,
+    /// The frozen `D_pre`: retained history after this build's durable repairs
+    /// and reminder effects, before any request-only transform.
+    pub durable: Option<NativeHistoryBoundary>,
+}
+
+/// The per-item half of the digest pair a mapping entry carries.
+///
+/// Same byte recipe as
+/// [`crate::persistence::native::history_boundary`] (canonical JSON through
+/// `serde_json`) applied to one item instead of the whole slice.
+fn native_item_digest(item: &ConversationItem) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let encoded = serde_json::to_vec(item).ok()?;
+    Some(format!("{:x}", Sha256::digest(encoded)))
+}
+
+fn tool_result_content_equals(item: &ConversationItem, marker: &str) -> bool {
+    matches!(item, ConversationItem::ToolResult(result) if result.content.as_ref() == marker)
+}
+
+/// One `D_pre` occurrence tracked through the request-only transforms.
+struct NativeMappingSlot {
+    durable_index: Option<u32>,
+    before_digest: String,
+    digest: String,
+    transforms: Vec<NativeHistoryTransform>,
+    reminder_input: Option<String>,
+}
+
+impl NativeMappingSlot {
+    fn record(&mut self, observed: NativeHistoryTransform) {
+        if self.transforms == [NativeHistoryTransform::Kept] {
+            self.transforms = vec![observed];
+        } else if !self.transforms.contains(&observed) {
+            self.transforms.push(observed);
+        }
+    }
+}
+
+/// The occurrence-indexed ledger between `D_pre` and `S_pre`.
+///
+/// Every request-only step below is index-preserving: the image budget evicts
+/// image parts in place, pruning rewrites `ToolResult.content` in place, and
+/// `ModelRequestHistory::from_raw` is a length-preserving repair. Only the
+/// request-only memory reminder may insert one item at the front. Any other
+/// shape is a relation this code cannot derive, so the ledger marks itself
+/// ambiguous and [`Self::finish`] refuses instead of guessing a mapping.
+struct NativeMappingLedger {
+    slots: Vec<NativeMappingSlot>,
+    ambiguous: bool,
+}
+
+impl NativeMappingLedger {
+    fn new(items: &[ConversationItem]) -> Option<Self> {
+        let mut slots = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            let digest = native_item_digest(item)?;
+            slots.push(NativeMappingSlot {
+                durable_index: Some(u32::try_from(index).ok()?),
+                before_digest: digest.clone(),
+                digest,
+                transforms: vec![NativeHistoryTransform::Kept],
+                reminder_input: None,
+            });
+        }
+        Some(Self {
+            slots,
+            ambiguous: false,
+        })
+    }
+
+    /// Records an index-preserving transform stage. `hard_clear_marker` names
+    /// the placeholder that distinguishes a prune hard clear from a soft trim.
+    fn apply_in_place(
+        &mut self,
+        transform: NativeHistoryTransform,
+        hard_clear_marker: Option<&str>,
+        after: &[ConversationItem],
+    ) {
+        if self.ambiguous || self.slots.len() != after.len() {
+            self.ambiguous = true;
+            return;
+        }
+        for (slot, item) in self.slots.iter_mut().zip(after) {
+            let Some(digest) = native_item_digest(item) else {
+                self.ambiguous = true;
+                return;
+            };
+            if digest == slot.digest {
+                continue;
+            }
+            let observed = match (transform, hard_clear_marker) {
+                (NativeHistoryTransform::PrunedSoftTrim, Some(marker))
+                    if tool_result_content_equals(item, marker) =>
+                {
+                    NativeHistoryTransform::PrunedHardClear
+                }
+                (transform, _) => transform,
+            };
+            slot.record(observed);
+            slot.digest = digest;
+        }
+    }
+
+    /// Records the request-only memory-reminder step, which upserts into a
+    /// leading `System` item or inserts a new leading item.
+    fn apply_memory_reminder(&mut self, reminder: &str, after: &[ConversationItem]) {
+        if self.ambiguous {
+            return;
+        }
+        let Some(first) = after.first() else {
+            self.ambiguous = true;
+            return;
+        };
+        let Some(digest) = native_item_digest(first) else {
+            self.ambiguous = true;
+            return;
+        };
+        if after.len() == self.slots.len() + 1 {
+            self.slots.insert(
+                0,
+                NativeMappingSlot {
+                    durable_index: None,
+                    before_digest: digest.clone(),
+                    digest,
+                    transforms: vec![NativeHistoryTransform::RequestOnlyReminder],
+                    reminder_input: Some(reminder.to_string()),
+                },
+            );
+            return;
+        }
+        if after.len() != self.slots.len() {
+            self.ambiguous = true;
+            return;
+        }
+        if digest == self.slots[0].digest {
+            // The reminder text was already present: no effect to map.
+            return;
+        }
+        let slot = &mut self.slots[0];
+        slot.record(NativeHistoryTransform::RequestOnlyReminderUpsert);
+        slot.digest = digest;
+        slot.reminder_input = Some(reminder.to_string());
+    }
+
+    /// Verifies the predicted digests against the items the builder actually
+    /// produced and returns the checked relation.
+    fn finish(
+        self,
+        durable: NativeHistoryBoundary,
+        sent: &[ConversationItem],
+    ) -> Result<NativeHistoryTransformMapping, NativeUnavailable> {
+        if self.ambiguous || self.slots.len() != sent.len() {
+            return Err(NativeUnavailable::Incomplete);
+        }
+        let mut entries = Vec::with_capacity(self.slots.len());
+        for (slot, item) in self.slots.into_iter().zip(sent) {
+            let after_digest = native_item_digest(item).ok_or(NativeUnavailable::Fidelity)?;
+            if after_digest != slot.digest {
+                // The builder emitted bytes the seams did not predict; the
+                // relation would be a guess.
+                return Err(NativeUnavailable::Fidelity);
+            }
+            let send_transforms = slot.transforms.clone();
+            entries.push(match slot.durable_index {
+                Some(durable_index) => NativeHistoryMappingEntry::durable(
+                    durable_index,
+                    slot.before_digest,
+                    after_digest,
+                    send_transforms,
+                    slot.reminder_input,
+                ),
+                None => NativeHistoryMappingEntry::request_only_insertion(
+                    after_digest,
+                    send_transforms,
+                    slot.reminder_input,
+                ),
+            });
+        }
+        let send = crate::persistence::native::history_boundary(sent)?;
+        NativeHistoryTransformMapping::checked(durable, send, entries)
+    }
 }
 
 #[cfg(test)]

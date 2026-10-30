@@ -1315,7 +1315,7 @@ async fn fork_snapshot_and_children_exclude_registered_mcp() {
                     "U4 bare override surface excludes parent and child registry unions");
             }
             let (request, actual_binding) = child.chat_state_handle.build_request_with_binding(
-                candidates, None, false, None, child.session_id_string(), "fork-bound".into(),
+                u8_with_entry(candidates), None, false, None, child.session_id_string(), "fork-bound".into(),
             ).await.unwrap();
             assert_eq!(serde_json::to_value(&request.tools).unwrap(), serde_json::to_value(&expected).unwrap(),
                 "U4 forked bound build preserves the authoritative bare override");
@@ -2529,4 +2529,21 @@ async fn a4_fork_companion_scenarios(
         );
         cancel.cancel();
     }
+}
+
+/// waj2-U8 transport precondition: a bound build now needs an explicitly
+/// captured entry. These fixtures drive the legacy-equivalent route, so they
+/// attach Inactive/SendOnly; every assertion stays as written.
+fn u8_inactive_entry() -> xai_chat_state::NativeHistoryEntry {
+    xai_chat_state::NativeHistoryEntry::send_only(
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive,
+    )
+}
+
+fn u8_with_entry(
+    candidates: xai_chat_state::NativeToolCandidates,
+) -> xai_chat_state::NativeToolCandidates {
+    candidates
+        .with_history_entry(u8_inactive_entry())
+        .expect("freshly built candidates carry no entry")
 }

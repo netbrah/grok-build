@@ -64,6 +64,31 @@ pub trait ChatPersistence: Send + 'static {
         let _ = tx.send(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence));
         rx
     }
+    fn persist_native_projection_and_ack(
+        &mut self,
+        _write: native::NativeProjectionWrite,
+    ) -> oneshot::Receiver<
+        Result<
+            xai_grok_sampling_types::conversation::native_search_history::NativeCompoundAck,
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+        >,
+    > {
+        let (reply, response) = oneshot::channel();
+        let _ = reply.send(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence));
+        response
+    }
+    fn persist_native_checkpoint_and_ack(
+        &mut self,
+        write: native::NativeWrite,
+        _pending: native::NativePendingProtection,
+    ) -> oneshot::Receiver<
+        Result<
+            native::NativeAppendAck,
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+        >,
+    > {
+        self.persist_native_generation_and_ack(write)
+    }
 }
 /// Host-only native generations; ordinary chat snapshots do not carry this authority.
 pub mod native {
@@ -85,6 +110,9 @@ pub mod native {
         pub bytes: Arc<[u8]>,
         pub blobs: BTreeMap<String, Arc<[u8]>>,
         pub blob_kinds: BTreeMap<String, String>,
+        pub compound_proof: Option<Arc<ValidatedCompoundProof>>,
+        pub authority_digest: Option<String>,
+        pub compound_lineage: bool,
     }
 
     impl std::fmt::Debug for NativeCheckpoint {
@@ -124,6 +152,1359 @@ pub mod native {
         pub unavailable: Option<NativeUnavailable>,
         pub leases: BTreeMap<u64, NativeActorLease>,
         pub next_lease: u64,
+        pub issuer: NativeHistoryAuthorityIssuer,
+        pub owner: Option<crate::NativeHistoryOwnerToken>,
+        pub owner_target: Option<NativeReplayDomain>,
+        pub run_active: Option<Arc<std::sync::atomic::AtomicBool>>,
+        pub issued: Option<NativeBoundPreparation>,
+        pub history_revision: u64,
+        pub install_generation: u64,
+        pub binding_generation: u64,
+        pub next_run: u64,
+        pub loaded: NativeLoadedAuthority,
+        pub pending_projection: Option<NativePendingProjection>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct NativePendingProjection {
+        pub preparation: NativeBoundPreparation,
+        pub stage: NativePreparedProjection,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct NativeProjectionCompletion {
+        pub preparation: NativeBoundPreparation,
+        pub certificate: NativeHistoryCommitCertificate,
+        pub send_record: NativeSearchHistoryV1,
+        pub send_ledger_bytes: Arc<[u8]>,
+        pub send_before: Arc<[u8]>,
+        pub send_after: Vec<ConversationItem>,
+        pub core: NativeHistoryCore,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct NativeCompoundProofInput {
+        pub commit: NativeCompoundCommit,
+        pub authority_bytes: Arc<[u8]>,
+        pub metadata_bytes: Arc<[u8]>,
+        pub image_bytes: Arc<[u8]>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct ValidatedCompoundProof {
+        metadata: NativeProjectionMetadata,
+        commit: NativeCompoundCommit,
+        image_bytes: Arc<[u8]>,
+    }
+
+    impl ValidatedCompoundProof {
+        pub fn metadata(&self) -> &NativeProjectionMetadata {
+            &self.metadata
+        }
+        pub fn commit(&self) -> &NativeCompoundCommit {
+            &self.commit
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct NativePendingProtection {
+        pub transaction: Option<String>,
+        pub dependencies: std::collections::BTreeSet<String>,
+        pub temporaries: std::collections::BTreeSet<String>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct NativeProjectionWrite {
+        pub commit: NativeCompoundCommit,
+        pub authority_bytes: Arc<[u8]>,
+        pub checkpoint: Arc<NativeCheckpoint>,
+        pub metadata_bytes: Arc<[u8]>,
+        pub image_bytes: Arc<[u8]>,
+        pub pending: NativePendingProtection,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct NativePreparedProjection {
+        pub write: NativeProjectionWrite,
+        pub send_record: NativeSearchHistoryV1,
+        pub send_ledger_bytes: Arc<[u8]>,
+        pub send_before: Arc<[u8]>,
+        pub send_after: Vec<ConversationItem>,
+        pub send_core: NativeHistoryCore,
+        pub durable_after: Vec<ConversationItem>,
+    }
+
+    pub fn history_jsonl(items: &[ConversationItem]) -> Result<Vec<u8>, NativeUnavailable> {
+        let mut bytes = Vec::new();
+        for item in items {
+            serde_json::to_writer(&mut bytes, item).map_err(|_| NativeUnavailable::Fidelity)?;
+            bytes.push(b'\n');
+        }
+        Ok(bytes)
+    }
+
+    pub fn strict_history_jsonl(bytes: &[u8]) -> Result<Vec<ConversationItem>, NativeUnavailable> {
+        if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
+            return Err(NativeUnavailable::Fidelity);
+        }
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        bytes[..bytes.len() - 1]
+            .split(|byte| *byte == b'\n')
+            .map(|line| serde_json::from_slice(line).map_err(|_| NativeUnavailable::Fidelity))
+            .collect()
+    }
+
+    impl NativeProjectionWrite {
+        pub fn validate(&self) -> Result<(), NativeUnavailable> {
+            self.commit.validate()?;
+            let metadata: NativeProjectionMetadata =
+                serde_json::from_slice(&self.metadata_bytes)
+                    .map_err(|_| NativeUnavailable::InvalidReference)?;
+            let history = strict_history_jsonl(&self.image_bytes)?;
+            let image = self
+                .commit
+                .after_image
+                .as_ref()
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            let projection = self
+                .commit
+                .projection
+                .as_ref()
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            if serde_json::from_slice::<NativeCompoundCommit>(&self.authority_bytes)
+                .map_err(|_| NativeUnavailable::InvalidReference)?
+                != self.commit
+                || digest(&self.checkpoint.bytes) != self.commit.checkpoint.digest
+                || self.checkpoint.bytes.len() as u64 != self.commit.checkpoint.byte_len
+                || digest(&self.metadata_bytes) != projection.digest
+                || self.metadata_bytes.len() as u64 != projection.byte_len
+                || digest(&self.image_bytes) != image.blob.digest
+                || self.image_bytes.len() as u64 != image.blob.byte_len
+                || history_boundary(&history)? != image.boundary
+                || metadata.input_history != self.commit.before.boundary
+                || metadata.post_history != image.boundary
+                || self.pending.transaction.as_deref() != Some(self.commit.transaction.as_str())
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            metadata.validate_namespace(
+                &self.checkpoint.record,
+                &self.checkpoint.ledger,
+                &self.checkpoint.identity,
+            )?;
+            self.checkpoint.validate()
+        }
+    }
+
+    impl NativeCheckpoint {
+        fn core_for_request(
+            &self,
+            request: &xai_grok_sampling_types::ConversationRequest,
+            route: &xai_grok_sampling_types::conversation::projection::TargetRoute,
+            domain: &NativeReplayDomain,
+        ) -> Result<NativeHistoryCore, NativeUnavailable> {
+            use xai_grok_sampling_types::conversation::projection::Boundary;
+            let selected: Vec<_> = self
+                .source
+                .ordered_blocks
+                .iter()
+                .map(|block| block.coordinates.clone())
+                .collect();
+            let authorship = self
+                .source
+                .ordered_blocks
+                .iter()
+                .map(|block| (block.coordinates.occurrence, NativeIdAuthorship::Provider))
+                .collect();
+            let history = NativePureHistory {
+                record: &self.record,
+                source: &self.source,
+                ledger: &self.ledger,
+                identity: &self.identity,
+                blobs: &self.blobs,
+                authorship: &authorship,
+            };
+            prepare_native_history_core(
+                &history,
+                &NativeProjectionInputs {
+                    target_model_id: &domain.model,
+                    target: route,
+                    tools: &request.tools,
+                    current: request.native_eligible_inputs.as_deref(),
+                    selected: &selected,
+                    origin_domains: &BTreeMap::new(),
+                    pending: &NativePendingContext::default(),
+                    prior_f: None,
+                },
+                |group| {
+                    (
+                        DiscoveryOrigin {
+                            boundary: Boundary::Vertex,
+                            owner_model_id: None,
+                        },
+                        NativeQualification {
+                            source: None,
+                            target: Some(domain.clone()),
+                            request: Some(domain.clone()),
+                            original_admission: route.admission(),
+                            shape: NativeReplayShape {
+                                family: if group.family == "Messages" {
+                                    NativeReplayFamily::MessagesServer
+                                } else {
+                                    NativeReplayFamily::ResponsesClient
+                                },
+                                keyless_server: group.keyless_server_fifo,
+                                output_id_present: false,
+                                completed: group.state == "Completed",
+                                result_error: false,
+                                referenced_members: 0,
+                            },
+                            receipt: None,
+                            intact_membership: true,
+                            current_backing: false,
+                            faithful_identity: false,
+                        },
+                    )
+                },
+            )
+            .map_err(|refusal| refusal.reason)
+        }
+
+        fn native_postimage(
+            &self,
+            before: &[ConversationItem],
+            core: &NativeHistoryCore,
+        ) -> Result<(Vec<ConversationItem>, NativeActive, NativeLedger), NativeUnavailable>
+        {
+            let mut replacements = BTreeMap::new();
+            for member in &core.decision.members {
+                let link = self
+                    .ledger
+                    .accounting
+                    .iter()
+                    .find(|link| link.source == member.source)
+                    .ok_or(NativeUnavailable::InvalidReference)?;
+                let Some(index) = link.view_item else {
+                    continue;
+                };
+                let index =
+                    usize::try_from(index).map_err(|_| NativeUnavailable::InvalidReference)?;
+                if before.get(index).is_none() {
+                    return Err(NativeUnavailable::StaleHistory);
+                }
+                let output = if let Some(neutral) = &member.neutral {
+                    Some(ConversationItem::assistant(neutral.text.clone()))
+                } else if let Some(raw) = &member.raw {
+                    Some(ConversationItem::Discovery { item: xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(raw.clone()).map_err(|_| NativeUnavailable::Fidelity)? })
+                } else if matches!(
+                    member.action,
+                    NativeHistoryAction::AwaitClient
+                        | NativeHistoryAction::AwaitResults
+                        | NativeHistoryAction::ContinueOriginal
+                ) {
+                    Some(before[index].clone())
+                } else {
+                    None
+                };
+                if replacements
+                    .insert(index, (output, member.action))
+                    .is_some()
+                    && member.duplicate_of.is_none()
+                {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+            }
+            let mut positions = Vec::with_capacity(before.len());
+            let mut after = Vec::new();
+            for (index, item) in before.iter().enumerate() {
+                match replacements.get(&index) {
+                    Some((None, _)) => positions.push(None),
+                    Some((Some(output), _)) => {
+                        positions.push(Some(after.len() as u64));
+                        after.push(output.clone());
+                    }
+                    None => {
+                        positions.push(Some(after.len() as u64));
+                        after.push(item.clone());
+                    }
+                }
+            }
+            let mut ledger = self.ledger.clone();
+            for link in &mut ledger.accounting {
+                let Some(old_index) = link.view_item else {
+                    continue;
+                };
+                let old_index =
+                    usize::try_from(old_index).map_err(|_| NativeUnavailable::InvalidReference)?;
+                let new_index = *positions
+                    .get(old_index)
+                    .ok_or(NativeUnavailable::StaleHistory)?;
+                link.view_item = new_index;
+                link.view_digest = new_index
+                    .map(|index| {
+                        history_boundary(&after[index as usize..index as usize + 1])
+                            .map(|boundary| boundary.digest)
+                    })
+                    .transpose()?;
+                if replacements
+                    .get(&old_index)
+                    .is_some_and(|(_, action)| *action == NativeHistoryAction::F)
+                {
+                    link.role = "ProjectedText".into();
+                }
+                if new_index.is_none() {
+                    link.role = "SourceOnly".into();
+                }
+            }
+            let mut active = self.active.clone();
+            active.projection_revision = active
+                .projection_revision
+                .checked_add(1)
+                .ok_or(NativeUnavailable::Capacity)?;
+            active.view_links = self
+                .active
+                .view_links
+                .iter()
+                .map(|old| {
+                    ledger
+                        .accounting
+                        .iter()
+                        .find(|new| new.source == old.source)
+                        .cloned()
+                        .ok_or(NativeUnavailable::InvalidReference)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|link| link.view_item.is_some())
+                .collect();
+            for group in &core.decision.groups {
+                let disposition = match group.action {
+                    NativeHistoryAction::Keep => Some("KEEP"),
+                    NativeHistoryAction::F => Some("F"),
+                    NativeHistoryAction::Strip => Some("strip"),
+                    _ => None,
+                };
+                if let Some(disposition) = disposition {
+                    active
+                        .dispositions
+                        .insert(group.key.clone(), disposition.into());
+                    if disposition != "KEEP" && !active.loaded_invalidations.contains(&group.key) {
+                        active.loaded_invalidations.push(group.key.clone());
+                    }
+                }
+            }
+            Ok((after, active, ledger))
+        }
+
+        fn replace_partitions(
+            &mut self,
+            active: NativeActive,
+            mut ledger: NativeLedger,
+            history: &[ConversationItem],
+        ) -> Result<(), NativeUnavailable> {
+            self.record.active = add_json(
+                &mut self.blobs,
+                &mut self.blob_kinds,
+                "active",
+                &active,
+                NATIVE_ACTIVE_BYTES,
+            )?;
+            ledger.active_digest = self.record.active.digest.clone();
+            self.record.ledger = add_blob(
+                &mut self.blobs,
+                &mut self.blob_kinds,
+                "ledger",
+                ledger_encoding(&ledger, &self.identity)?,
+            )?;
+            self.active = active;
+            self.ledger = ledger;
+            self.record.history_boundary = history_boundary(history)?;
+            self.bytes = encode_native(&self.record, NATIVE_CONTROL_BYTES)?.into();
+            self.seal_capacity()?;
+            Ok(())
+        }
+    }
+
+    impl NativeCheckpoint {
+        fn verify_compound_policy(
+            &self,
+            previous: &Self,
+            metadata: &NativeProjectionMetadata,
+            post: &[ConversationItem],
+        ) -> Result<(), NativeUnavailable> {
+            use xai_grok_sampling_types::conversation::projection::{TargetRoute, model_boundary_class};
+            let mut record = previous.record.clone();
+            record.history_boundary = metadata.input_history.clone();
+            let selected: Vec<_> = previous
+                .source
+                .ordered_blocks
+                .iter()
+                .filter(|block| {
+                    !metadata
+                        .groups
+                        .iter()
+                        .filter(|transition| transition.to == "KEEP")
+                        .any(|transition| {
+                            previous.ledger.groups[transition.key as usize]
+                                .members
+                                .contains(&block.coordinates)
+                        })
+                })
+                .map(|block| block.coordinates.clone())
+                .collect();
+            let authorship = previous
+                .source
+                .ordered_blocks
+                .iter()
+                .map(|block| (block.coordinates.occurrence, NativeIdAuthorship::Provider))
+                .collect();
+            let history = NativePureHistory {
+                record: &record,
+                source: &previous.source,
+                ledger: &previous.ledger,
+                identity: &previous.identity,
+                blobs: &self.blobs,
+                authorship: &authorship,
+            };
+            let admission = xai_grok_sampling_types::SearchAdmission {
+                supports_search_tool: metadata.original_admission.supports_search_tool,
+                has_searchable_tools: metadata.original_admission.has_searchable_tools,
+            };
+            let domain = metadata.target.domain();
+            let route = TargetRoute::new(
+                domain.backend.clone(),
+                model_boundary_class(&domain.model),
+                admission,
+            );
+            let checked = prepare_native_history_core(
+                &history,
+                &NativeProjectionInputs {
+                    target_model_id: &domain.model,
+                    target: &route,
+                    tools: &[],
+                    current: None,
+                    selected: &selected,
+                    origin_domains: &BTreeMap::new(),
+                    pending: &NativePendingContext::default(),
+                    prior_f: None,
+                },
+                |group| {
+                    (
+                        DiscoveryOrigin {
+                            boundary: route.boundary(),
+                            owner_model_id: None,
+                        },
+                        NativeQualification {
+                            source: None,
+                            target: Some(domain.clone()),
+                            request: Some(domain.clone()),
+                            original_admission: admission,
+                            shape: NativeReplayShape {
+                                family: if group.family == "Messages" {
+                                    NativeReplayFamily::MessagesServer
+                                } else {
+                                    NativeReplayFamily::ResponsesClient
+                                },
+                                keyless_server: group.keyless_server_fifo,
+                                output_id_present: false,
+                                completed: group.state == "Completed",
+                                result_error: false,
+                                referenced_members: 0,
+                            },
+                            receipt: None,
+                            intact_membership: true,
+                            current_backing: false,
+                            faithful_identity: false,
+                        },
+                    )
+                },
+            )
+            .map_err(|reason| reason.reason)?;
+            for transition in &metadata.groups {
+                let group = &self.ledger.groups[transition.key as usize];
+                let qualification = metadata
+                    .qualification
+                    .iter()
+                    .find(|qualification| qualification.group == transition.key)
+                    .ok_or(NativeUnavailable::InvalidReference)?;
+                let shape = checked
+                    .accounting
+                    .qualification
+                    .iter()
+                    .find(|qualification| qualification.group == group.key)
+                    .ok_or(NativeUnavailable::InvalidReference)?;
+                if qualification.shape.shape()? != shape.shape {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+                if transition.to == "KEEP" {
+                    if !admission.admitted()
+                        || qualification.source.as_ref() != Some(&qualification.target)
+                        || qualification.receipt.as_ref().is_none_or(|receipt| {
+                            receipt.target != qualification.target
+                                || receipt.shape != qualification.shape
+                                || receipt.receipt_id.is_empty()
+                        })
+                    {
+                        return Err(NativeUnavailable::InvalidReference);
+                    }
+                    let origin = self
+                        .source
+                        .producing_bindings
+                        .iter()
+                        .find(|binding| binding.origin_ref == group.origin_ref)
+                        .ok_or(NativeUnavailable::InvalidReference)?;
+                    if origin
+                        .origin
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        != Some("Known")
+                    {
+                        return Err(NativeUnavailable::UnknownIdentity);
+                    }
+                    for source in &group.members {
+                        let link = self
+                            .ledger
+                            .accounting
+                            .iter()
+                            .find(|link| &link.source == source)
+                            .ok_or(NativeUnavailable::InvalidReference)?;
+                        if let Some(index) = link.view_item {
+                            let original = self
+                                .source
+                                .ordered_blocks
+                                .iter()
+                                .find(|block| &block.coordinates == source)
+                                .ok_or(NativeUnavailable::InvalidReference)?;
+                            let raw: serde_json::Value = serde_json::from_slice(
+                                self.blobs
+                                    .get(&original.block.digest)
+                                    .ok_or(NativeUnavailable::InvalidReference)?,
+                            )
+                            .map_err(|_| NativeUnavailable::Fidelity)?;
+                            if !matches!(post.get(index as usize), Some(ConversationItem::Discovery { item }) if item.raw() == &raw)
+                            {
+                                return Err(NativeUnavailable::Fidelity);
+                            }
+                        }
+                    }
+                } else {
+                    let expected = checked
+                        .decision
+                        .groups
+                        .iter()
+                        .find(|expected| expected.key == group.key)
+                        .ok_or(NativeUnavailable::InvalidReference)?;
+                    let to = match expected.action {
+                        NativeHistoryAction::F => "F",
+                        NativeHistoryAction::Strip => "strip",
+                        _ => return Err(NativeUnavailable::InvalidReference),
+                    };
+                    if transition.to != to {
+                        return Err(NativeUnavailable::InvalidReference);
+                    }
+                    for expected in checked
+                        .decision
+                        .members
+                        .iter()
+                        .filter(|member| group.members.contains(&member.source))
+                    {
+                        let link = self
+                            .ledger
+                            .accounting
+                            .iter()
+                            .find(|link| link.source == expected.source)
+                            .ok_or(NativeUnavailable::InvalidReference)?;
+                        match (link.view_item, expected.neutral.as_ref(), expected.action) {
+                            (Some(index), Some(neutral), NativeHistoryAction::F)
+                                if expected.duplicate_of.is_none() =>
+                            {
+                                if !matches!(post.get(index as usize), Some(ConversationItem::Assistant(item)) if item.content.as_ref() == neutral.text && item.tool_calls.is_empty())
+                                {
+                                    return Err(NativeUnavailable::Fidelity);
+                                }
+                            }
+                            (None, _, _) => {}
+                            _ => return Err(NativeUnavailable::InvalidReference),
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn projection_metadata(
+        preparation: &NativeBoundPreparation,
+        previous: &NativeCheckpoint,
+        checkpoint: &NativeCheckpoint,
+        core: &NativeHistoryCore,
+        post: &[ConversationItem],
+    ) -> Result<NativeProjectionMetadata, NativeUnavailable> {
+        let context = preparation.context().ok_or(NativeUnavailable::Incomplete)?;
+        let group_ordinal = |key: &str| -> Result<u32, NativeUnavailable> {
+            checkpoint
+                .ledger
+                .groups
+                .iter()
+                .position(|group| group.key == key)
+                .ok_or(NativeUnavailable::InvalidReference)
+                .and_then(|index| u32::try_from(index).map_err(|_| NativeUnavailable::Capacity))
+        };
+        let mut members = Vec::new();
+        for (index, link) in checkpoint.ledger.accounting.iter().enumerate() {
+            let facts = core
+                .accounting
+                .raw_members
+                .iter()
+                .find(|member| member.source == link.source)
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            let group = facts.group.as_deref().map(group_ordinal).transpose()?;
+            let output_items: Vec<_> = link.view_item.into_iter().collect();
+            let output_digests = output_items
+                .iter()
+                .map(|index| {
+                    let item = post
+                        .get(*index as usize)
+                        .ok_or(NativeUnavailable::InvalidReference)?;
+                    Ok(digest(
+                        &serde_json::to_vec(item).map_err(|_| NativeUnavailable::Fidelity)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, NativeUnavailable>>()?;
+            members.push(NativeProjectionMember {
+                source: u32::try_from(index).map_err(|_| NativeUnavailable::Capacity)?,
+                source_digest: facts.source_digest.clone(),
+                group,
+                action: format!("{:?}", facts.action),
+                output_items,
+                output_digests,
+                loss: facts.lost,
+            });
+            if let NativeIdentityExtension::Revision2 {
+                eligible_member_accounting,
+                ..
+            } = &checkpoint.identity
+            {
+                for (reference_index, reference) in eligible_member_accounting.iter().enumerate() {
+                    let mut parent = reference.source.clone();
+                    parent.submember = None;
+                    if parent != link.source {
+                        continue;
+                    }
+                    let facts = core
+                        .accounting
+                        .references
+                        .iter()
+                        .find(|member| member.source == reference.source)
+                        .ok_or(NativeUnavailable::InvalidReference)?;
+                    let output_items: Vec<_> = if facts.action == NativeHistoryAction::Keep {
+                        link.view_item.into_iter().collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let output_digests = output_items
+                        .iter()
+                        .map(|index| {
+                            let item = post
+                                .get(*index as usize)
+                                .ok_or(NativeUnavailable::InvalidReference)?;
+                            Ok(digest(
+                                &serde_json::to_vec(item)
+                                    .map_err(|_| NativeUnavailable::Fidelity)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, NativeUnavailable>>()?;
+                    members.push(NativeProjectionMember {
+                        source: u32::try_from(checkpoint.ledger.accounting.len() + reference_index)
+                            .map_err(|_| NativeUnavailable::Capacity)?,
+                        source_digest: facts.source_digest.clone(),
+                        group: facts.group.as_deref().map(group_ordinal).transpose()?,
+                        action: format!("{:?}", facts.action),
+                        output_items,
+                        output_digests,
+                        loss: facts.lost,
+                    });
+                }
+            }
+        }
+        let reason = |reason: NativeHistoryReason| match reason {
+            NativeHistoryReason::Kept => "kept",
+            NativeHistoryReason::Unqualified => "unqualified",
+            NativeHistoryReason::MissingView => "missing_view",
+            NativeHistoryReason::PriorDisposition => "prior_disposition",
+            NativeHistoryReason::FBudget => "f_budget",
+            NativeHistoryReason::Pending => "pending",
+            NativeHistoryReason::Abandoned => "abandoned",
+        };
+        let groups = core
+            .decision
+            .groups
+            .iter()
+            .filter_map(|group| {
+                let to = match group.action {
+                    NativeHistoryAction::Keep => "KEEP",
+                    NativeHistoryAction::F => "F",
+                    NativeHistoryAction::Strip => "strip",
+                    _ => return None,
+                };
+                Some((group, to))
+            })
+            .map(|(group, to)| {
+                let facts = core
+                    .accounting
+                    .raw_members
+                    .iter()
+                    .find(|member| member.group.as_deref() == Some(group.key.as_str()))
+                    .ok_or(NativeUnavailable::InvalidReference)?;
+                Ok(NativeProjectionGroup {
+                    key: group_ordinal(&group.key)?,
+                    from: previous
+                        .active
+                        .dispositions
+                        .get(&group.key)
+                        .map_or("Unrecorded", String::as_str)
+                        .into(),
+                    to: to.into(),
+                    reason: reason(facts.reason).into(),
+                })
+            })
+            .collect::<Result<Vec<_>, NativeUnavailable>>()?;
+        let qualification = core
+            .accounting
+            .qualification
+            .iter()
+            .map(|qualification| {
+                Ok(NativeProjectionQualification {
+                    group: group_ordinal(&qualification.group)?,
+                    source: qualification
+                        .source
+                        .as_ref()
+                        .map(NativeProjectionDomain::from),
+                    target: NativeProjectionDomain::from(&qualification.target),
+                    shape: NativeProjectionShape::from_shape(&qualification.shape),
+                    receipt: qualification.receipt.as_ref().map(|receipt| {
+                        NativeProjectionReceipt {
+                            target: NativeProjectionDomain::from(&receipt.target),
+                            shape: NativeProjectionShape::from_shape(&receipt.shape),
+                            receipt_id: receipt.receipt_id.clone(),
+                        }
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, NativeUnavailable>>()?;
+        let raw_ordinal = |source: &NativeSourceCoordinate| -> Result<u32, NativeUnavailable> {
+            checkpoint
+                .ledger
+                .accounting
+                .iter()
+                .position(|member| member.source == *source)
+                .ok_or(NativeUnavailable::InvalidReference)
+                .and_then(|index| u32::try_from(index).map_err(|_| NativeUnavailable::Capacity))
+        };
+        let f_provenance = NativeProjectionFProvenance {
+            version: 1,
+            groups: core
+                .decision
+                .f_provenance
+                .groups
+                .iter()
+                .map(|group| {
+                    Ok(NativeProjectionFGroup {
+                        key: group_ordinal(&group.key)?,
+                        call: raw_ordinal(&group.call)?,
+                        call_digest: group.call_digest.clone(),
+                        result: raw_ordinal(&group.result)?,
+                        result_digest: group.result_digest.clone(),
+                        disposition: match group.disposition {
+                            NativeFDisposition::F => "F",
+                            NativeFDisposition::Strip => "Strip",
+                        }
+                        .into(),
+                    })
+                })
+                .collect::<Result<Vec<_>, NativeUnavailable>>()?,
+        };
+        let metadata = NativeProjectionMetadata {
+            record_kind: "native_projection_metadata".into(),
+            format_version: 1,
+            owner_class: match preparation.grant() {
+                NativePreparationGrant::OwningPrimary => NativeProjectionOwner::OwningPrimary,
+                NativePreparationGrant::SwitchStore => NativeProjectionOwner::SwitchStore,
+                NativePreparationGrant::SendOnly => return Err(NativeUnavailable::Incomplete),
+            },
+            issued_request: preparation.issued_request().into(),
+            binding_generation: context.capture().binding_generation,
+            original_admission: NativeProjectionAdmission {
+                supports_search_tool: context.capture().original_admission.supports_search_tool,
+                has_searchable_tools: context.capture().original_admission.has_searchable_tools,
+            },
+            target: NativeProjectionDomain::from(&context.capture().target),
+            versions: NativeProjectionVersions {
+                schema: checkpoint.record.schema_version,
+                policy: 1,
+                projection: 1,
+                reader: checkpoint.record.reader_floor,
+                limits: checkpoint.record.limits_revision,
+            },
+            qualification,
+            input_history: preparation.history().clone(),
+            post_history: checkpoint.record.history_boundary.clone(),
+            groups,
+            members,
+            f_provenance,
+            loaded_invalidations: checkpoint
+                .active
+                .loaded_invalidations
+                .iter()
+                .map(|key| group_ordinal(key))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        metadata.validate_namespace(
+            &checkpoint.record,
+            &checkpoint.ledger,
+            &checkpoint.identity,
+        )?;
+        Ok(metadata)
+    }
+
+    impl NativeCheckpoint {
+        fn projection_extends(&self, previous: &Self) -> Result<(), NativeUnavailable> {
+            let proof = self
+                .compound_proof
+                .as_ref()
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            let metadata = &proof.metadata;
+            metadata.validate_namespace(&self.record, &self.ledger, &self.identity)?;
+            if self.source != previous.source
+                || self.identity != previous.identity
+                || self.record.source != previous.record.source
+                || self.ledger.groups != previous.ledger.groups
+                || self.ledger.lifecycle != previous.ledger.lifecycle
+                || self.ledger.usage != previous.ledger.usage
+                || self.ledger.observations != previous.ledger.observations
+                || self.ledger.transitions != previous.ledger.transitions
+                || self.ledger.accounting.len() != previous.ledger.accounting.len()
+                || self.record.previous_checkpoint != proof.commit.previous_checkpoint
+                || self.record.generation != proof.commit.high_water
+                || metadata.input_history != proof.commit.before.boundary
+                || proof
+                    .commit
+                    .after_image
+                    .as_ref()
+                    .map(|image| &image.boundary)
+                    != Some(&self.record.history_boundary)
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            let post = strict_history_jsonl(&proof.image_bytes)?;
+            self.verify_compound_policy(previous, metadata, &post)?;
+            if history_boundary(&post)? != self.record.history_boundary {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            for (before, after) in previous
+                .ledger
+                .accounting
+                .iter()
+                .zip(&self.ledger.accounting)
+            {
+                if before.source != after.source
+                    || before.source_digest != after.source_digest
+                    || before.source_subrange != after.source_subrange
+                {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+            }
+            for transition in &metadata.groups {
+                let group = self
+                    .ledger
+                    .groups
+                    .get(transition.key as usize)
+                    .ok_or(NativeUnavailable::InvalidReference)?;
+                if transition.from
+                    != previous
+                        .active
+                        .dispositions
+                        .get(&group.key)
+                        .map_or("Unrecorded", String::as_str)
+                    || self.active.dispositions.get(&group.key) != Some(&transition.to)
+                {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+            }
+            for group in &metadata.f_provenance.groups {
+                for (ordinal, expected) in [
+                    (group.call, &group.call_digest),
+                    (group.result, &group.result_digest),
+                ] {
+                    let member = self
+                        .ledger
+                        .accounting
+                        .get(ordinal as usize)
+                        .ok_or(NativeUnavailable::InvalidReference)?;
+                    let raw = self
+                        .source
+                        .ordered_blocks
+                        .iter()
+                        .find(|raw| raw.coordinates == member.source)
+                        .ok_or(NativeUnavailable::InvalidReference)?;
+                    if &raw.block.digest != expected {
+                        return Err(NativeUnavailable::InvalidReference);
+                    }
+                }
+            }
+            for member in &metadata.members {
+                if member.source as usize >= self.ledger.accounting.len() {
+                    continue;
+                }
+                let link = &self.ledger.accounting[member.source as usize];
+                if member.output_items != link.view_item.into_iter().collect::<Vec<_>>() {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+                for (index, expected) in member.output_items.iter().zip(&member.output_digests) {
+                    let item = post
+                        .get(*index as usize)
+                        .ok_or(NativeUnavailable::InvalidReference)?;
+                    if &digest(&serde_json::to_vec(item).map_err(|_| NativeUnavailable::Fidelity)?)
+                        != expected
+                        || link.view_digest.as_ref()
+                            != Some(&history_boundary(std::slice::from_ref(item))?.digest)
+                    {
+                        return Err(NativeUnavailable::InvalidReference);
+                    }
+                }
+            }
+            let expected_invalidations: Vec<_> = metadata
+                .loaded_invalidations
+                .iter()
+                .map(|index| {
+                    self.ledger
+                        .groups
+                        .get(*index as usize)
+                        .map(|group| group.key.clone())
+                        .ok_or(NativeUnavailable::InvalidReference)
+                })
+                .collect::<Result<_, _>>()?;
+            if expected_invalidations != self.active.loaded_invalidations {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            Ok(())
+        }
+
+        fn install_compound_proof(
+            &mut self,
+            input: NativeCompoundProofInput,
+        ) -> Result<(), NativeUnavailable> {
+            input.commit.validate()?;
+            let image = input
+                .commit
+                .after_image
+                .as_ref()
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            let metadata_ref = input
+                .commit
+                .projection
+                .as_ref()
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            let metadata: NativeProjectionMetadata = serde_json::from_slice(&input.metadata_bytes)
+                .map_err(|_| NativeUnavailable::InvalidReference)?;
+            if input.commit.operation != NativeCompoundOperation::Projection
+                || serde_json::from_slice::<NativeCompoundCommit>(&input.authority_bytes)
+                    .map_err(|_| NativeUnavailable::InvalidReference)?
+                    != input.commit
+                || digest(&self.bytes) != input.commit.checkpoint.digest
+                || self.bytes.len() as u64 != input.commit.checkpoint.byte_len
+                || self.record.lineage.id != input.commit.lineage
+                || self.record.high_water != input.commit.high_water
+                || self.record.previous_checkpoint != input.commit.previous_checkpoint
+                || digest(&input.metadata_bytes) != metadata_ref.digest
+                || input.metadata_bytes.len() as u64 != metadata_ref.byte_len
+                || digest(&input.image_bytes) != image.blob.digest
+                || input.image_bytes.len() as u64 != image.blob.byte_len
+                || history_boundary(&strict_history_jsonl(&input.image_bytes)?)? != image.boundary
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            self.authority_digest = Some(digest(&input.authority_bytes));
+            self.compound_lineage = true;
+            self.compound_proof = Some(Arc::new(ValidatedCompoundProof {
+                metadata,
+                commit: input.commit,
+                image_bytes: input.image_bytes,
+            }));
+            Ok(())
+        }
+    }
+
+    impl NativeCheckpoint {
+        pub fn prepare_projection(
+            &self,
+            preparation: &NativeBoundPreparation,
+            request: &xai_grok_sampling_types::ConversationRequest,
+            route: &xai_grok_sampling_types::conversation::projection::TargetRoute,
+        ) -> Result<NativePreparedProjection, NativeUnavailable> {
+            if !self.is_empty_projection_input() {
+                self.validate()?;
+            }
+            let context = preparation.context().ok_or(NativeUnavailable::Incomplete)?;
+            if preparation.grant() == NativePreparationGrant::SendOnly
+                || !preparation
+                    .seal()
+                    .is_some_and(NativeHistoryIssuedSeal::is_live)
+            {
+                return Err(NativeUnavailable::Incomplete);
+            }
+            let durable: Vec<ConversationItem> = serde_json::from_slice(
+                preparation
+                    .durable_history_bytes()
+                    .ok_or(NativeUnavailable::Incomplete)?,
+            )
+            .map_err(|_| NativeUnavailable::Fidelity)?;
+            if history_boundary(&durable)? != *preparation.history()
+                || history_boundary(&request.items)? != *preparation.mapping().send()
+            {
+                return Err(NativeUnavailable::StaleHistory);
+            }
+            let mut durable_view = self.clone();
+            let mut policy_input = durable.clone();
+            if let Some(switch) = preparation.switch_projection() {
+                let ordinary = switch.project(&durable);
+                let drops: std::collections::BTreeSet<_> =
+                    ordinary.drops.iter().map(|drop| drop.index).collect();
+                if drops.len() != ordinary.drops.len()
+                    || ordinary.items.len() + drops.len() != durable.len()
+                    || drops.iter().any(|index| *index >= durable.len())
+                {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+                let mut positions = Vec::with_capacity(durable.len());
+                let mut survivor = 0u64;
+                for index in 0..durable.len() {
+                    if drops.contains(&index) {
+                        positions.push(None);
+                    } else {
+                        positions.push(Some(survivor));
+                        survivor += 1;
+                    }
+                }
+                let mut ledger = durable_view.ledger.clone();
+                for link in &mut ledger.accounting {
+                    if let Some(index) = link.view_item {
+                        let new = *positions
+                            .get(index as usize)
+                            .ok_or(NativeUnavailable::InvalidReference)?;
+                        link.view_item = new;
+                        link.view_digest = new
+                            .map(|index| {
+                                history_boundary(
+                                    &ordinary.items[index as usize..index as usize + 1],
+                                )
+                                .map(|boundary| boundary.digest)
+                            })
+                            .transpose()?;
+                        if new.is_none() {
+                            link.role = "SourceOnly".into();
+                        }
+                    }
+                }
+                let mut active = durable_view.active.clone();
+                active.view_links = active
+                    .view_links
+                    .iter()
+                    .map(|old| {
+                        ledger
+                            .accounting
+                            .iter()
+                            .find(|new| new.source == old.source)
+                            .cloned()
+                            .ok_or(NativeUnavailable::InvalidReference)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .filter(|link| link.view_item.is_some())
+                    .collect();
+                policy_input = ordinary.items;
+                durable_view.replace_partitions(active, ledger, &policy_input)?;
+            } else {
+                durable_view.record.history_boundary = preparation.history().clone();
+            }
+            let core = durable_view.core_for_request(request, route, &context.capture().target)?;
+            let (durable_after, active, ledger) =
+                durable_view.native_postimage(&policy_input, &core)?;
+            let mut checkpoint = self.clone();
+            if self.is_empty_projection_input() {
+                // Synthetic genesis inputs have no retained native predecessor.
+                for digest in [&self.record.active.digest, &self.record.ledger.digest] {
+                    checkpoint.blobs.remove(digest);
+                    checkpoint.blob_kinds.remove(digest);
+                }
+            }
+            checkpoint.record.generation = checkpoint
+                .record
+                .generation
+                .checked_add(1)
+                .ok_or(NativeUnavailable::Capacity)?;
+            checkpoint.record.high_water = checkpoint.record.generation;
+            checkpoint.record.previous_checkpoint = if self.record.generation == 0 {
+                None
+            } else {
+                Some(add_raw_blob(
+                    &mut checkpoint.blobs,
+                    &mut checkpoint.blob_kinds,
+                    "checkpoint",
+                    &self.bytes,
+                )?)
+            };
+            checkpoint.replace_partitions(active, ledger, &durable_after)?;
+            let metadata =
+                projection_metadata(preparation, self, &checkpoint, &core, &durable_after)?;
+            let metadata_bytes: Arc<[u8]> = encode_native(&metadata, NATIVE_LEDGER_BYTES)?.into();
+            let image_bytes: Arc<[u8]> = history_jsonl(&durable_after)?.into();
+            NativeResource::CurrentBytes.admit(image_bytes.len() as u64, 0)?;
+            let before_bytes = history_jsonl(&durable)?;
+            let previous_authority_digest = if self.record.generation == 0 {
+                None
+            } else {
+                Some(
+                    self.authority_digest
+                        .clone()
+                        .ok_or(NativeUnavailable::Incomplete)?,
+                )
+            };
+            let mut commit = NativeCompoundCommit {
+                record_kind: "native_compound_commit".into(),
+                schema_version: 3,
+                policy_revision: 1,
+                reader_floor: 3,
+                limits_revision: 2,
+                lineage: checkpoint.record.lineage.id.clone(),
+                high_water: checkpoint.record.high_water,
+                checkpoint: NativeBlobRef {
+                    kind: "checkpoint".into(),
+                    byte_len: checkpoint.bytes.len() as u64,
+                    digest: digest(&checkpoint.bytes),
+                },
+                transaction: String::new(),
+                operation: NativeCompoundOperation::Projection,
+                previous_generation: self.record.generation,
+                previous_checkpoint: checkpoint.record.previous_checkpoint.clone(),
+                previous_authority_digest,
+                before: NativeHistoryBefore {
+                    boundary: preparation.history().clone(),
+                    byte_len: before_bytes.len() as u64,
+                    raw_digest: digest(&before_bytes),
+                },
+                after_image: Some(NativeHistoryAfterImage {
+                    format_version: 1,
+                    blob: NativeBlobRef {
+                        kind: "ordinary_history_jsonl".into(),
+                        byte_len: image_bytes.len() as u64,
+                        digest: digest(&image_bytes),
+                    },
+                    boundary: checkpoint.record.history_boundary.clone(),
+                }),
+                projection: Some(NativeBlobRef {
+                    kind: "projection_metadata".into(),
+                    byte_len: metadata_bytes.len() as u64,
+                    digest: digest(&metadata_bytes),
+                }),
+            };
+            commit.transaction = commit.projection_transaction()?;
+            commit.validate()?;
+            let authority_bytes: Arc<[u8]> = encode_native(&commit, NATIVE_CONTROL_BYTES)?.into();
+            checkpoint.compound_proof = Some(Arc::new(ValidatedCompoundProof {
+                metadata,
+                commit: commit.clone(),
+                image_bytes: image_bytes.clone(),
+            }));
+            checkpoint.authority_digest = Some(digest(&authority_bytes));
+            checkpoint.compound_lineage = true;
+            checkpoint.validate()?;
+            let mut send_view = self.clone();
+            let mut ledger = send_view.ledger.clone();
+            for link in &mut ledger.accounting {
+                if let Some(index) = link.view_item {
+                    let mapped = preparation
+                        .mapping()
+                        .send_for_durable(
+                            u32::try_from(index)
+                                .map_err(|_| NativeUnavailable::InvalidReference)?,
+                        )
+                        .ok_or(NativeUnavailable::Incomplete)?;
+                    link.view_item = Some(mapped as u64);
+                    link.view_digest = Some(digest(
+                        &serde_json::to_vec(
+                            request
+                                .items
+                                .get(mapped as usize)
+                                .ok_or(NativeUnavailable::Incomplete)?,
+                        )
+                        .map_err(|_| NativeUnavailable::Fidelity)?,
+                    ));
+                }
+            }
+            let mut active = send_view.active.clone();
+            active.view_links = active
+                .view_links
+                .iter()
+                .map(|old| {
+                    ledger
+                        .accounting
+                        .iter()
+                        .find(|link| link.source == old.source)
+                        .cloned()
+                        .ok_or(NativeUnavailable::InvalidReference)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            send_view.replace_partitions(active, ledger, &request.items)?;
+            let send_core = if preparation.grant() == NativePreparationGrant::SwitchStore {
+                core.clone()
+            } else {
+                send_view.core_for_request(request, route, &context.capture().target)?
+            };
+            if preparation.grant() != NativePreparationGrant::SwitchStore
+                && send_core.decision != core.decision
+            {
+                return Err(NativeUnavailable::Fidelity);
+            }
+            let send_after = if preparation.grant() == NativePreparationGrant::SwitchStore {
+                durable_after.clone()
+            } else {
+                send_view.native_postimage(&request.items, &send_core)?.0
+            };
+            let mut pending = NativePendingProtection {
+                transaction: Some(commit.transaction.clone()),
+                ..Default::default()
+            };
+            pending
+                .dependencies
+                .extend(checkpoint.blobs.keys().cloned());
+            pending.dependencies.extend([
+                digest(&checkpoint.bytes),
+                digest(&metadata_bytes),
+                digest(&image_bytes),
+                digest(&authority_bytes),
+            ]);
+            let write = NativeProjectionWrite {
+                commit,
+                authority_bytes,
+                checkpoint: Arc::new(checkpoint),
+                metadata_bytes,
+                image_bytes,
+                pending,
+            };
+            write.validate()?;
+            Ok(NativePreparedProjection {
+                write,
+                send_record: send_view.record.clone(),
+                send_ledger_bytes: send_view.blobs[&send_view.record.ledger.digest].clone(),
+                send_before: serde_json::to_vec(&request.items)
+                    .map_err(|_| NativeUnavailable::Fidelity)?
+                    .into(),
+                send_after,
+                send_core,
+                durable_after,
+            })
+        }
+    }
+
+    impl NativeCheckpoint {
+        pub fn empty_projection_input(
+            lineage: String,
+            history: &[ConversationItem],
+        ) -> Result<Self, NativeUnavailable> {
+            let source = NativeSource {
+                schema_version: 1,
+                lineage: lineage.clone(),
+                source_revision: 1,
+                producing_bindings: Vec::new(),
+                responses: Vec::new(),
+                ordered_blocks: Vec::new(),
+                eligible_snapshots: Vec::new(),
+                older_sources: Vec::new(),
+            };
+            let active = NativeActive::default();
+            let identity = NativeIdentityExtension::Revision1Unknown;
+            let mut blobs = BTreeMap::new();
+            let mut blob_kinds = BTreeMap::new();
+            let source_ref = add_blob(
+                &mut blobs,
+                &mut blob_kinds,
+                "source",
+                source_encoding(&source, &identity)?,
+            )?;
+            let active_ref = add_json(
+                &mut blobs,
+                &mut blob_kinds,
+                "active",
+                &active,
+                NATIVE_ACTIVE_BYTES,
+            )?;
+            let ledger = NativeLedger {
+                source_digest: source_ref.digest.clone(),
+                active_digest: active_ref.digest.clone(),
+                ..Default::default()
+            };
+            let ledger_ref = add_blob(
+                &mut blobs,
+                &mut blob_kinds,
+                "ledger",
+                ledger_encoding(&ledger, &identity)?,
+            )?;
+            let record = NativeSearchHistoryV1 {
+                schema_version: 1,
+                policy_revision: 1,
+                reader_floor: 1,
+                limits_revision: 1,
+                lineage: NativeLineage {
+                    id: lineage,
+                    source_revision: 1,
+                    source_digest: source_ref.digest.clone(),
+                },
+                generation: 0,
+                high_water: 0,
+                source: source_ref,
+                active: active_ref,
+                ledger: ledger_ref,
+                history_boundary: history_boundary(history)?,
+                exchange_snapshot: None,
+                previous_checkpoint: None,
+                capacity: BTreeMap::new(),
+            };
+            let bytes = encode_native(&record, NATIVE_CONTROL_BYTES)?.into();
+            Ok(Self {
+                record,
+                source,
+                active,
+                ledger,
+                identity,
+                bytes,
+                blobs,
+                blob_kinds,
+                compound_proof: None,
+                authority_digest: None,
+                compound_lineage: false,
+            })
+        }
+
+        fn is_empty_projection_input(&self) -> bool {
+            self.record.generation == 0
+                && self.record.high_water == 0
+                && self.record.previous_checkpoint.is_none()
+                && self.source.producing_bindings.is_empty()
+                && self.source.responses.is_empty()
+                && self.source.ordered_blocks.is_empty()
+                && self.source.eligible_snapshots.is_empty()
+                && self.source.older_sources.is_empty()
+                && self.ledger.groups.is_empty()
+                && self.ledger.accounting.is_empty()
+                && self.ledger.usage.is_empty()
+                && self.ledger.observations.is_empty()
+                && self.ledger.transitions.is_empty()
+                && self.active.view_links.is_empty()
+                && self.active.dispositions.is_empty()
+        }
     }
 
     /// Owns a lease until its reply is consumed by the requesting handle.
@@ -634,6 +2015,22 @@ pub mod native {
     impl NativeCheckpoint {
         pub fn decode(
             bytes: Vec<u8>,
+            load: impl FnMut(&NativeBlobRef) -> Result<Vec<u8>, NativeUnavailable>,
+        ) -> Result<Self, NativeUnavailable> {
+            Self::decode_impl(bytes, None, load)
+        }
+
+        pub fn decode_with_compound_proof(
+            bytes: Vec<u8>,
+            proof: NativeCompoundProofInput,
+            load: impl FnMut(&NativeBlobRef) -> Result<Vec<u8>, NativeUnavailable>,
+        ) -> Result<Self, NativeUnavailable> {
+            Self::decode_impl(bytes, Some(proof), load)
+        }
+
+        fn decode_impl(
+            bytes: Vec<u8>,
+            proof: Option<NativeCompoundProofInput>,
             mut load: impl FnMut(&NativeBlobRef) -> Result<Vec<u8>, NativeUnavailable>,
         ) -> Result<Self, NativeUnavailable> {
             NativeResource::ControlBytes.admit(bytes.len() as u64, 0)?;
@@ -786,7 +2183,7 @@ pub mod native {
             let active: NativeActive = serde_json::from_slice(parse(&record.active)?)
                 .map_err(|_| NativeUnavailable::InvalidReference)?;
             let (ledger, identity) = ledger_parts(parse(&record.ledger)?, links)?;
-            let checkpoint = Self {
+            let mut checkpoint = Self {
                 record,
                 source,
                 active,
@@ -795,7 +2192,13 @@ pub mod native {
                 bytes: bytes.into(),
                 blobs,
                 blob_kinds,
+                compound_proof: None,
+                authority_digest: None,
+                compound_lineage: false,
             };
+            if let Some(proof) = proof {
+                checkpoint.install_compound_proof(proof)?;
+            }
             checkpoint.validate()?;
             Ok(checkpoint)
         }
@@ -1007,6 +2410,9 @@ pub mod native {
 
     impl NativeCheckpoint {
         fn primary_accounting_extends(&self, previous: &Self) -> Result<(), NativeUnavailable> {
+            if self.compound_proof.is_some() {
+                return self.projection_extends(previous);
+            }
             let old_records = primary_records(&previous.ledger)?;
             let new_records = primary_records(&self.ledger)?;
             if !old_records
@@ -1209,6 +2615,8 @@ pub mod native {
             }
             self.validate_primary_record(&original)?;
             let mut next = self.clone();
+            next.compound_proof = None;
+            next.authority_digest = None;
             let response = &self.source.responses[original.occurrence as usize];
             if decision == NativePrimaryDecision::Committed {
                 if !original.authorized_at_evidence {
@@ -1986,7 +3394,12 @@ pub mod native {
                 bytes: bytes.into(),
                 blobs,
                 blob_kinds,
+                compound_proof: None,
+                authority_digest: None,
+                compound_lineage: false,
             };
+            checkpoint.compound_lineage =
+                previous.is_some_and(|previous| previous.compound_lineage);
             checkpoint.seal_capacity()?;
             checkpoint.validate()?;
             Ok(checkpoint)
@@ -2192,6 +3605,7 @@ pub mod native {
                     );
                 }
                 let mut cursor = 0;
+                let mut admitting_sources = BTreeMap::new();
                 for (at, block) in checkpoint.source.ordered_blocks.iter().enumerate() {
                     let leaves = native_candidate_references(&raw[at])?;
                     let parent_links: Vec<_> = checkpoint
@@ -2207,7 +3621,13 @@ pub mod native {
                         .blobs
                         .get(&parent_links[0].source_digest)
                         .ok_or(NativeUnavailable::InvalidReference)?;
-                    let (admitting, admitting_links) = source_parts(admitted)?;
+                    let (admitting, admitting_links) =
+                        match admitting_sources.entry(parent_links[0].source_digest.as_str()) {
+                            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                entry.insert(source_parts(admitted)?)
+                            }
+                        };
                     let migrated = admitting.schema_version == 1;
                     let mut missing = false;
                     for (ordinal, original) in leaves.iter().enumerate() {
@@ -2449,6 +3869,9 @@ pub mod native {
                     bytes: value(previous)?.into(),
                     blobs: BTreeMap::new(),
                     blob_kinds: BTreeMap::new(),
+                    compound_proof: None,
+                    authority_digest: None,
+                    compound_lineage: false,
                 };
                 self.extends(&old)?;
             }
@@ -3121,6 +4544,8 @@ pub mod native {
                 return Err(NativeUnavailable::InvalidReference);
             }
             let mut next = self.clone();
+            next.compound_proof = None;
+            next.authority_digest = None;
             let body = add_raw_blob(&mut next.blobs, &mut next.blob_kinds, "snapshot_body", body)?;
             let snapshot = NativeSnapshot {
                 body,

@@ -16,9 +16,11 @@ use crate::types::{
 
 /// Handle to communicate with ChatStateActor.
 /// This is cheap to clone and can be shared across tasks.
-#[derive(Clone)]
 pub struct ChatStateHandle {
     cmd_tx: mpsc::UnboundedSender<ChatStateCommand>,
+    native_registration_key: Option<
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRegistrationKey,
+    >,
     #[cfg(test)]
     pub(crate) pair_install_probe:
         std::sync::Arc<std::sync::Mutex<Option<oneshot::Sender<crate::RequestTransportBinding>>>>,
@@ -39,11 +41,132 @@ impl std::fmt::Display for ChatStateMailboxClosed {
 
 impl std::error::Error for ChatStateMailboxClosed {}
 
+impl Clone for ChatStateHandle {
+    fn clone(&self) -> Self {
+        Self {
+            cmd_tx: self.cmd_tx.clone(),
+            native_registration_key: None,
+            #[cfg(test)]
+            pair_install_probe: self.pair_install_probe.clone(),
+            #[cfg(test)]
+            bound_build_probe: self.bound_build_probe.clone(),
+        }
+    }
+}
+
 impl ChatStateHandle {
+    pub(crate) fn with_native_registration_key(
+        mut self,
+        key: xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRegistrationKey,
+    ) -> Self {
+        self.native_registration_key = Some(key);
+        self
+    }
+    pub async fn project_native_switch_history(
+        &self,
+        candidates: crate::NativeToolCandidates,
+        target_model: String,
+        target_pin: Option<String>,
+        route: TargetRoute,
+    ) -> Result<
+        Option<crate::persistence::native::NativeProjectionCompletion>,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let (reply, response) = oneshot::channel();
+        self.cmd_tx
+            .send(ChatStateCommand::ProjectNativeSwitchHistory {
+                candidates,
+                target_model,
+                target_pin,
+                route,
+                reply,
+            })
+            .map_err(|_| NativeUnavailable::Incomplete)?;
+        response.await.map_err(|_| NativeUnavailable::Incomplete)?
+    }
+
+    pub async fn read_native_loaded_authority(
+        &self,
+    ) -> Option<xai_grok_sampling_types::conversation::native_search_history::NativeLoadedAuthority>
+    {
+        let (reply, response) = oneshot::channel();
+        self.cmd_tx
+            .send(ChatStateCommand::ReadNativeLoadedAuthority { reply })
+            .ok()?;
+        response.await.ok()
+    }
+
+    pub async fn reconcile_native_history_projection(
+        &self,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let (reply, response) = oneshot::channel();
+        self.cmd_tx
+            .send(ChatStateCommand::ReconcileNativeHistoryProjection { reply })
+            .map_err(|_| NativeUnavailable::Incomplete)?;
+        response.await.map_err(|_| NativeUnavailable::Incomplete)?
+    }
+
+    pub async fn register_native_history_owner(
+        &self,
+        lineage: String,
+        request: String,
+        target: xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain,
+        owner_class: xai_grok_sampling_types::conversation::native_search_history::NativeProjectionOwner,
+        run_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<
+        crate::NativeHistoryOwnerGuard,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let key = self
+            .native_registration_key
+            .clone()
+            .ok_or(NativeUnavailable::Incomplete)?;
+        let (reply, response) = oneshot::channel();
+        self.cmd_tx
+            .send(ChatStateCommand::RegisterNativeHistoryOwner {
+                key,
+                lineage,
+                request,
+                target,
+                owner_class,
+                run_active,
+                reply,
+            })
+            .map_err(|_| NativeUnavailable::Incomplete)?;
+        response.await.map_err(|_| NativeUnavailable::Incomplete)?
+    }
+
+    pub async fn commit_native_history_projection(
+        &self,
+        preparation: xai_grok_sampling_types::conversation::native_search_history::NativeBoundPreparation,
+        request: xai_grok_sampling_types::ConversationRequest,
+        route: xai_grok_sampling_types::conversation::projection::TargetRoute,
+    ) -> Result<
+        crate::persistence::native::NativeProjectionCompletion,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let (reply, response) = oneshot::channel();
+        self.cmd_tx
+            .send(ChatStateCommand::CommitNativeHistoryProjection {
+                preparation,
+                request: Box::new(request),
+                route,
+                reply,
+            })
+            .map_err(|_| NativeUnavailable::Incomplete)?;
+        response.await.map_err(|_| NativeUnavailable::Incomplete)?
+    }
+
     /// Create a new handle with the given command sender.
     pub(crate) fn new(cmd_tx: mpsc::UnboundedSender<ChatStateCommand>) -> Self {
         Self {
             cmd_tx,
+            native_registration_key: None,
             #[cfg(test)]
             pair_install_probe: Default::default(),
             #[cfg(test)]
@@ -57,6 +180,7 @@ impl ChatStateHandle {
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
         Self {
             cmd_tx,
+            native_registration_key: None,
             #[cfg(test)]
             pair_install_probe: Default::default(),
             #[cfg(test)]
@@ -562,6 +686,10 @@ impl ChatStateHandle {
     }
 
     /// Build a request with the config and credentials that produced it.
+    ///
+    /// Refuses before the command is ever queued when the candidates carry no
+    /// explicitly captured history entry: a missing capture is not `Inactive`,
+    /// and the actor must not run its side-effecting builder for it.
     pub async fn build_request_with_binding(
         &self,
         tool_candidates: crate::NativeToolCandidates,
@@ -571,6 +699,9 @@ impl ChatStateHandle {
         conv_id: String,
         req_id: String,
     ) -> Option<(ConversationRequest, crate::RequestTransportBinding)> {
+        if tool_candidates.history_entry().is_err() {
+            return None;
+        }
         let built = self
             .query("BuildConversationRequestWithBinding", |reply| {
                 ChatStateCommand::BuildConversationRequestWithBinding {

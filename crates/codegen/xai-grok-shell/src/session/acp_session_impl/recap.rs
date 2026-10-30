@@ -92,19 +92,25 @@ impl SessionActor {
         };
 
         // Built once; each attempt clones it and stamps a fresh req_id, and retries are rare so the success path pays one clone.
-        let base_request = self.parent_cached_request(AuxCall {
-            items,
-            tools: tool_specs,
-            hosted_tools,
-            model: model.clone(),
-            supports_search_tool,
-            reasoning_effort,
-            // apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): same config read as the effort above.
-            ultra_wire_effort,
-            backend: sampling_client.api_backend(),
-            conv_id: btw_session_id.clone(),
-            req_id: format!("xai-btw-{}", uuid::Uuid::new_v4()),
-        });
+        let base_request = match self.parent_cached_request_with_history_entry(
+            AuxCall {
+                items,
+                tools: tool_specs,
+                hosted_tools,
+                model: model.clone(),
+                supports_search_tool,
+                reasoning_effort,
+                // apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): same config read as the effort above.
+                ultra_wire_effort,
+                backend: sampling_client.api_backend(),
+                conv_id: btw_session_id.clone(),
+                req_id: format!("xai-btw-{}", uuid::Uuid::new_v4()),
+            },
+            setup.history_entry(),
+        ) {
+            Ok(request) => request,
+            Err(error) => return Err(SideQuestionError::PrepareClient(error.to_string())),
+        };
 
         // conversation_collect is one-shot (no sampler-actor retry)
         // /btw adds its own bounded transient-failure retry (the policy and predicate above)

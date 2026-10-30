@@ -170,6 +170,123 @@ impl std::fmt::Debug for RequestTransportBinding {
     }
 }
 
+/// Memory-only owner capability backed by an actor-issued seal.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeHistoryOwnerToken {
+    seal: xai_grok_sampling_types::conversation::native_search_history::NativeHistoryIssuedSeal,
+}
+
+impl NativeHistoryOwnerToken {
+    pub(crate) fn new(
+        seal: xai_grok_sampling_types::conversation::native_search_history::NativeHistoryIssuedSeal,
+    ) -> Self {
+        Self { seal }
+    }
+    pub(crate) fn seal(
+        &self,
+    ) -> &xai_grok_sampling_types::conversation::native_search_history::NativeHistoryIssuedSeal
+    {
+        &self.seal
+    }
+    pub(crate) fn actor_instance(&self) -> u64 {
+        self.seal.actor_nonce()
+    }
+    pub(crate) fn lineage(&self) -> &str {
+        self.seal.lineage()
+    }
+    pub(crate) fn run(&self) -> u64 {
+        self.seal.run()
+    }
+}
+
+impl std::fmt::Debug for NativeHistoryOwnerToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeHistoryOwnerToken")
+            .field("seal", &self.seal)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug)]
+pub struct NativeHistoryOwnerGuard {
+    token: NativeHistoryOwnerToken,
+}
+
+impl NativeHistoryOwnerGuard {
+    pub(crate) fn new(token: NativeHistoryOwnerToken) -> Self {
+        Self { token }
+    }
+    pub fn token(&self) -> NativeHistoryOwnerToken {
+        self.token.clone()
+    }
+}
+
+impl Drop for NativeHistoryOwnerGuard {
+    fn drop(&mut self) {
+        self.token.seal.finish();
+    }
+}
+
+/// Why the caller is building: send-only, owning primary, or switch-store.
+///
+/// `SendOnly` carries no token because it grants no durable write authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeHistoryEntryIntent {
+    SendOnly,
+    OwningPrimary(NativeHistoryOwnerToken),
+    SwitchStore(NativeHistoryOwnerToken),
+}
+
+/// The explicitly captured requirement/intent a bound build must carry.
+///
+/// Host-only and never serialized. Presence is a captured decision; absence on
+/// the candidates means *uncaptured transport input*, which is not Inactive.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeHistoryEntry {
+    requirement:
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement,
+    intent: NativeHistoryEntryIntent,
+}
+
+impl NativeHistoryEntry {
+    pub fn captured(
+        requirement: xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement,
+        intent: NativeHistoryEntryIntent,
+    ) -> Self {
+        Self {
+            requirement,
+            intent,
+        }
+    }
+
+    pub fn requirement(
+        &self,
+    ) -> xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement
+    {
+        self.requirement
+    }
+
+    pub fn intent(&self) -> &NativeHistoryEntryIntent {
+        &self.intent
+    }
+
+    pub fn send_only(
+        requirement: xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement,
+    ) -> Self {
+        Self::captured(requirement, NativeHistoryEntryIntent::SendOnly)
+    }
+}
+
+impl std::fmt::Debug for NativeHistoryEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeHistoryEntry")
+            .field("requirement", &self.requirement)
+            .field("intent", &self.intent)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SamplingFieldPatch {
     pub context_window: Option<NonZeroU64>,

@@ -13,6 +13,10 @@ pub struct NativeToolCandidates {
             xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
         >,
     >,
+    /// Explicitly captured requirement/intent for one bound build. `None` means
+    /// UNCAPTURED transport input, which is not `Inactive`; the guarded build
+    /// entrypoint refuses it. It lives beside, never inside, `native_inputs`.
+    history_entry: Option<crate::types::NativeHistoryEntry>,
 }
 
 impl NativeToolCandidates {
@@ -22,6 +26,7 @@ impl NativeToolCandidates {
             specs,
             mcp_membership: BTreeSet::new(),
             native_inputs: None,
+            history_entry: None,
         }
     }
 
@@ -31,6 +36,7 @@ impl NativeToolCandidates {
             specs,
             mcp_membership,
             native_inputs: None,
+            history_entry: None,
         }
     }
 
@@ -43,6 +49,8 @@ impl NativeToolCandidates {
     pub fn map_specs(mut self, transform: impl FnOnce(Vec<ToolSpec>) -> Vec<ToolSpec>) -> Self {
         self.specs = transform(self.specs);
         self.native_inputs = None;
+        // `history_entry` is deliberately untouched: an arbitrary spec map may
+        // drop the identity backing, but it never erases a captured decision.
         let surviving_names: BTreeSet<_> =
             self.specs.iter().map(|spec| spec.name.as_str()).collect();
         self.mcp_membership
@@ -62,6 +70,66 @@ impl NativeToolCandidates {
             .and_then(|inputs| inputs.with_appended(&self.specs).ok())
             .map(std::sync::Arc::new);
         self
+    }
+
+    /// Attach the explicitly captured entry exactly once. A second attachment,
+    /// even the same value, refuses: the capture is write-once per build.
+    pub fn with_history_entry(
+        mut self,
+        entry: crate::types::NativeHistoryEntry,
+    ) -> Result<Self, xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        if self.history_entry.is_some() {
+            return Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::InvalidReference);
+        }
+        self.history_entry = Some(entry);
+        Ok(self)
+    }
+
+    /// The captured entry, or a refusal when nothing was captured. The refusal is
+    /// not `Inactive` — callers must not collapse the two.
+    pub fn history_entry(
+        &self,
+    ) -> Result<
+        &crate::types::NativeHistoryEntry,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.history_entry.as_ref().ok_or(
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Incomplete,
+        )
+    }
+
+    /// Fork transfer: consume the candidates, keep the captured entry
+    /// byte-for-byte, and drop membership and identity for the new specs.
+    pub fn replace_specs_without_identity(self, specs: Vec<ToolSpec>) -> Self {
+        Self {
+            specs,
+            mcp_membership: BTreeSet::new(),
+            native_inputs: None,
+            history_entry: self.history_entry,
+        }
+    }
+
+    /// Guarded bound-build entrypoint: the row selection plus the retained
+    /// captured entry. Refuses when nothing was captured, before any effect.
+    pub fn select_for_bound_build(
+        self,
+        config: &SamplingConfig,
+    ) -> Result<
+        (
+            Vec<ToolSpec>,
+            Option<
+                std::sync::Arc<
+                    xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+                >,
+            >,
+            crate::types::NativeHistoryEntry,
+        ),
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    >{
+        let entry = self.history_entry().cloned()?;
+        let (specs, identity) = self.select_with_identity(config);
+        Ok((specs, identity, entry))
     }
 
     pub fn select_with_identity(

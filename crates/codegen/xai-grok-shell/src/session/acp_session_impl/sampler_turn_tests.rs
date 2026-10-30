@@ -1384,7 +1384,7 @@ async fn bound_test_request(
     actor
         .chat_state_handle
         .build_request_with_binding(
-            xai_chat_state::NativeToolCandidates::builtins_only(tools),
+            u8_with_entry(xai_chat_state::NativeToolCandidates::builtins_only(tools)),
             None,
             false,
             None,
@@ -2132,7 +2132,7 @@ async fn native_bound_request(
     actor
         .chat_state_handle
         .build_request_with_binding(
-            actor.tool_candidates_for_turn(candidates, None),
+            u8_with_entry(actor.tool_candidates_for_turn(candidates, None)),
             None,
             false,
             None,
@@ -4889,7 +4889,7 @@ async fn a2_build_projection_request(
     actor
         .chat_state_handle
         .build_request_with_binding(
-            projection.candidates(),
+            u8_with_entry(projection.candidates()),
             None,
             false,
             None,
@@ -5153,10 +5153,10 @@ async fn a2_build_fork_request(
     actor
         .chat_state_handle
         .build_request_with_binding(
-            actor.tool_candidates_for_turn(
+            u8_with_entry(actor.tool_candidates_for_turn(
                 projection.candidates(),
                 Some(child_structured_output_spec().parameters),
-            ),
+            )),
             None,
             false,
             None,
@@ -7769,6 +7769,8 @@ struct U3IdentitySession {
     persistence: crate::session::persistence::PersistenceHandle,
     directory: tempfile::TempDir,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    fail_native_generation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    failed_native_generations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     _models: tempfile::TempDir,
 }
 
@@ -7813,6 +7815,58 @@ impl U3IdentitySession {
         )
         .await
         .unwrap();
+        let disk_tx = persistence.tx.clone();
+        let fail_native_generation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let failed_native_generations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fail_generation = fail_native_generation.clone();
+        let failure_count = failed_native_generations.clone();
+        let transaction_lock = directory.path().join("native_history/transaction.lock");
+        let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+        let persistence_task = tokio::task::spawn_local(async move {
+            use std::sync::atomic::Ordering;
+            while let Some(message) = persistence_rx.recv().await {
+                match message {
+                    PersistenceMsg::PersistNativeGenerationAndAck { write, respond_to }
+                        if fail_generation.load(Ordering::SeqCst) =>
+                    {
+                        let (flush_to, flushed) = tokio::sync::oneshot::channel();
+                        disk_tx
+                            .send(PersistenceMsg::FlushAndAck {
+                                respond_to: flush_to,
+                            })
+                            .unwrap();
+                        flushed.await.unwrap().unwrap();
+                        let lock = std::fs::OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .open(&transaction_lock)
+                            .unwrap();
+                        fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+                        let (native_to, native_result) = tokio::sync::oneshot::channel();
+                        disk_tx
+                            .send(PersistenceMsg::PersistNativeGenerationAndAck {
+                                write,
+                                respond_to: native_to,
+                            })
+                            .unwrap();
+                        let result = native_result.await;
+                        fs2::FileExt::unlock(&lock).unwrap();
+                        let result = result.unwrap();
+                        assert!(matches!(
+                                &result,
+                                Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Indeterminate)
+                            ), "U3 held native lock must refuse the real native write");
+                        failure_count.fetch_add(1, Ordering::SeqCst);
+                        eprintln!("U3_NATIVE_LOCK_REFUSAL {result:?}");
+                        let _ = respond_to.send(result);
+                    }
+                    message => disk_tx.send(message).unwrap(),
+                }
+            }
+        });
+        let persistence =
+            crate::session::persistence::PersistenceHandle::from_sender_for_test(persistence_tx);
+
         let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
         support::drain_gateway(gateway_rx);
         let (mut actor, _) = support::create_test_actor_with_chat_persistence(
@@ -7886,7 +7940,9 @@ impl U3IdentitySession {
             actor,
             persistence,
             directory,
-            tasks: vec![sampler_task],
+            tasks: vec![sampler_task, persistence_task],
+            fail_native_generation,
+            failed_native_generations,
             _models: models,
         }
     }
@@ -8092,16 +8148,23 @@ async fn native_identity_companion_comes_from_single_typed_snapshot() {
             assert!(legacy.eligible_members().unwrap().iter().all(|link| matches!(link.identity, NativeEligibleMemberIdentity::Unavailable { reason: NativeUnavailable::UnknownIdentity })));
             register_native_fixture(&migration.actor, "alpha__lookup", ToolNamespace::MCP, "Typed lookup declaration", schemas[0].clone());
             register_native_fixture(&migration.actor, "zeta__fetch", ToolNamespace::MCP, "Typed fetch declaration", schemas[1].clone());
-            let lock = if fail_migration {
-                let file = std::fs::OpenOptions::new().read(true).write(true).open(migration.directory.path().join("native_history/transaction.lock")).unwrap();
-                fs2::FileExt::try_lock_exclusive(&file).unwrap();
-                Some(file)
-            } else { None };
+            migration
+                .fail_native_generation
+                .store(fail_migration, std::sync::atomic::Ordering::SeqCst);
             server.enqueue_response("/v1/messages", u3_identity_frames(&["alpha__lookup", "zeta__fetch"]));
             migration.primary("u3-typed-successor").await;
-            if let Some(file) = &lock { fs2::FileExt::unlock(file).unwrap(); }
+            migration
+                .fail_native_generation
+                .store(false, std::sync::atomic::Ordering::SeqCst);
             let migrated = u3_reload(&migration).await;
             if fail_migration {
+                assert!(
+                    migration
+                        .failed_native_generations
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        > 0,
+                    "U3 migration failure must observe a real native-lock refusal"
+                );
                 assert_eq!(migrated.bytes, legacy.bytes, "failed real migration acknowledgement retains the old generation");
                 assert_eq!(migrated.source, legacy.source);
             } else {
@@ -8926,7 +8989,7 @@ async fn u7_current_request(session: &U3IdentitySession) -> ConversationRequest 
         .actor
         .chat_state_handle
         .build_request_with_binding(
-            projection.candidates(),
+            u8_with_entry(projection.candidates()),
             None,
             false,
             None,
@@ -9764,4 +9827,182 @@ async fn ctx_u2_auxiliary_preserves_last_bound_report() {
             assert_eq!(fixture.wire.exchanges.borrow().len(), 3);
         })
         .await;
+}
+
+/// waj2-U8 transport precondition: a bound build now needs an explicitly
+/// captured entry. These fixtures drive the legacy-equivalent route, so they
+/// attach Inactive/SendOnly; every assertion stays as written.
+fn u8_inactive_entry() -> xai_chat_state::NativeHistoryEntry {
+    xai_chat_state::NativeHistoryEntry::send_only(
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive,
+    )
+}
+
+fn u8_with_entry(
+    candidates: xai_chat_state::NativeToolCandidates,
+) -> xai_chat_state::NativeToolCandidates {
+    candidates
+        .with_history_entry(u8_inactive_entry())
+        .expect("freshly built candidates carry no entry")
+}
+
+impl super::SessionActor {
+    pub(in crate::session::acp_session) async fn native_history_shared_source_fixture() -> (
+        xai_chat_state::persistence::native::NativeCheckpoint,
+        ConversationRequest,
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequestContext,
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryCore,
+    ) {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let server = xai_grok_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        server.enqueue_response(
+            "/v1/messages",
+            u3_identity_frames(&["alpha__lookup", "zeta__fetch"]),
+        );
+        let session = U3IdentitySession::new(&server).await;
+        for name in ["alpha__lookup", "zeta__fetch"] {
+            register_native_fixture(
+                &session.actor,
+                name,
+                ToolNamespace::MCP,
+                "Current complete shared declaration",
+                serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"additionalProperties":false}),
+            );
+        }
+        session.primary("u9-shared-source").await;
+        let checkpoint = u3_reload(&session).await;
+        let binding = session
+            .actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap();
+        let domain = NativeReplayDomain {
+            backend: binding.config.api_backend.clone(),
+            dialect: NativeReplayDialect::Messages,
+            model: binding.config.model.clone(),
+            row: binding.config.model.clone(),
+            provider: "offline".into(),
+            deployment: "loopback".into(),
+            deployment_revision: "1".into(),
+            endpoint: format!("{}/messages", binding.config.base_url),
+            principal: "nonsecret-fixture".into(),
+        };
+        session
+            .actor
+            .session_turn_active
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let owner = session
+            .actor
+            .chat_state_handle
+            .register_native_history_owner(
+                session.actor.session_id_string(),
+                "u9-shared-bound".into(),
+                domain.clone(),
+                NativeProjectionOwner::OwningPrimary,
+                session.actor.session_turn_active.clone(),
+            )
+            .await
+            .unwrap();
+        let (prepared, _) = session.actor.prepare_native_tool_candidates_timed().await;
+        let bundle = session.actor.prepared_tool_bundle(&prepared);
+        let projection = super::BridgeDeclarationProjection::prepared(bundle, Default::default());
+        let candidates = projection
+            .candidates()
+            .with_history_entry(xai_chat_state::NativeHistoryEntry::captured(
+                NativeHistoryRequirement::Selected,
+                xai_chat_state::NativeHistoryEntryIntent::OwningPrimary(owner.token()),
+            ))
+            .unwrap();
+        let (mut request, _) = session
+            .actor
+            .chat_state_handle
+            .build_request_with_binding(
+                candidates,
+                None,
+                false,
+                None,
+                session.actor.session_id_string(),
+                "u9-shared-bound".into(),
+            )
+            .await
+            .unwrap();
+        let capture = request
+            .native_bound_preparation
+            .as_ref()
+            .unwrap()
+            .context()
+            .unwrap()
+            .capture()
+            .clone();
+        request.items = session.actor.chat_state_handle.get_conversation().await;
+        checkpoint.matches_history(&request.items).unwrap();
+        let selected: Vec<_> = checkpoint
+            .source
+            .ordered_blocks
+            .iter()
+            .map(|block| block.coordinates.clone())
+            .collect();
+        let core = u7_core_for_domain(&checkpoint, &request, &selected, true, &domain).unwrap();
+        assert_eq!(core.loaded.definitions.len(), 2);
+        assert!(
+            core.decision
+                .groups
+                .iter()
+                .all(|group| group.action == NativeHistoryAction::Keep)
+        );
+        // This shared-binding fixture claims no primary ACK or Selected send.
+        let context = NativeHistoryRequestContext::captured(
+            NativeHistoryRequirement::Selected,
+            capture,
+            NativeHistoryWriteAuthority::SendOnly,
+        );
+        drop(owner);
+        session
+            .actor
+            .session_turn_active
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        (checkpoint, request, context, core)
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_history_identity_invalidates_loaded_authority() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    tokio::task::LocalSet::new().run_until(async {
+        let primary = crate::session::acp_session::native_history_policy_tests::native_late_a_first_b_scenario("pass").await;
+        let switch = super::SessionActor::native_idle_switch_observation("captured").await;
+        for (site,observation) in [("owning_primary",primary),("switch_store",switch)] {
+            assert_eq!(observation["loaded_definitions"],0);
+            assert!(observation["resolution_names"].as_array().unwrap().is_empty());
+            assert!(observation["promotion_names"].as_array().unwrap().is_empty());
+            let notices = observation["notifications"].as_array().unwrap(); assert_eq!(notices.len(),1);
+            let accounting = &notices[0]["_meta"]["nativeHistoryAccounting"];
+            assert_eq!(accounting["site"],site);
+            let summary = accounting["summary"].as_str().unwrap();
+            assert_eq!(notices[0]["update"]["sessionUpdate"],"agent_message_chunk");
+            assert_eq!(notices[0]["update"]["content"]["text"],summary);
+            assert!(summary.len() <= 512 && summary.contains("aggregate="));
+            assert!(accounting["reasons"].as_u64().unwrap() <= 8);
+        }
+        let server = xai_grok_test_support::MockInferenceServer::start().await.unwrap();
+        server.enqueue_response("/v1/messages",u3_identity_frames(&["alpha__lookup","zeta__fetch"]));
+        let session = U3IdentitySession::new(&server).await;
+        let schemas = [
+            serde_json::json!({"type":"object","description":"Exact lookup schema","properties":{"query":{"type":"string","default":"account"}},"required":["query"],"additionalProperties":false}),
+            serde_json::json!({"type":"object","description":"Exact fetch schema","properties":{"limit":{"type":"integer","default":7}},"required":["limit"],"additionalProperties":false}),
+        ];
+        for (index,name) in ["alpha__lookup","zeta__fetch"].into_iter().enumerate() {
+            register_native_fixture(&session.actor,name,ToolNamespace::MCP,"U7 full declaration",schemas[index].clone());
+        }
+        session.primary("W11-real-current-identity").await;
+        let checkpoint = u3_reload(&session).await;
+        let request = u7_current_request(&session).await;
+        let selected:Vec<_> = checkpoint.source.ordered_blocks.iter().map(|block| block.coordinates.clone()).collect();
+        let core = u7_core(&checkpoint,&request,&selected,true).unwrap();
+        assert_eq!(core.loaded.definitions.len(),2,"the matching current producer has a real KEEP control before demotion");
+        u7_authority_matrix(&session,&checkpoint,&request,&schemas).await;
+    }).await;
 }

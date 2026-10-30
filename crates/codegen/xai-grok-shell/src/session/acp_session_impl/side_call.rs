@@ -90,6 +90,21 @@ pub(crate) struct SideCallSetup {
     pub(crate) reasoning_effort: Option<xai_grok_sampling_types::ReasoningEffort>,
     /// apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): carried to the AuxCall sites below so side-call egress keeps the parent's resolved wire tier.
     pub(crate) ultra_wire_effort: Option<xai_grok_sampling_types::ReasoningEffort>,
+    /// The history requirement this setup captured for itself, in one place
+    /// (design r4 §4 step 8). `prepare_side_call` is the only writer and it
+    /// refuses a Selected capture, so a setup can only ever carry Inactive;
+    /// every send site passes it to
+    /// [`SessionActor::parent_cached_request_with_history_entry`] rather than
+    /// deciding for itself. The field is private so no other module can build
+    /// a setup with an entry `prepare_side_call` never approved.
+    history_entry: xai_chat_state::NativeHistoryEntry,
+}
+
+impl SideCallSetup {
+    /// The entry this setup captured; see [`SideCallSetup::history_entry`].
+    pub(crate) fn history_entry(&self) -> &xai_chat_state::NativeHistoryEntry {
+        &self.history_entry
+    }
 }
 
 pub(super) fn should_strip_side_call_reasoning(
@@ -103,6 +118,32 @@ pub(super) fn should_strip_side_call_reasoning(
 }
 
 impl SessionActor {
+    /// Explicit-context wrapper for an auxiliary call (design r4 §4 step 8).
+    ///
+    /// Takes the call and the captured history entry as separate values. An
+    /// Inactive entry delegates to [`Self::parent_cached_request`] and so sends
+    /// exactly the bytes the auxiliary route sent before native history existed;
+    /// a Selected entry refuses, because the staged natural-producer
+    /// preparation that would make an auxiliary call a real Selected send does
+    /// not exist yet (U14) and quietly submitting the parent's pin bytes would
+    /// answer a Selected decision with a request that never declared it.
+    pub(crate) fn parent_cached_request_with_history_entry(
+        &self,
+        call: AuxCall,
+        captured_entry: &xai_chat_state::NativeHistoryEntry,
+    ) -> Result<ConversationRequest, acp::Error> {
+        match captured_entry.requirement() {
+            xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive => {
+                Ok(self.parent_cached_request(call))
+            }
+            xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected => {
+                Err(acp::Error::internal_error().data(
+                    "auxiliary call refused: native history is Selected and no natural-producer preparation exists",
+                ))
+            }
+        }
+    }
+
     /// Request skeleton for an auxiliary call that replays the parent conversation under the parent's `prompt_cache_key`.
     /// Temperature stays unset: cli-chat-proxy may inject a `thinking` config, and the Messages API then requires temperature == 1.
     pub(crate) fn parent_cached_request(&self, call: AuxCall) -> ConversationRequest {
@@ -172,6 +213,20 @@ impl SessionActor {
         let strip_reasoning =
             should_strip_side_call_reasoning(client.api_backend(), reasoning_effort);
         let model = binding.config.model.clone();
+        // One capture per setup, from the same single production selector the
+        // turn uses. Selected is refused here rather than at each send site so
+        // all four auxiliary routes (recap, /btw, turn summary, title refresh)
+        // close the same way with no per-site decision to forget.
+        let requirement = super::switch_projection::select_native_history();
+        if matches!(
+            requirement,
+            xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
+        ) {
+            return Err(acp::Error::internal_error().data(
+                "auxiliary call refused: native history is Selected and no natural-producer preparation exists",
+            ));
+        }
+        let history_entry = xai_chat_state::NativeHistoryEntry::send_only(requirement);
         Ok(SideCallSetup {
             binding,
             client,
@@ -180,6 +235,7 @@ impl SessionActor {
             model,
             reasoning_effort,
             ultra_wire_effort,
+            history_entry,
         })
     }
 
@@ -221,18 +277,26 @@ impl SessionActor {
         let tools = self.prepare_side_call_tool_specs(&setup.binding).await;
         // Mirror the main turn's hosted tools (overrides folded in) so a side-call can't search past the active cutoff.
         let hosted_tools = self.hosted_tools_for_turn();
-        self.parent_cached_request(AuxCall {
-            items,
-            tools,
-            hosted_tools,
-            model: setup.model.clone(),
-            supports_search_tool: setup.binding.config.supports_search_tool,
-            reasoning_effort: setup.reasoning_effort,
-            ultra_wire_effort: setup.ultra_wire_effort,
-            backend: setup.client.api_backend(),
-            conv_id: x_grok_conv_id,
-            req_id: x_grok_req_id,
-        })
+        self.parent_cached_request_with_history_entry(
+            AuxCall {
+                items,
+                tools,
+                hosted_tools,
+                model: setup.model.clone(),
+                supports_search_tool: setup.binding.config.supports_search_tool,
+                reasoning_effort: setup.reasoning_effort,
+                ultra_wire_effort: setup.ultra_wire_effort,
+                backend: setup.client.api_backend(),
+                conv_id: x_grok_conv_id,
+                req_id: x_grok_req_id,
+            },
+            setup.history_entry(),
+        )
+        // `prepare_side_call` refuses a Selected capture, so a setup built by
+        // any recap-style route can only carry Inactive. Panicking is the
+        // deliberate choice: the alternative is turning a Selected decision
+        // into an ordinary pin-byte send.
+        .expect("a prepared side-call setup never carries Selected")
     }
 
     /// Invalidate in-flight recap-style side-calls when a real user prompt is accepted (at queue time or turn start).
@@ -701,6 +765,55 @@ pub(super) mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn auxiliary_history_entry_delegates_inactive_and_refuses_selected() {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture =
+                    auxiliary_fixture(xai_grok_sampling_types::ApiBackend::Messages, true).await;
+                let actor = &fixture.actor;
+                let call = || super::AuxCall {
+                    items: vec![xai_grok_sampling_types::ConversationItem::user(
+                        "auxiliary question",
+                    )],
+                    tools: actor.prepare_parent_tool_bundle(),
+                    hosted_tools: Vec::new(),
+                    model: fixture.a.config.model.clone(),
+                    supports_search_tool: fixture.a.config.supports_search_tool,
+                    reasoning_effort: fixture.a.config.reasoning_effort,
+                    ultra_wire_effort: fixture.a.config.ultra_wire_effort,
+                    backend: crate::sampling::ApiBackend::Messages,
+                    conv_id: "aux-conv".into(),
+                    req_id: "aux-req".into(),
+                };
+                let legacy = actor.parent_cached_request(call());
+                let inactive = actor
+                    .parent_cached_request_with_history_entry(
+                        call(),
+                        &xai_chat_state::NativeHistoryEntry::send_only(
+                            NativeHistoryRequirement::Inactive,
+                        ),
+                    )
+                    .expect("Inactive delegates to the existing request helper");
+                assert_eq!(format!("{inactive:?}"), format!("{legacy:?}"));
+                assert!(
+                    actor
+                        .parent_cached_request_with_history_entry(
+                            call(),
+                            &xai_chat_state::NativeHistoryEntry::send_only(
+                                NativeHistoryRequirement::Selected
+                            ),
+                        )
+                        .is_err(),
+                    "unfinished Selected auxiliary calls must refuse before send"
+                );
+                assert!(fixture.server_a.requests().is_empty());
+                assert!(fixture.server_b.requests().is_empty());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn auxiliary_setup_and_request_share_one_binding() {
         use xai_grok_sampling_types::{ApiBackend, ConversationItem, ToolExposure};
         tokio::task::LocalSet::new()
@@ -995,7 +1108,7 @@ pub(super) mod tests {
             .unwrap();
         let (request, actual_binding) = handle
             .build_request_with_binding(
-                candidates,
+                u8_with_entry(candidates),
                 None,
                 false,
                 None,
@@ -2347,5 +2460,22 @@ pub(super) mod tests {
                 "frozen": {"raw_body":String::from_utf8(exchange.raw_body.clone()).unwrap(), "parsed_body":exchange.parsed_body}
             }));
         }).await;
+    }
+
+    /// waj2-U8 transport precondition: a bound build now needs an explicitly
+    /// captured entry. These fixtures drive the legacy-equivalent route, so they
+    /// attach Inactive/SendOnly; every assertion stays as written.
+    fn u8_inactive_entry() -> xai_chat_state::NativeHistoryEntry {
+        xai_chat_state::NativeHistoryEntry::send_only(
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive,
+    )
+    }
+
+    fn u8_with_entry(
+        candidates: xai_chat_state::NativeToolCandidates,
+    ) -> xai_chat_state::NativeToolCandidates {
+        candidates
+            .with_history_entry(u8_inactive_entry())
+            .expect("freshly built candidates carry no entry")
     }
 }

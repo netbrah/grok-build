@@ -222,10 +222,30 @@ pub enum PersistenceMsg {
     },
     /// Replace the entire chat history (used for compaction)
     ReplaceChatHistory(Vec<ConversationItem>),
+    GuardedLegacyReplace(Vec<ConversationItem>),
     ReadNativeHistory {
         respond_to: tokio::sync::oneshot::Sender<
             Result<
                 xai_chat_state::persistence::native::NativeRead,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
+    PersistNativeProjectionAndAck {
+        write: xai_chat_state::persistence::native::NativeProjectionWrite,
+        respond_to: tokio::sync::oneshot::Sender<
+            Result<
+                xai_grok_sampling_types::conversation::native_search_history::NativeCompoundAck,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
+    PersistNativeCheckpointAndAck {
+        write: xai_chat_state::persistence::native::NativeWrite,
+        pending: xai_chat_state::persistence::native::NativePendingProtection,
+        respond_to: tokio::sync::oneshot::Sender<
+            Result<
+                xai_chat_state::persistence::native::NativeAppendAck,
                 xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
             >,
         >,
@@ -2054,6 +2074,16 @@ impl SessionPersistence {
                         });
                     let _ = respond_to.send(result);
                 }
+                PersistenceMsg::GuardedLegacyReplace(messages) => {
+                    let result = self
+                        .storage
+                        .guarded_legacy_replace(&self.info, &messages)
+                        .await;
+                    self.observe_io(&result);
+                    if let Err(error) = result {
+                        tracing::warn!(?error, "guarded legacy snapshot failed");
+                    }
+                }
                 PersistenceMsg::ReplaceChatHistory(messages) => {
                     tracing::info!(
                         num_messages = messages.len(),
@@ -2071,6 +2101,46 @@ impl SessionPersistence {
                 PersistenceMsg::ReadNativeHistory { respond_to } => {
                     let result = self.storage.read_native_history(&self.info).await;
                     let _ = respond_to.send(result);
+                }
+                PersistenceMsg::PersistNativeProjectionAndAck { write, respond_to } => {
+                    let pending = write.pending.clone();
+                    let result = match self.flush_and_sync().await {
+                        Ok(()) => self.storage.persist_native_projection_and_ack(&self.info, write).await,
+                        Err(_) => Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence),
+                    };
+                    let acknowledged = result.is_ok();
+                    let _ = respond_to.send(result);
+                    if acknowledged {
+                        if let Err(reason) = self
+                            .storage
+                            .retire_native_projection_recovery(&self.info, pending)
+                            .await
+                        {
+                            tracing::warn!(?reason, "native projection retirement remains charged");
+                        }
+                    }
+                }
+                PersistenceMsg::PersistNativeCheckpointAndAck {
+                    write,
+                    pending,
+                    respond_to,
+                } => {
+                    let retire = pending.clone();
+                    let result = match self.flush_and_sync().await {
+                        Ok(()) => self.storage.persist_native_checkpoint_and_ack(&self.info, write, Some(pending)).await,
+                        Err(_) => Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence),
+                    };
+                    let acknowledged = result.is_ok();
+                    let _ = respond_to.send(result);
+                    if acknowledged {
+                        if let Err(reason) = self
+                            .storage
+                            .retire_native_projection_recovery(&self.info, retire)
+                            .await
+                        {
+                            tracing::warn!(?reason, "native checkpoint retirement remains charged");
+                        }
+                    }
                 }
                 PersistenceMsg::PersistNativeGenerationAndAck { write, respond_to } => {
                     let result = match self.flush_and_sync().await {
@@ -2777,11 +2847,13 @@ pub(crate) async fn new(
     }
 
     let (handle, rx, summary_tx, disk_full_tx) = actor_channel();
+    let legacy_sync_registration = register_legacy_sync(&info, &handle.tx);
 
     let info_clone = info.clone();
     let storage: Arc<dyn StorageAdapter> = Arc::new(storage);
     let remote_sync = init_remote_sync(&summary, storage_mode, auth_manager)?;
     tokio::task::spawn(async move {
+        let _legacy_sync_registration = legacy_sync_registration;
         let persistence = SessionPersistence {
             info: info_clone,
             storage: storage.clone(),
@@ -2824,6 +2896,21 @@ pub(crate) enum ExplicitSessionOpen {
 
 /// Used for subagent child sessions (top-level `sessions/<cwd>/<id>` dirs; only their metadata nests under the parent's session dir).
 /// Skips remote and relay sync; lifecycle notifications are handled by the coordinator.
+#[cfg(test)]
+type NativeProjectionFixtureProbe =
+    std::sync::Arc<dyn Fn(&'static str) -> io::Result<()> + Send + Sync>;
+#[cfg(test)]
+thread_local! {
+    static NEXT_NATIVE_PROJECTION_PROBE: std::cell::RefCell<Option<NativeProjectionFixtureProbe>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn set_next_native_projection_probe(probe: NativeProjectionFixtureProbe) {
+    NEXT_NATIVE_PROJECTION_PROBE.with(|slot| {
+        assert!(slot.borrow().is_none());
+        *slot.borrow_mut() = Some(probe);
+    });
+}
+
 pub(crate) async fn new_with_explicit_dir(
     info: &Info,
     target_dir: PathBuf,
@@ -2833,6 +2920,11 @@ pub(crate) async fn new_with_explicit_dir(
     open: ExplicitSessionOpen,
 ) -> io::Result<PersistenceHandle> {
     let storage = JsonlStorageAdapter::with_explicit_session_dir(target_dir);
+    #[cfg(test)]
+    let storage = NEXT_NATIVE_PROJECTION_PROBE.with(|slot| match slot.borrow_mut().take() {
+        Some(probe) => storage.with_native_projection_probe(move |phase| probe(phase)),
+        None => storage,
+    });
 
     let is_wake = matches!(open, ExplicitSessionOpen::Wake);
     let (identity, next_trace_turn) = match open {
@@ -2887,10 +2979,12 @@ pub(crate) async fn new_with_explicit_dir(
     }
 
     let (handle, rx, summary_tx, disk_full_tx) = actor_channel();
+    let legacy_sync_registration = register_legacy_sync(&info, &handle.tx);
 
     let info_clone = info.clone();
     let storage: Arc<dyn StorageAdapter> = Arc::new(storage);
     tokio::task::spawn(async move {
+        let _legacy_sync_registration = legacy_sync_registration;
         let persistence = SessionPersistence {
             info: info_clone,
             storage: storage.clone(),
@@ -3021,12 +3115,14 @@ pub(crate) async fn load_light(
     };
 
     let (handle, rx, summary_tx, disk_full_tx) = actor_channel();
+    let legacy_sync_registration = register_legacy_sync(&loaded_info, &handle.tx);
 
     let storage: Arc<dyn StorageAdapter> = Arc::new(storage);
     let remote_sync = init_remote_sync(&persisted_info.summary, storage_mode, auth_manager)?;
 
     let has_title = !persisted_info.summary.display_title().is_empty();
     tokio::task::spawn(async move {
+        let _legacy_sync_registration = legacy_sync_registration;
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
                 sampling_client,
@@ -3450,3 +3546,74 @@ mod repo_wide_resolution_tests;
 #[cfg(test)]
 #[path = "persistence_actor_lifetime_tests.rs"]
 mod actor_lifetime_tests;
+
+type LegacySyncChannels =
+    std::collections::HashMap<String, (u64, mpsc::WeakUnboundedSender<PersistenceMsg>)>;
+static LEGACY_SYNC_CHANNELS: std::sync::OnceLock<std::sync::Mutex<LegacySyncChannels>> =
+    std::sync::OnceLock::new();
+static LEGACY_SYNC_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+struct LegacySyncRegistration {
+    session: String,
+    generation: u64,
+}
+impl Drop for LegacySyncRegistration {
+    fn drop(&mut self) {
+        if let Some(channels) = LEGACY_SYNC_CHANNELS.get() {
+            let mut channels = channels
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if channels
+                .get(&self.session)
+                .is_some_and(|(generation, _)| *generation == self.generation)
+            {
+                channels.remove(&self.session);
+            }
+        }
+    }
+}
+fn register_legacy_sync(
+    info: &Info,
+    sender: &mpsc::UnboundedSender<PersistenceMsg>,
+) -> LegacySyncRegistration {
+    let session = info.id.to_string();
+    let generation = LEGACY_SYNC_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut channels = LEGACY_SYNC_CHANNELS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    channels.insert(session.clone(), (generation, sender.downgrade()));
+    LegacySyncRegistration {
+        session,
+        generation,
+    }
+}
+
+pub(crate) fn enqueue_guarded_legacy_replace(
+    info: &Info,
+    history: Vec<ConversationItem>,
+) -> io::Result<()> {
+    let sender = LEGACY_SYNC_CHANNELS
+        .get()
+        .and_then(|channels| {
+            channels.lock().ok().and_then(|channels| {
+                channels
+                    .get(&info.id.to_string())
+                    .and_then(|(_, sender)| sender.upgrade())
+            })
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "legacy snapshot requires its live persistence FIFO",
+            )
+        })?;
+    sender
+        .send(PersistenceMsg::GuardedLegacyReplace(history))
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "legacy snapshot persistence FIFO is closed",
+            )
+        })
+}
