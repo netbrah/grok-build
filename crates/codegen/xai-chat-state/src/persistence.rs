@@ -304,6 +304,7 @@ pub mod native {
             request: &xai_grok_sampling_types::ConversationRequest,
             route: &xai_grok_sampling_types::conversation::projection::TargetRoute,
             domain: &NativeReplayDomain,
+            pending: &NativePendingContext,
         ) -> Result<NativeHistoryCore, NativeUnavailable> {
             use xai_grok_sampling_types::conversation::projection::Boundary;
             let selected: Vec<_> = self
@@ -335,7 +336,7 @@ pub mod native {
                     current: request.native_eligible_inputs.as_deref(),
                     selected: &selected,
                     origin_domains: &BTreeMap::new(),
-                    pending: &NativePendingContext::default(),
+                    pending,
                     prior_f: None,
                 },
                 |group| {
@@ -587,7 +588,7 @@ pub mod native {
                     current: None,
                     selected: &selected,
                     origin_domains: &BTreeMap::new(),
-                    pending: &NativePendingContext::default(),
+                    pending: &native_pending_context(&previous.source, &previous.ledger, post),
                     prior_f: None,
                 },
                 |group| {
@@ -1229,7 +1230,17 @@ pub mod native {
             } else {
                 durable_view.record.history_boundary = preparation.history().clone();
             }
-            let core = durable_view.core_for_request(request, route, &context.capture().target)?;
+            let pending = if preparation.grant() == NativePreparationGrant::OwningPrimary {
+                native_pending_context(&self.source, &self.ledger, &request.items)
+            } else {
+                NativePendingContext::default()
+            };
+            let core = durable_view.core_for_request(
+                request,
+                route,
+                &context.capture().target,
+                &pending,
+            )?;
             let (durable_after, active, ledger) =
                 durable_view.native_postimage(&policy_input, &core)?;
             let mut checkpoint = self.clone();
@@ -1361,7 +1372,7 @@ pub mod native {
             let send_core = if preparation.grant() == NativePreparationGrant::SwitchStore {
                 core.clone()
             } else {
-                send_view.core_for_request(request, route, &context.capture().target)?
+                send_view.core_for_request(request, route, &context.capture().target, &pending)?
             };
             if preparation.grant() != NativePreparationGrant::SwitchStore
                 && send_core.decision != core.decision

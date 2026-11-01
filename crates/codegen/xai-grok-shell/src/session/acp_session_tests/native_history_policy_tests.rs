@@ -11273,3 +11273,701 @@ async fn abandoned_native_call_never_rearms_after_reload() {
         assert_eq!(adapter.read_native_history(&session.actor.session_info).await.unwrap().checkpoint.unwrap().record.generation,checkpoint.record.generation);
     }).await;
 }
+#[tokio::test(flavor = "current_thread")]
+async fn owning_primary_tool_bearing_plan_derives_declaration_identities() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    use xai_grok_sampling_types::conversation::projection::{Boundary, TargetRoute};
+    tokio::task::LocalSet::new().run_until(async {
+        let domain = |endpoint: String| NativeReplayDomain {
+            backend: xai_grok_sampling_types::ApiBackend::Messages,
+            dialect: NativeReplayDialect::Messages,
+            model: "u5a".into(), row: "u5a".into(), provider: "offline".into(),
+            deployment: "loopback".into(), deployment_revision: "1".into(),
+            endpoint, principal: "nonsecret-fixture".into(),
+        };
+        let server = MockInferenceServer::start().await.unwrap();
+        server.enqueue_response("/v1/messages", native_history_script(u5a_frames("end_turn", 0)));
+        let real_session = U5aPrimarySession::new(&server).await;
+        real_session.release_decision.add_permits(1);
+        real_session.actor.chat_state_handle.push_user_message_and_ack(
+            ConversationItem::user("capture the tool-bearing source before Selected")
+        ).await;
+        real_session.actor.process_conversation_turn_with_recovery(
+            "S3F-F1-source", None, None, None,
+            &mut length_salvage::LengthSalvage::new(None), &mut Default::default()
+        ).await.unwrap();
+        assert_eq!(server.messages_request_count(), 1);
+        let source_bodies = server.request_bodies();
+        assert!(source_bodies[0]["tools"].as_array().unwrap().iter()
+            .any(|tool| tool.get("input_schema").is_some()), "F1 real source is tool-bearing");
+        server.enqueue_response("/v1/messages", native_history_script(vec![
+            json!({"type":"message_start","message":{"id":"msg_s3f_f1","type":"message","role":"assistant","model":"u5a","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"F1 continuation"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":11,"output_tokens":2}}),
+            json!({"type":"message_stop"}),
+        ]));
+        real_session.actor.chat_state_handle.push_user_message_and_ack(
+            ConversationItem::user("send the tool-bearing Selected request")
+        ).await;
+        real_session.actor.session_turn_active.store(true, std::sync::atomic::Ordering::SeqCst);
+        let real = super::switch_projection::HISTORY_S3_TEST_DOMAIN.scope(
+            domain(format!("{}/messages", server.url())),
+            super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                NativeHistoryRequirement::Selected,
+                real_session.actor.process_conversation_turn_with_recovery(
+                    "S3F-F1-selected", None, None, None,
+                    &mut length_salvage::LengthSalvage::new(None), &mut Default::default()
+                )
+            )
+        ).await;
+        real_session.actor.session_turn_active.store(false, std::sync::atomic::Ordering::SeqCst);
+        if server.messages_request_count() > 1 {
+            let bodies = server.request_bodies();
+            let tools = bodies.last().unwrap()["tools"].as_array().unwrap();
+            assert!(tools.iter().any(|tool| tool.get("input_schema").is_some()),
+                "F1 Selected send is non-vacuously tool-bearing");
+            for name in ["alpha__lookup", "zeta__fetch"] {
+                assert!(tools.iter().any(|tool| tool["name"] == name && tool["defer_loading"] == true),
+                    "F1 Selected sends each deferred MCP declaration");
+            }
+        }
+        eprintln!("{}", json!({"S3F_F1_leg":"real-turn","request_count":server.messages_request_count(),
+            "refusal":real.as_ref().err().map(|error| error.message.to_string())}));
+
+        let fixture = native_projection_disk_fixture().await;
+        let session = &fixture.session;
+        session.capture_projection.store(false, std::sync::atomic::Ordering::SeqCst);
+        session.actor.chat_state_handle.reconcile_native_history_projection().await.unwrap();
+        let config = session.actor.chat_state_handle.get_sampling_config().await.unwrap();
+        assert!(config.supports_search_tool, "F1 replay keeps native search on");
+        session.actor.session_turn_active.store(true, std::sync::atomic::Ordering::SeqCst);
+        let owner = session.actor.chat_state_handle.register_native_history_owner(
+            session.actor.session_id_string(), "S3F-F1-replay".into(),
+            domain(format!("{}/messages", config.base_url)), NativeProjectionOwner::OwningPrimary,
+            session.actor.session_turn_active.clone()
+        ).await.unwrap();
+        let (prepared, _) = session.actor.prepare_native_tool_candidates_timed().await;
+        let bundle = session.actor.prepared_tool_bundle(&prepared);
+        let inputs = bundle.native_inputs.clone().expect("F1 replay uses the real typed inventory producer");
+        assert!(!inputs.entries().is_empty());
+        let candidates = xai_chat_state::NativeToolCandidates::with_mcp_membership(
+            bundle.specs.clone(), prepared.mcp_specs.iter().map(|spec| spec.name.clone()).collect()
+        ).with_native_inputs(Some(inputs)).with_history_entry(
+            xai_chat_state::NativeHistoryEntry::captured(NativeHistoryRequirement::Selected,
+                xai_chat_state::NativeHistoryEntryIntent::OwningPrimary(owner.token()))
+        ).unwrap();
+        let (request, binding) = session.actor.chat_state_handle.build_request_with_binding(
+            candidates, Some("F1-request-local-reminder".into()), false, None,
+            session.actor.session_id_string(), "S3F-F1-replay".into()
+        ).await.unwrap();
+        let bound_tools = request.tools.clone();
+        let bound_inputs = request.native_eligible_inputs.clone();
+        let admission = request.search_admission.unwrap();
+        let completion = session.actor.chat_state_handle.commit_native_history_projection(
+            request.native_bound_preparation.clone().unwrap(), request,
+            TargetRoute::new(config.api_backend.clone(), Boundary::Vertex, admission)
+        ).await.unwrap();
+        let final_request = xai_grok_sampling_types::ConversationRequest {
+            items: completion.send_after.clone(), model: Some(config.model.clone()),
+            tools: bound_tools, native_eligible_inputs: bound_inputs,
+            search_admission: Some(admission), max_output_tokens: Some(4096),
+            ..Default::default()
+        };
+        let client = xai_grok_sampler::SamplingClient::new(xai_grok_sampler::SamplerConfig {
+            base_url: binding.config.base_url.clone(), model: binding.config.model.clone(),
+            api_backend: xai_grok_sampler::ApiBackend::Messages, api_key: Some("F1-loopback".into()),
+            ..Default::default()
+        }).unwrap();
+        let (normalized, encoded) = client.finalize_conversation_messages(&final_request).unwrap();
+        let carrier = NativeFinalCarrier::capture(encoded.as_bytes().into()).unwrap();
+        let declarations: Vec<Value> = serde_json::from_slice(carrier.declarations().unwrap()).unwrap();
+        assert!(declarations.iter().any(|tool| tool.get("input_schema").is_some()),
+            "F1 replay carrier is tool-bearing");
+        let current = normalized.native_eligible_inputs.as_ref().unwrap();
+        assert!(current.matches_specs(&normalized.tools) && !current.entries().is_empty(),
+            "F1 replay carries typed entries at the bound spec positions");
+        for name in ["alpha__lookup", "zeta__fetch"] {
+            assert!(current.entries().iter().any(|entry| entry.declaration().name == name));
+        }
+        eprintln!("{}", json!({"S3F_F1_leg":"replay","typed_source":"prepare_native_tool_candidates_timed/prepared_tool_bundle",
+            "typed_names":current.entries().iter().map(|entry| &entry.declaration().name).collect::<Vec<_>>(),
+            "declaration_names":declarations.iter().map(|tool| &tool["name"]).collect::<Vec<_>>()}));
+
+        let recheck = |request: &xai_grok_sampling_types::ConversationRequest, carrier: NativeFinalCarrier| {
+            NativeHistoryPlan::checked_bound(completion.preparation.clone(), completion.certificate.clone(),
+                NativeHistoryPlanInput {
+                    record: completion.send_record.clone(), input_history_bytes: completion.send_before.clone(),
+                    ledger_bytes: completion.send_ledger_bytes.clone(), lowering_request: request,
+                    post_history_bytes: serde_json::to_vec(&request.items).unwrap().into(), carrier,
+                    identities: Vec::new(), qualification: completion.core.accounting.qualification.clone(),
+                    core: completion.core.clone(),
+                })
+        };
+        let positive = recheck(&normalized, carrier.clone());
+        eprintln!("{}", json!({"S3F_F1_leg":"replay-result",
+            "refusal":positive.as_ref().err().map(|error| format!("{error:?}"))}));
+        let mut late = normalized.clone();
+        late.tools.push(xai_grok_sampling_types::ToolSpec {
+            name: "S3F_UNTYPED_LATE".into(), description: None,
+            parameters: json!({"type":"object","properties":{}}),
+            exposure: xai_grok_sampling_types::ToolExposure::default(),
+        });
+        late.native_eligible_inputs = Some(Arc::new(current.with_appended(&late.tools).unwrap()));
+        late.invalidate_encoded();
+        let (late_request, late_encoded) = client.finalize_conversation_messages(&late).unwrap();
+        let late_carrier = NativeFinalCarrier::capture(late_encoded.as_bytes().into()).unwrap();
+        assert_eq!(recheck(&late_request, late_carrier), Err(NativePlanRefusal::InvalidDeclarations),
+            "F1 refuses a declaration appended after the typed snapshot");
+        assert!(real.is_ok() && positive.is_ok(),
+            "S3F F1 expected both tool-bearing owning-primary legs accepted; real={:?}; replay={:?}",
+            real.as_ref().err(), positive.as_ref().err());
+        assert_eq!(server.messages_request_count(), 2);
+        let plan = positive.unwrap();
+        assert_eq!(plan.identities().len(), declarations.iter()
+            .filter(|declaration| declaration.get("input_schema").is_some()).count());
+        for identity in plan.identities() {
+            let binding: Value = serde_json::from_slice(identity.binding_bytes.as_ref().unwrap()).unwrap();
+            assert_eq!(binding["origin"]["status"], "Unknown");
+        }
+        assert_eq!(validate_native_history_plan(plan.context(), Some(&plan), &carrier),
+            Ok(NativeHistoryReady::OwningPrimary));
+        drop(owner);
+        session.actor.session_turn_active.store(false, std::sync::atomic::Ordering::SeqCst);
+    }).await;
+}
+
+#[derive(Clone, Copy)]
+enum S3fContinuation {
+    Text,
+    NoResponse,
+    /// A sent continuation gets a non-retryable 400, so the twin's turn ends without an assistant item.
+    Refused,
+}
+
+struct S3fPendingHandoff {
+    session: U5aPrimarySession,
+    server: MockInferenceServer,
+    outcome: Result<TurnOutcome, acp::Error>,
+    source_after_capture:
+        Option<xai_grok_sampling_types::conversation::native_search_history::NativeSource>,
+}
+
+async fn s3f_live_pending_handoff(continuation: S3fContinuation) -> S3fPendingHandoff {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let server = MockInferenceServer::start().await.unwrap();
+    let mut seed = u5a_frames("end_turn", 0);
+    for frame in &mut seed {
+        if let Some(block) = frame.get_mut("content_block") {
+            for key in ["id", "tool_use_id"] {
+                if block.get(key).and_then(Value::as_str) == Some("srvtoolu_u5a") {
+                    block[key] = json!("srvtoolu_s3f_seed");
+                }
+            }
+        }
+        if let Some(message) = frame.get_mut("message")
+            && message.get("id").and_then(Value::as_str) == Some("msg_u5a")
+        {
+            message["id"] = json!("msg_s3f_seed");
+        }
+    }
+    server.enqueue_response("/v1/messages", native_history_script(seed));
+    let mut frames = u5a_frames("tool_use", 1);
+    frames.retain(|frame| frame.get("index").and_then(Value::as_u64) != Some(1));
+    for frame in &mut frames {
+        if let Some(index) = frame.get("index").and_then(Value::as_u64)
+            && index > 1
+        {
+            frame["index"] = json!(index - 1);
+        }
+    }
+    server.enqueue_response("/v1/messages", native_history_script(frames));
+    match continuation {
+        S3fContinuation::Text => {
+            server.enqueue_response("/v1/messages", native_history_script(vec![
+                json!({"type":"message_start","message":{"id":"msg_s3f_continuation","type":"message","role":"assistant","model":"u5a","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"S3F continuation complete"}}),
+                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":11,"output_tokens":2}}),
+                json!({"type":"message_stop"}),
+            ]));
+        }
+        S3fContinuation::NoResponse => {}
+        S3fContinuation::Refused => {
+            server.enqueue_response(
+                "/v1/messages",
+                ScriptedResponse::json(
+                    400,
+                    json!({
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "S3F twin continuation refused by the loopback fixture"
+                        }
+                    }),
+                ),
+            );
+        }
+    }
+    let mut session = U5aPrimarySession::new(&server).await;
+    {
+        let mut mcp = session.actor.mcp_state.lock().await;
+        mcp.finish_init();
+        mcp.complete_init();
+    }
+    session
+        .actor
+        .workspace_ops
+        .bind_local_session(
+            &session.actor.session_id_string(),
+            session.actor.tool_context.cwd.as_path().to_path_buf(),
+            session.actor.tool_context.hunk_tracker_handle.clone(),
+            session.actor.agent.borrow().tool_bridge().toolset(),
+            None,
+        )
+        .unwrap();
+    session
+        .capture_projection
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    session.release_decision.add_permits(1);
+    session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user("seed one completed native search"))
+        .await;
+    session
+        .actor
+        .process_conversation_turn_with_recovery(
+            "S3F-seed",
+            None,
+            None,
+            None,
+            &mut length_salvage::LengthSalvage::new(None),
+            &mut Default::default(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(NATIVE_TIMEOUT, session.source_acks.recv())
+        .await
+        .unwrap()
+        .expect("S3F seed has one source ACK");
+    assert!(
+        session.source_acks.try_recv().is_err(),
+        "S3F seed drains exactly one source ACK"
+    );
+    assert_eq!(
+        server.messages_request_count(),
+        1,
+        "S3F seed sends exactly once"
+    );
+    let seed_checkpoint = session
+        .actor
+        .chat_state_handle
+        .read_native_history()
+        .await
+        .unwrap()
+        .checkpoint
+        .expect("S3F seed is durable");
+    assert_eq!(
+        seed_checkpoint
+            .ledger
+            .groups
+            .iter()
+            .map(|group| group.state.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Completed"],
+        "P0-LB (s) seed leaves exactly one Completed group"
+    );
+    session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user(
+            "find and run the exact pending client tool",
+        ))
+        .await;
+    session
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let domain = NativeReplayDomain {
+        backend: xai_grok_sampling_types::ApiBackend::Messages,
+        dialect: NativeReplayDialect::Messages,
+        model: "u5a".into(),
+        row: "u5a".into(),
+        provider: "offline".into(),
+        deployment: "loopback".into(),
+        deployment_revision: "1".into(),
+        endpoint: format!("{}/messages", server.url()),
+        principal: "nonsecret-fixture".into(),
+    };
+    let actor = session.actor.clone();
+    let mut running = tokio::task::spawn_local(async move {
+        super::switch_projection::HISTORY_S3_TEST_DOMAIN
+            .scope(
+                domain,
+                super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                    NativeHistoryRequirement::Selected,
+                    actor.process_conversation_turn_with_recovery(
+                        "S3F-live-pending",
+                        None,
+                        None,
+                        None,
+                        &mut length_salvage::LengthSalvage::new(None),
+                        &mut Default::default(),
+                    ),
+                ),
+            )
+            .await
+    });
+    let mut early = None;
+    let source_after_capture = tokio::select! {
+        result = &mut running => {
+            early = Some(result.unwrap());
+            None
+        }
+        ack = session.source_acks.recv() => {
+            ack.expect("S3F source ACK channel remains live");
+            let checkpoint = session.actor.chat_state_handle.read_native_history()
+                .await.unwrap().checkpoint.expect("S3F real source ACK is durable");
+            session.release_decision.add_permits(2);
+            Some(checkpoint.source.clone())
+        }
+        _ = tokio::time::sleep(NATIVE_TIMEOUT) => {
+            running.abort();
+            panic!("S3F handoff neither finished nor acknowledged its source");
+        }
+    };
+    let outcome = if let Some(outcome) = early {
+        outcome
+    } else {
+        tokio::time::timeout(NATIVE_TIMEOUT, running)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let (respond_to, flushed) = tokio::sync::oneshot::channel();
+    session
+        .chat_proxy
+        .send(PersistenceMsg::FlushAndAck { respond_to })
+        .unwrap();
+    flushed.await.unwrap().unwrap();
+    S3fPendingHandoff {
+        session,
+        server,
+        outcome,
+        source_after_capture,
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn owning_primary_commit_accepts_live_pending_continuation() {
+    use crate::session::storage::StorageAdapter;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    use xai_grok_sampling_types::conversation::projection::{Boundary, TargetRoute};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut handoff = s3f_live_pending_handoff(S3fContinuation::Text).await;
+            let session = &mut handoff.session;
+            assert_eq!(
+                session.executions.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "P (a) the real client executes exactly once"
+            );
+            let refusal = handoff.outcome.as_ref().err().map(|error| {
+                error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_else(|| error.message.as_ref())
+                    .to_owned()
+            });
+            let checkpoint = session
+                .actor
+                .chat_state_handle
+                .read_native_history()
+                .await
+                .unwrap()
+                .checkpoint
+                .unwrap();
+            let captured = handoff
+                .source_after_capture
+                .as_ref()
+                .expect("P observes the real source ACK");
+            let latest = checkpoint.source.producing_bindings.last().unwrap();
+            let projections: Vec<_> = session
+                .projection_attempts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|write| {
+                    write
+                        .checkpoint
+                        .source
+                        .producing_bindings
+                        .iter()
+                        .any(|binding| binding.request == latest.request)
+                })
+                .cloned()
+                .collect();
+            eprintln!(
+                "S3F-P-H {}",
+                json!({"phase":"commit","refusal":refusal,
+            "post_capture_projection_count":projections.len(),
+            "request_count_after_seed":handoff.server.messages_request_count() - 1})
+            );
+            assert!(
+                !refusal
+                    .as_ref()
+                    .is_some_and(|text| text.contains("native compound projection refused")),
+                "P (b) the real compound commit must accept the live result; refusal={refusal:?}"
+            );
+            assert_eq!(
+                projections.len(),
+                1,
+                "P (c) exactly one continuation projection is persisted"
+            );
+            let history = session.actor.chat_state_handle.get_conversation().await;
+            checkpoint.matches_history(&history).unwrap();
+            let result_index = history
+                .iter()
+                .position(|item| {
+                    matches!(item,
+            ConversationItem::ToolResult(result) if result.tool_call_id == "toolu_u5a_0"
+                && !result.is_error && result.content.as_ref() == "offline client result")
+                })
+                .expect("P (c) the executed result is in durable history");
+            assert!(
+                checkpoint.record.history_boundary.items > result_index as u64,
+                "P (c) the checkpoint covers the executed result"
+            );
+            assert_eq!(
+                &checkpoint.source, captured,
+                "P (c) projection never changes captured source"
+            );
+            let group_index = checkpoint
+                .ledger
+                .groups
+                .iter()
+                .position(|group| {
+                    group.state == "LivePending" && group.origin_ref == latest.origin_ref
+                })
+                .expect("P (c) the group remains LivePending");
+            let group = &checkpoint.ledger.groups[group_index];
+            assert!(
+                !checkpoint.active.dispositions.contains_key(&group.key),
+                "P (c) pending is not a durable group transition"
+            );
+            let metadata: NativeProjectionMetadata =
+                serde_json::from_slice(&projections[0].metadata_bytes).unwrap();
+            assert!(
+                metadata
+                    .groups
+                    .iter()
+                    .all(|transition| transition.key != group_index as u32),
+                "P (c) no recorded transition names the pending group"
+            );
+            let mut acknowledged = None;
+            while let Ok(ack) = session.projection_acks.try_recv() {
+                acknowledged = Some(ack);
+            }
+            let acknowledged = acknowledged.expect("P (c) real persistence returns a compound ACK");
+            assert_eq!(acknowledged.after(), &checkpoint.record.history_boundary);
+            assert_eq!(acknowledged.generation(), checkpoint.record.generation);
+            let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+                session.directory.path().to_path_buf(),
+            );
+            let full = adapter
+                .load_session(&session.actor.session_info)
+                .await
+                .unwrap();
+            let light = adapter
+                .load_session_without_updates(&session.actor.session_info)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(&full.chat_history).unwrap(),
+                serde_json::to_value(&light.chat_history).unwrap(),
+                "P (d) full and light reload agree"
+            );
+            let reread = adapter
+                .read_native_history(&session.actor.session_info)
+                .await
+                .unwrap()
+                .checkpoint
+                .unwrap();
+            reread.matches_history(&full.chat_history).unwrap();
+            assert_eq!(
+                reread.record, checkpoint.record,
+                "P (d) re-reading validates the acknowledged checkpoint"
+            );
+            assert_eq!(reread.source, checkpoint.source);
+
+            let twin = s3f_live_pending_handoff(S3fContinuation::Refused).await;
+            let session = &twin.session;
+            assert_eq!(
+                session.executions.load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+            let before = session
+                .actor
+                .chat_state_handle
+                .read_native_history()
+                .await
+                .unwrap()
+                .checkpoint
+                .unwrap();
+            let latest = before.source.producing_bindings.last().unwrap();
+            let history = session.actor.chat_state_handle.get_conversation().await;
+            let start = history
+                .iter()
+                .rposition(|item| {
+                    matches!(
+                        item,
+                        ConversationItem::Assistant(_)
+                            | ConversationItem::BackendToolCall(_)
+                            | ConversationItem::Reasoning(_)
+                            | ConversationItem::Discovery { .. }
+                    )
+                })
+                .map_or(0, |index| index + 1);
+            assert!(
+                matches!(&history[start..], [ConversationItem::ToolResult(result)]
+            if result.tool_call_id == "toolu_u5a_0" && !result.is_error
+                && result.content.as_ref() == "offline client result"),
+                "P (e) SwitchStore twin starts with the executed result tail"
+            );
+            assert_eq!(
+                before
+                    .ledger
+                    .lifecycle
+                    .exchanges
+                    .get(&latest.request)
+                    .map(String::as_str),
+                Some("LiveBound"),
+                "P (e) SwitchStore twin retains the latest live exchange"
+            );
+            let config = session
+                .actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .unwrap();
+            let owner = session
+                .actor
+                .chat_state_handle
+                .register_native_history_owner(
+                    session.actor.session_id_string(),
+                    "S3F-switch-twin".into(),
+                    NativeReplayDomain {
+                        backend: config.api_backend.clone(),
+                        dialect: NativeReplayDialect::Messages,
+                        model: config.model.clone(),
+                        row: config.model.clone(),
+                        provider: "offline".into(),
+                        deployment: "loopback".into(),
+                        deployment_revision: "1".into(),
+                        endpoint: format!("{}/messages", config.base_url),
+                        principal: "nonsecret-fixture".into(),
+                    },
+                    NativeProjectionOwner::SwitchStore,
+                    session.actor.session_turn_active.clone(),
+                )
+                .await
+                .unwrap();
+            let (prepared, _) = session.actor.prepare_native_tool_candidates_timed().await;
+            let bundle = session.actor.prepared_tool_bundle(&prepared);
+            let candidates = xai_chat_state::NativeToolCandidates::with_mcp_membership(
+                bundle.specs.clone(),
+                prepared
+                    .mcp_specs
+                    .iter()
+                    .map(|spec| spec.name.clone())
+                    .collect(),
+            )
+            .with_native_inputs(bundle.native_inputs.clone())
+            .with_history_entry(xai_chat_state::NativeHistoryEntry::captured(
+                NativeHistoryRequirement::Selected,
+                xai_chat_state::NativeHistoryEntryIntent::SwitchStore(owner.token()),
+            ))
+            .unwrap();
+            let selected = candidates.clone().select_for_row(&config);
+            let admission = xai_grok_sampling_types::SearchAdmission::for_row(
+                config.supports_search_tool,
+                &selected,
+            );
+            let result = session
+                .actor
+                .chat_state_handle
+                .project_native_switch_history(
+                    candidates,
+                    config.model.clone(),
+                    None,
+                    TargetRoute::new(config.api_backend.clone(), Boundary::Vertex, admission),
+                )
+                .await;
+            eprintln!(
+                "S3F-P-H {}",
+                json!({"phase":"grant-twin", "refusal":result.as_ref().err()
+            .map(|error| format!("{error:?}")),
+                    "twin_requests_after_seed":twin.server.messages_request_count() - 1,
+                    "twin_outcome":twin.outcome.as_ref().err().map(|error| format!("{error:?}"))})
+            );
+            assert!(
+                matches!(result, Err(NativeUnavailable::Incomplete)),
+                "P (e) SwitchStore must retain its default pending context; result={:?}",
+                result.as_ref().err()
+            );
+            drop(owner);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn owning_primary_live_pending_plan_is_ready() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let handoff = s3f_live_pending_handoff(S3fContinuation::Text).await;
+            let refusal = handoff.outcome.as_ref().err().map(|error| {
+                error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_else(|| error.message.as_ref())
+                    .to_owned()
+            });
+            let request_count_after_seed = handoff.server.messages_request_count() - 1;
+            eprintln!(
+                "S3F-F4-H {}",
+                json!({"phase":"plan","refusal":refusal,"request_count_after_seed":request_count_after_seed})
+            );
+            assert!(
+                handoff.outcome.is_ok(),
+                "F4 H the live pending continuation must reach OwningPrimary readiness; refusal={refusal:?}"
+            );
+            assert_eq!(request_count_after_seed, 2, "F4 H sends one continuation after the handoff");
+            let bodies = handoff.server.request_bodies();
+            let messages = bodies.last().unwrap()["messages"].as_array().unwrap();
+            let last = messages.last().expect("F4 H continuation retains its final user message");
+            assert_eq!(last["role"], "user");
+            let parts = last["content"].as_array().unwrap();
+            assert!(
+                matches!(parts.as_slice(), [part]
+                    if part.get("type").and_then(Value::as_str) == Some("tool_result")
+                        && part.get("tool_use_id").and_then(Value::as_str) == Some("toolu_u5a_0")),
+                "F4 H final user message is exactly the waiting client's result, without a synthetic tail"
+            );
+            eprintln!(
+                "S3F-F4-H {}",
+                json!({"phase":"sent","final_role":last["role"],
+                    "part_types":parts.iter().map(|part| &part["type"]).collect::<Vec<_>>(),
+                    "tool_use_ids":parts.iter().map(|part| &part["tool_use_id"]).collect::<Vec<_>>()})
+            );
+        })
+        .await;
+}

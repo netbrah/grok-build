@@ -380,6 +380,63 @@ pub struct NativePendingContext {
     pub next: NativeNextInput,
 }
 
+pub fn native_pending_context(
+    source: &NativeSource,
+    ledger: &NativeLedger,
+    items: &[super::ConversationItem],
+) -> NativePendingContext {
+    use super::ConversationItem;
+    let start = items
+        .iter()
+        .rposition(|item| {
+            matches!(
+                item,
+                ConversationItem::Assistant(_)
+                    | ConversationItem::BackendToolCall(_)
+                    | ConversationItem::Reasoning(_)
+                    | ConversationItem::Discovery { .. }
+            )
+        })
+        .map_or(0, |index| index + 1);
+    let tail = &items[start..];
+    let next = if tail
+        .iter()
+        .any(|item| matches!(item, ConversationItem::ToolResult(_)))
+    {
+        let parts: Vec<Value> = tail
+            .iter()
+            .map(|item| match item {
+                ConversationItem::ToolResult(result) => serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": result.tool_call_id,
+                    "content": result.content.as_ref(),
+                }),
+                _ => serde_json::json!({"type": "text", "text": item.text_content()}),
+            })
+            .collect();
+        NativeNextInput::Results {
+            messages: vec![serde_json::json!({"role": "user", "content": parts})],
+            client_outputs: Vec::new(),
+        }
+    } else {
+        NativeNextInput::None
+    };
+    let live_binding = source
+        .producing_bindings
+        .last()
+        .filter(|binding| {
+            matches!(next, NativeNextInput::Results { .. })
+                && ledger
+                    .lifecycle
+                    .exchanges
+                    .get(&binding.request)
+                    .map(String::as_str)
+                    == Some("LiveBound")
+        })
+        .map(|binding| binding.origin_ref.clone());
+    NativePendingContext { live_binding, next }
+}
+
 pub(super) fn native_completed_action(
     whole_view: bool,
     previous: Option<&str>,
@@ -3780,7 +3837,8 @@ impl NativeHistoryPlan {
                                 })
                         })
                         .count() as u64
-                || !qualification.shape.completed
+                || (!qualification.shape.completed
+                    && group.action != NativeHistoryAction::ContinueOriginal)
             {
                 return Err(NativePlanRefusal::InvalidQualification);
             }
@@ -4447,6 +4505,142 @@ impl NativeHistoryPlan {
             return Err(NativePlanRefusal::AuthorityUnverified);
         }
         context.capture.history = preparation.mapping().send().clone();
+        let mut input = input;
+        if input.identities.is_empty() {
+            let declarations: Vec<Value> = input
+                .carrier
+                .declarations()
+                .map(serde_json::from_slice)
+                .transpose()
+                .map_err(|_| NativePlanRefusal::InvalidDeclarations)?
+                .unwrap_or_default();
+            let current = input
+                .lowering_request
+                .native_eligible_inputs
+                .as_deref()
+                .filter(|inputs| inputs.matches_specs(&input.lowering_request.tools));
+            let binding_bytes: Arc<[u8]> = serde_json::to_vec(&serde_json::json!({
+                "request": context.capture.issued_request,
+                "generation": context.capture.binding_generation,
+                "origin": {"status": "Unknown"},
+            }))
+            .map_err(|_| NativePlanRefusal::InvalidDeclarations)?
+            .into();
+            let binding = NativeBlobRef {
+                kind: "producing_binding".into(),
+                byte_len: binding_bytes.len() as u64,
+                digest: super::projection::native_content_digest(&binding_bytes),
+            };
+            for (index, top) in declarations.iter().enumerate() {
+                let (namespace, children) =
+                    if top.get("type").and_then(Value::as_str) == Some("namespace") {
+                        (
+                            Some(
+                                top.get("name")
+                                    .and_then(Value::as_str)
+                                    .ok_or(NativePlanRefusal::InvalidDeclarations)?,
+                            ),
+                            top.get("tools")
+                                .and_then(Value::as_array)
+                                .ok_or(NativePlanRefusal::InvalidDeclarations)?
+                                .as_slice(),
+                        )
+                    } else {
+                        (None, std::slice::from_ref(top))
+                    };
+                for (child, declaration) in children.iter().enumerate() {
+                    let Some(schema) = declaration
+                        .get("input_schema")
+                        .or_else(|| declaration.get("parameters"))
+                    else {
+                        continue;
+                    };
+                    let name = declaration
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .ok_or(NativePlanRefusal::InvalidDeclarations)?;
+                    let schema_bytes: Arc<[u8]> = serde_json::to_vec(schema)
+                        .map_err(|_| NativePlanRefusal::InvalidDeclarations)?
+                        .into();
+                    let schema_digest = super::projection::native_content_digest(&schema_bytes);
+                    let entry = current.and_then(|inputs| {
+                        inputs.entries().iter().find(|entry| {
+                            let Some(spec) = input.lowering_request.tools.get(entry.position())
+                            else {
+                                return false;
+                            };
+                            let name_matches = namespace.map_or_else(
+                                || spec.name == name,
+                                |namespace| {
+                                    entry.qualified_namespace() == namespace
+                                        && entry.child_name() == name
+                                },
+                            );
+                            name_matches
+                                && spec.parameters == *schema
+                                && entry.schema_digest() == schema_digest
+                        })
+                    });
+                    let (namespace_kind, qualified_namespace, child_name) =
+                        if let Some(entry) = entry {
+                            (
+                                entry.namespace_kind(),
+                                entry.qualified_namespace().to_owned(),
+                                entry.child_name().to_owned(),
+                            )
+                        } else if namespace.is_none()
+                            && name == "DeferredToolPlaceholder"
+                            && context.capture.target.backend == crate::ApiBackend::Messages
+                            && input
+                                .lowering_request
+                                .search_admission
+                                .is_some_and(crate::SearchAdmission::admitted)
+                            && schema == &serde_json::json!({"type": "object", "properties": {}})
+                        {
+                            (
+                                NativeNamespaceKind::GrokBuild,
+                                "grok_build".into(),
+                                name.into(),
+                            )
+                        } else {
+                            continue;
+                        };
+                    let schema = NativeBlobRef {
+                        kind: "eligible_schema".into(),
+                        byte_len: schema_bytes.len() as u64,
+                        digest: schema_digest,
+                    };
+                    let snapshot = NativeEligibleSnapshot {
+                        version: 1,
+                        namespace_kind,
+                        qualified_namespace: qualified_namespace.clone(),
+                        child_name: child_name.clone(),
+                        schema: schema.clone(),
+                        binding: binding.clone(),
+                    };
+                    let provenance_bytes: Arc<[u8]> = serde_json::to_vec(&snapshot)
+                        .map_err(|_| NativePlanRefusal::InvalidDeclarations)?
+                        .into();
+                    input.identities.push(NativeDeclarationIdentity {
+                        declaration_index: index as u64,
+                        child_index: namespace.map(|_| child as u64),
+                        namespace_kind,
+                        qualified_namespace,
+                        child_name,
+                        declaration: declaration.clone(),
+                        schema,
+                        schema_bytes,
+                        provenance: NativeBlobRef {
+                            kind: "eligible_snapshot".into(),
+                            byte_len: provenance_bytes.len() as u64,
+                            digest: super::projection::native_content_digest(&provenance_bytes),
+                        },
+                        provenance_bytes,
+                        binding_bytes: Some(binding_bytes.clone()),
+                    });
+                }
+            }
+        }
         let mut plan = Self::checked(context, input)?;
         plan.readiness = NativePlanReadiness::OwningPrimary {
             preparation: Box::new(preparation),
@@ -6631,6 +6825,586 @@ mod tests {
             passive_recheck(&plan),
             Err(NativePlanRefusal::FinalCarrierChanged),
             "R3 finalize-aware binding is deferred, not silently accepted"
+        );
+    }
+
+    #[test]
+    fn native_pending_context_reads_live_bound_exchange_and_next_input() {
+        let binding = |request: &str| NativeProducingBinding {
+            request: request.into(),
+            generation: Some(1),
+            origin: json!({"status":"Unknown"}),
+            origin_ref: NativeBlobRef {
+                kind: "producing_binding".into(),
+                byte_len: request.len() as u64,
+                digest: super::super::projection::native_content_digest(request.as_bytes()),
+            },
+        };
+        let older = binding("s3f-older");
+        let latest = binding("s3f-latest");
+        let mut source = NativeSource {
+            schema_version: 2,
+            lineage: "s3f-lineage".into(),
+            source_revision: 2,
+            producing_bindings: vec![older.clone(), latest.clone()],
+            responses: Vec::new(),
+            ordered_blocks: Vec::new(),
+            eligible_snapshots: Vec::new(),
+            older_sources: Vec::new(),
+        };
+        let mut ledger = NativeLedger::default();
+        ledger
+            .lifecycle
+            .exchanges
+            .insert(older.request.clone(), "LiveBound".into());
+        ledger
+            .lifecycle
+            .exchanges
+            .insert(latest.request.clone(), "LiveBound".into());
+        let results = vec![
+            ConversationItem::assistant("handoff"),
+            ConversationItem::tool_result("a", "result a"),
+            ConversationItem::tool_result("b", "result b"),
+        ];
+        let context = native_pending_context(&source, &ledger, &results);
+        assert_eq!(
+            context.live_binding.as_ref(),
+            Some(&latest.origin_ref),
+            "P T case 1 latest live binding"
+        );
+        let NativeNextInput::Results {
+            messages,
+            client_outputs,
+        } = context.next
+        else {
+            panic!("P T case 1 results tail must produce Results");
+        };
+        assert!(
+            client_outputs.is_empty(),
+            "P T case 1 never produces Responses client outputs"
+        );
+        assert_eq!(
+            messages,
+            vec![json!({"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"a","content":"result a"},
+                {"type":"tool_result","tool_use_id":"b","content":"result b"}]
+            })],
+            "P T case 1 one results message preserves item order"
+        );
+        let mut mixed = results.clone();
+        mixed.push(ConversationItem::user("trailing ordinary input"));
+        let context = native_pending_context(&source, &ledger, &mixed);
+        assert_eq!(
+            context.live_binding.as_ref(),
+            Some(&latest.origin_ref),
+            "P T case 2 binding stays live"
+        );
+        let NativeNextInput::Results {
+            messages,
+            client_outputs,
+        } = context.next
+        else {
+            panic!("P T case 2 mixed tail still reaches the results-only policy gate");
+        };
+        assert!(client_outputs.is_empty());
+        assert_eq!(messages.len(), 1);
+        let parts = messages[0]["content"].as_array().unwrap();
+        assert_eq!(
+            parts.len(),
+            3,
+            "P T case 2 must not discard non-result input"
+        );
+        assert_ne!(
+            parts[2]["type"], "tool_result",
+            "P T case 2 preserves a non-result part for refusal"
+        );
+        assert_eq!(
+            &parts[..2],
+            &[
+                json!({"type":"tool_result","tool_use_id":"a","content":"result a"}),
+                json!({"type":"tool_result","tool_use_id":"b","content":"result b"})
+            ]
+        );
+
+        let context =
+            native_pending_context(&source, &ledger, &[ConversationItem::user("fresh input")]);
+        assert!(
+            matches!(context.next, NativeNextInput::None),
+            "P T case 3 fresh-only input never produces Fresh"
+        );
+        assert!(
+            context.live_binding.is_none(),
+            "P T case 3 no live binding without results"
+        );
+        let context = native_pending_context(
+            &source,
+            &ledger,
+            &[
+                ConversationItem::tool_result("old", "old result"),
+                ConversationItem::assistant("assistant-last"),
+            ],
+        );
+        assert!(
+            matches!(context.next, NativeNextInput::None),
+            "P T case 4 assistant-last tail is empty"
+        );
+        assert!(
+            context.live_binding.is_none(),
+            "P T case 4 ignores results before the last assistant"
+        );
+        ledger
+            .lifecycle
+            .exchanges
+            .insert(latest.request.clone(), "Terminal".into());
+        let context = native_pending_context(&source, &ledger, &results);
+        assert!(
+            context.live_binding.is_none(),
+            "P T case 5 never walks back to an older live binding"
+        );
+        assert!(matches!(context.next, NativeNextInput::Results { .. }));
+        ledger
+            .lifecycle
+            .exchanges
+            .insert(latest.request.clone(), "LiveBound".into());
+        let context = native_pending_context(
+            &source,
+            &ledger,
+            &[ConversationItem::system("non-result tail")],
+        );
+        assert!(
+            context.live_binding.is_none(),
+            "P T case 6 live binding requires a results tail"
+        );
+        assert!(
+            matches!(context.next, NativeNextInput::None),
+            "P T case 6 no trailing results"
+        );
+        source.producing_bindings.clear();
+        let context = native_pending_context(&source, &ledger, &[]);
+        assert!(context.live_binding.is_none(), "P T case 7 no bindings");
+        assert!(
+            matches!(context.next, NativeNextInput::None),
+            "P T case 7 no next input"
+        );
+    }
+
+    fn s3f_pending_plan_candidate(
+        state: NativeGroupState,
+        next: NativeNextInput,
+    ) -> Result<NativeHistoryPlan, NativePlanRefusal> {
+        let state_name = match state {
+            NativeGroupState::LivePending => "LivePending",
+            NativeGroupState::AbandonedPending => "AbandonedPending",
+            NativeGroupState::Completed => panic!("S3F fixture requires a pending group"),
+        };
+        let abandoned = state == NativeGroupState::AbandonedPending;
+        let digest = super::super::projection::native_content_digest;
+        let mut blobs: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
+        let mut put = |kind: &str, value: Value| {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let reference = NativeBlobRef {
+                kind: kind.into(),
+                byte_len: bytes.len() as u64,
+                digest: digest(&bytes),
+            };
+            blobs.insert(reference.digest.clone(), bytes.into());
+            reference
+        };
+        let coordinates = |occurrence| NativeSourceCoordinate {
+            lineage: "s3f-lineage".into(),
+            producing_binding: "s3f-issued".into(),
+            turn: 1,
+            item: 0,
+            response: 0,
+            block: occurrence,
+            submember: None,
+            occurrence,
+        };
+        let origin_value =
+            json!({"request":"s3f-issued","generation":1,"origin":{"status":"Unknown"}});
+        let origin = put("producing_binding", origin_value);
+        let schema = put("eligible_schema", json!({"type":"object","properties":{}}));
+        let eligible = put(
+            "eligible_snapshot",
+            serde_json::to_value(NativeEligibleSnapshot {
+                version: 1,
+                namespace_kind: NativeNamespaceKind::Mcp,
+                qualified_namespace: "alpha".into(),
+                child_name: "lookup".into(),
+                schema,
+                binding: origin.clone(),
+            })
+            .unwrap(),
+        );
+        let call = json!({"type":"server_tool_use","id":"srvtoolu_s3f","name":"tool_search_tool_regex","input":{"query":"lookup"}});
+        let client = json!({"type":"tool_use","id":"toolu_s3f","name":"alpha__lookup","input":{}});
+        let blocks = [call.clone(), client]
+            .into_iter()
+            .enumerate()
+            .map(|(index, raw)| NativeRawBlock {
+                coordinates: coordinates(index as u64),
+                wire_index: index as u32,
+                arrival_ordinal: index as u64,
+                block: put("raw_block", raw),
+                partial: None,
+                state: NativeBlockState::ClosedFaithful,
+                eligible_ref: None,
+                eligible_unavailable: None,
+            })
+            .collect();
+        let mut original = vec![
+            ConversationItem::Discovery {
+                item: super::super::tool_search::ToolSearchItem::from_wire(call).unwrap(),
+            },
+            ConversationItem::assistant_tool_calls(vec![super::super::ToolCall {
+                id: "toolu_s3f".into(),
+                name: "alpha__lookup".into(),
+                arguments: "{}".into(),
+            }]),
+        ];
+        match &next {
+            NativeNextInput::Results { .. } => {
+                original.push(ConversationItem::tool_result("toolu_s3f", "s3f result"));
+            }
+            NativeNextInput::Fresh => original.push(ConversationItem::user("fresh input")),
+            NativeNextInput::None => {}
+        }
+        let source = NativeSource {
+            schema_version: 2,
+            lineage: "s3f-lineage".into(),
+            source_revision: 1,
+            producing_bindings: vec![NativeProducingBinding {
+                request: "s3f-issued".into(),
+                generation: Some(1),
+                origin: json!({"status":"Unknown"}),
+                origin_ref: origin.clone(),
+            }],
+            responses: vec![NativeResponseBoundary {
+                occurrence: 0,
+                request: "s3f-issued".into(),
+                lease: 1,
+                attempt: 1,
+                continuation: 0,
+                provider_response_id: Some(json!("msg_s3f")),
+                source_stop_reason: Some("tool_use".into()),
+                block_start: 0,
+                block_end: 2,
+                stream_complete: true,
+                status: NativeResponseStatus::Accepted,
+            }],
+            ordered_blocks: blocks,
+            eligible_snapshots: vec![eligible.clone()],
+            older_sources: Vec::new(),
+        };
+        let mut client_member = coordinates(1);
+        client_member.submember = Some(0);
+        let eligible_member_links = vec![NativeEligibleMemberLink {
+            source: client_member.clone(),
+            identity: NativeEligibleMemberIdentity::Backed {
+                eligible_ref: eligible,
+            },
+        }];
+        let source_ref = put(
+            "source",
+            serde_json::to_value(NativeSourceV2::from_parts(
+                source.clone(),
+                eligible_member_links.clone(),
+            ))
+            .unwrap(),
+        );
+        let active_ref = put(
+            "active",
+            serde_json::to_value(NativeActive::default()).unwrap(),
+        );
+        let mut ledger = NativeLedger {
+            source_digest: source_ref.digest.clone(),
+            active_digest: active_ref.digest.clone(),
+            groups: vec![NativeGroupRecord {
+                key: "s3f-group".into(),
+                family: "Messages".into(),
+                execution: "server".into(),
+                origin_ref: origin.clone(),
+                validated_join: Some("srvtoolu_s3f".into()),
+                keyless_server_fifo: false,
+                members: vec![coordinates(0)],
+                duplicate_observations: Vec::new(),
+                state: state_name.into(),
+            }],
+            ..Default::default()
+        };
+        ledger
+            .lifecycle
+            .groups
+            .insert("s3f-group".into(), state_name.into());
+        ledger.lifecycle.exchanges.insert(
+            "s3f-issued".into(),
+            if abandoned { "Terminal" } else { "LiveBound" }.into(),
+        );
+        ledger.lifecycle.waiting_clients.push(NativeWaitingClient {
+            client_id: "toolu_s3f".into(),
+            source: coordinates(1),
+            result: None,
+            delivery: "Waiting".into(),
+        });
+        if abandoned {
+            ledger.lifecycle.terminal.insert(
+                "s3f-issued:1".into(),
+                NativeTerminalMarker {
+                    outcome: NativeUnavailable::Cancelled,
+                    last_accepted_response: Some(0),
+                    observed_bytes: 100,
+                    failed_block: None,
+                },
+            );
+        }
+        ledger.accounting = vec![
+            NativeViewLink {
+                source: coordinates(0),
+                source_digest: source_ref.digest.clone(),
+                view_item: Some(0),
+                view_digest: Some(digest(&serde_json::to_vec(&original[0]).unwrap())),
+                role: "Discovery".into(),
+                source_subrange: None,
+            },
+            NativeViewLink {
+                source: coordinates(1),
+                source_digest: source_ref.digest.clone(),
+                view_item: None,
+                view_digest: None,
+                role: "SourceOnly".into(),
+                source_subrange: None,
+            },
+        ];
+        let eligible_member_accounting = vec![NativeEligibleMemberAccounting {
+            source: client_member,
+            source_digest: source_ref.digest.clone(),
+        }];
+        let ledger_ref = put(
+            "ledger",
+            serde_json::to_value(NativeLedgerV2::from_parts(
+                ledger.clone(),
+                eligible_member_accounting.clone(),
+            ))
+            .unwrap(),
+        );
+        let history = NativeHistoryBoundary {
+            items: original.len() as u64,
+            digest: digest(&serde_json::to_vec(&original).unwrap()),
+        };
+        let record = NativeSearchHistoryV1 {
+            schema_version: 2,
+            policy_revision: 1,
+            reader_floor: 2,
+            limits_revision: 1,
+            lineage: NativeLineage {
+                id: "s3f-lineage".into(),
+                source_revision: 1,
+                source_digest: source_ref.digest.clone(),
+            },
+            generation: 1,
+            high_water: 1,
+            source: source_ref,
+            active: active_ref,
+            ledger: ledger_ref,
+            history_boundary: history.clone(),
+            exchange_snapshot: None,
+            previous_checkpoint: None,
+            capacity: BTreeMap::new(),
+        };
+        let domain = NativeReplayDomain {
+            backend: crate::ApiBackend::Messages,
+            dialect: NativeReplayDialect::Messages,
+            model: "s3f-target".into(),
+            row: "s3f-target".into(),
+            provider: "offline".into(),
+            deployment: "loopback".into(),
+            deployment_revision: "1".into(),
+            endpoint: "https://offline.invalid/v1".into(),
+            principal: "nonsecret-fixture".into(),
+        };
+        let admission = crate::SearchAdmission {
+            supports_search_tool: false,
+            has_searchable_tools: false,
+        };
+        let target = TargetRoute::new(crate::ApiBackend::Messages, Boundary::Vertex, admission);
+        let pending = NativePendingContext {
+            live_binding: Some(origin),
+            next,
+        };
+        let identity = NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            eligible_member_accounting,
+        };
+        let selected = vec![coordinates(0)];
+        let authorship = BTreeMap::from([
+            (0, NativeIdAuthorship::Provider),
+            (1, NativeIdAuthorship::Provider),
+        ]);
+        let core = prepare_native_history_core(
+            &NativePureHistory {
+                record: &record,
+                source: &source,
+                ledger: &ledger,
+                identity: &identity,
+                blobs: &blobs,
+                authorship: &authorship,
+            },
+            &NativeProjectionInputs {
+                target_model_id: "s3f-target",
+                target: &target,
+                tools: &[],
+                current: None,
+                selected: &selected,
+                origin_domains: &BTreeMap::new(),
+                pending: &pending,
+                prior_f: None,
+            },
+            |_| {
+                (
+                    DiscoveryOrigin {
+                        boundary: Boundary::Vertex,
+                        owner_model_id: None,
+                    },
+                    NativeQualification {
+                        source: None,
+                        target: Some(domain.clone()),
+                        request: Some(domain.clone()),
+                        original_admission: admission,
+                        shape: NativeReplayShape {
+                            family: NativeReplayFamily::MessagesServer,
+                            keyless_server: false,
+                            output_id_present: false,
+                            completed: false,
+                            result_error: false,
+                            referenced_members: 0,
+                        },
+                        receipt: None,
+                        intact_membership: true,
+                        current_backing: false,
+                        faithful_identity: false,
+                    },
+                )
+            },
+        )
+        .expect("F4 local pending fixture reaches the policy core");
+        eprintln!(
+            "S3F-F4-T {}",
+            json!({"state":state_name,"action":format!("{:?}",core.decision.groups[0].action),
+                "qualification_completed":core.accounting.qualification[0].shape.completed})
+        );
+        let mut post: Vec<_> = core
+            .decision
+            .members
+            .iter()
+            .filter_map(|member| {
+                member
+                    .neutral
+                    .as_ref()
+                    .map(|neutral| ConversationItem::assistant(neutral.text.clone()))
+                    .or_else(|| {
+                        member.raw.as_ref().map(|raw| ConversationItem::Discovery {
+                            item: super::super::tool_search::ToolSearchItem::from_wire(raw.clone())
+                                .unwrap(),
+                        })
+                    })
+            })
+            .collect();
+        post.extend_from_slice(&original[1..]);
+        let request = crate::ConversationRequest {
+            items: post.clone(),
+            model: Some(domain.model.clone()),
+            search_admission: Some(admission),
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        };
+        let carrier = NativeFinalCarrier::capture(
+            serde_json::to_vec(&passive_lower(&request, crate::ApiBackend::Messages))
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+        let context = NativeHistoryRequestContext::captured(
+            NativeHistoryRequirement::Selected,
+            NativeHistoryCapture {
+                history,
+                history_revision: 1,
+                lineage: record.lineage.clone(),
+                native_generation: record.generation,
+                high_water: record.high_water,
+                projection_revision: 0,
+                strict_append_sequence: 1,
+                binding_generation: 1,
+                install_generation: 1,
+                issued_request: "s3f-issued".into(),
+                target: domain,
+                execution: NativeHistoryExecution::Server,
+                original_admission: admission,
+                versions: NativeHistoryVersions {
+                    schema: 2,
+                    policy: 1,
+                    projection: 1,
+                    reader: 2,
+                    limits: 1,
+                },
+            },
+            NativeHistoryWriteAuthority::SendOnly,
+        );
+        NativeHistoryPlan::checked(
+            context,
+            NativeHistoryPlanInput {
+                input_history_bytes: serde_json::to_vec(&original).unwrap().into(),
+                ledger_bytes: blobs[&record.ledger.digest].clone(),
+                post_history_bytes: serde_json::to_vec(&post).unwrap().into(),
+                record,
+                lowering_request: &request,
+                carrier,
+                identities: Vec::new(),
+                qualification: core.accounting.qualification.clone(),
+                core,
+            },
+        )?
+        .send_only()
+    }
+
+    #[test]
+    fn native_history_plan_accepts_live_pending_groups() {
+        let continued = s3f_pending_plan_candidate(
+            NativeGroupState::LivePending,
+            NativeNextInput::Results {
+                messages: vec![json!({"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"toolu_s3f","content":"s3f result"}
+                ]})],
+                client_outputs: Vec::new(),
+            },
+        );
+        assert!(
+            continued.is_ok(),
+            "F4 T (a) ContinueOriginal must reach a checked send-only plan; refusal={:?}",
+            continued.as_ref().err()
+        );
+        let plan = continued.unwrap();
+        assert_eq!(
+            plan.core.decision.groups[0].action,
+            NativeHistoryAction::ContinueOriginal
+        );
+        assert!(!plan.qualification[0].shape.completed);
+        assert_eq!(
+            validate_native_history_plan(plan.context(), Some(&plan), &plan.carrier),
+            Ok(NativeHistoryReady::SendOnly)
+        );
+        let omitted =
+            s3f_pending_plan_candidate(NativeGroupState::AbandonedPending, NativeNextInput::Fresh);
+        assert_eq!(
+            omitted.as_ref().err(),
+            Some(&NativePlanRefusal::InvalidQualification),
+            "F4 T (c) OmitSendOnly remains refused for an incomplete qualification"
+        );
+        let waiting =
+            s3f_pending_plan_candidate(NativeGroupState::LivePending, NativeNextInput::None);
+        assert_eq!(
+            waiting.as_ref().err(),
+            Some(&NativePlanRefusal::InvalidQualification),
+            "F4 T (b) AwaitResults remains zero-submission"
         );
     }
 }

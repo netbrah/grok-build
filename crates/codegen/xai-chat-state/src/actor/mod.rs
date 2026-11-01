@@ -1156,6 +1156,27 @@ impl ChatStateActor {
                 )?,
             ),
         };
+        let checkpoint =
+            if checkpoint.record.generation != 0 && checkpoint.authority_digest.is_none() {
+                let read = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    self.persistence.read_native_history(),
+                )
+                .await
+                .map_err(|_| NativeUnavailable::Indeterminate)?
+                .map_err(|_| NativeUnavailable::Indeterminate)??;
+                let persisted = read.checkpoint.ok_or(NativeUnavailable::StaleHistory)?;
+                if read.lineage != token.lineage()
+                    || persisted.bytes != checkpoint.bytes
+                    || persisted.authority_digest.is_none()
+                {
+                    return Err(NativeUnavailable::StaleHistory);
+                }
+                self.state.native.checkpoint = Some(persisted.clone());
+                persisted
+            } else {
+                checkpoint
+            };
         let context = preparation.context().ok_or(NativeUnavailable::Incomplete)?;
         if checkpoint.record.generation != context.capture().native_generation
             || checkpoint.record.high_water != context.capture().high_water
