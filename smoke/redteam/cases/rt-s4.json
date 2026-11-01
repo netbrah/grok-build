@@ -1,6 +1,9 @@
 {
   "id": "RT-S4",
   "title": "glm worker seat (ledger R-SEAT-1, coordinator addendum #2): qwen3.8-27b parent, default config (NO glm-row patch), v1 task tool spawn with EXPLICIT child model = glm-5.2 (c-subagent pattern: model lives in the --agents agent definition, task tool names the agent via subagent_type='echo' \u2014 spawn_subagent resolves the definition's model; verified on wire: parent must pass subagent_type 'echo', not general-purpose, or the child silently inherits the parent model). Asserts: (1) child completes -> CHILD-OK in parsed output; (2) WIRE: a request with body.model == glm-5.2 exists AND no x-litellm-tags header on glm requests (glm row is untagged in the live config \u2014 a tag header on the glm path IS the 401 bug, hard FAIL); (3) parent turn completes after the child -> PARENT-OK + exit 0.",
+  "disabled": true,
+  "reason": "Premise not preserved (REDTEAM-REFRESH r3 section 3.4, plan-named disable): the seat identity is the model id. This case measures a glm worker seat (explicit child model glm-5.2 via the echo agent definition) and no live glm row exists (live-rows-20261030-tf-retired.json: 16 rows, none glm). The section 3.2 successor for glm-5.2 is qwen3.8-flash-next, the same row as this case's qwen parent after the remap, so a qwen child on a qwen parent duplicates RT-S1..RT-S3 and the two pinned identities collapse onto one wire id (section 3.7). Its R-AZ legs are lenient-only, so no strict re-cell applies.",
+  "unblocks_at": "a live glm-family row in the live config; then remap the child seat to it, re-run the section 3.7 before/after identity check and the per-endpoint class print, and set disabled=false",
   "model": "qwen3.8-27b",
   "agents_json": {
     "echo": {

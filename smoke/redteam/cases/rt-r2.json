@@ -1,11 +1,11 @@
 {
   "id": "RT-R2",
-  "title": "Resume+switch: RT-R1 state, resume with -m gpt-5.6-sol, 2 turns (= RT-M1 via the resume path)",
+  "title": "Resume+switch: RT-R1 state, resume with -m gpt-6.1-sol, 2 turns (= RT-M1 via the resume path)",
   "expected_red": {
     "id": "REPLAY-1",
-    "reason": "pre-registered product-side red (pass-4 adjudicated): resume with -m gpt-5.6-sol, then the post-switch turns deterministically fail with the same Azure 400 (litellm.BadRequestError 'Invalid input[7].content: array too long') as RT-M1 via the resume path"
+    "reason": "pre-registered product-side red, historical: pass-4 adjudicated on the retired TrueFoundry sol row (KE-R19), where after the -m resume the post-switch turns deterministically failed with the same Azure 400 (litellm.BadRequestError 'Invalid input[7].content: array too long') as RT-M1 via the resume path. The resume target is now gpt-6.1-sol; this red is re-adjudicated from a fresh capture, never re-typed (r3d D2.4)"
   },
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "steps": [
     {
       "op": "turn",
@@ -22,7 +22,7 @@
     },
     {
       "op": "switch",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6.1-sol",
       "via": "resume"
     },
     {
@@ -34,6 +34,7 @@
       "prompt": "RT-R2 S2: Reply with exactly: RT-R2-S2"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 13,
   "assert": {
@@ -53,7 +54,7 @@
         "kind": "field",
         "file": "req-*.json",
         "path": "$.body.model",
-        "eq": "gpt-5.6-sol",
+        "eq": "gpt-6.1-sol",
         "where": {
           "method": "POST",
           "path": "/v1/responses"

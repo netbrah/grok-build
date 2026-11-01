@@ -6,19 +6,19 @@
   "suite": "cache-economics",
   "tier": "full",
   "driver": "headless",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wirecap": true,
   "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
   "steps": [
     {
       "op": "turn",
       "prompt": "In under 150 words, explain the trade-offs between append-only log storage and in-place update storage for a session history file, with one concrete example of each.",
-      "timeout_s": 300
+      "timeout_s": 900
     },
     {
       "op": "turn",
       "prompt": "One sentence: which of the two storage styles is better for a crash-prone notebook, and why?",
-      "timeout_s": 300
+      "timeout_s": 900
     }
   ],
   "watchdog_s": 300,
@@ -41,7 +41,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "regex": true,
         "grep": "cache_write_tokens\\\\?\":\\s*[1-9]",

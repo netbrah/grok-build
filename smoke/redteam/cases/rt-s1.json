@@ -1,16 +1,16 @@
 {
   "id": "RT-S1",
   "title": "v1 subagent (spawn_subagent) in a LONG session: parent near compact threshold, child qwen, parent continues to compact",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "config_patch": {
-    "model/qwen3.8-27b/context_window": 12000
+    "model/qwen3.8-flash-next/context_window": 12000
   },
   "seed": {
     "hist_tokens": 11000
   },
   "agents_json": {
     "echo": {
-      "model": "qwen3.8-27b",
+      "model": "qwen3.8-flash-next",
       "prompt": "You are an echo agent. Reply with exactly what the parent asks for, nothing else."
     }
   },

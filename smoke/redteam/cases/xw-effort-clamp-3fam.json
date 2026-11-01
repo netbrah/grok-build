@@ -1,12 +1,12 @@
 {
  "schema_version": 1,
  "id": "XW-EFFORT-CLAMP-3FAM",
- "title": "ADVERSARIAL-CASES-1 case 5 (ADV1-R1): EFFORT-CLAMP — reasoning-effort projection across family menus (the R5/R6 effort-seam contract), driven by the SUPPORTED-OP APPROXIMATION: the brief's draft (XW-EFFORT-MID) used the SCHEMA-EXT-1 set_effort op, and the frozen engine has NO /effort op — so the cursor is pinned hermetically (config_patch models/default_reasoning_effort=high; idempotent, the live value is already high as of the 2026-09-19 re-verification) and the seam is exercised by the CARRIED-effort path across the ACP switch chain in ONE fresh session (no seed, no cell): HOP-1 gpt-5.6-sol (family codex) — cursor high IS in the sol menu {low,medium,high,max,ultra} -> rides as high (PREMISE, anti-vacuous). HOP-2 /model qwen3.8-27b (family codex->qwen = FAMILY SWITCH -> preemptive compact; no effort on the compact request per r3r req-003) — carried high NOT in the qwen menu {xhigh,medium,low} (EXPLICIT menu, config.toml re-verified 2026-09-18) -> R6 projection = TARGET DEFAULT xhigh. HOP-3 /model gpt-5.6-terra (family qwen->codex = FAMILY SWITCH -> preemptive compact) — carried xhigh NOT in the terra menu {low,medium,high,max,ultra} (EXPLICIT menu, re-verified 2026-09-18 — the slug-inference era note is STALE) -> projection = TERRA DEFAULT low. Code-derivable chain (at-effort-2hop first-hand cites): provider.rs:138-145 wire remap; reasoning_effort.rs:11 apply_supported_effort; remote_config/manager/mod.rs:572 project_effort; model_switch.rs Preserve arm stores the projected value back (which is what HOP-3 then carries). THE M-1 RISK (triage #17, XW-QWEN-EFFORT-CLAMP-1, apex-ayl.83; the proven W5 class, probe P6=400): if the seam DEGRADES instead of projecting (stock clamp or identity leak), the raw/clamped 'high' lands on the vLLM qwen, whose menu rejects it with the 'Unexpected reasoning effort' 400 — the HOP-2 leak guard + M-1 GATE pin that boundary. PREDICTED: every pin GREEN — the effort chain rides high -> xhigh -> low, the final terra request is a 200, no retry storm. RED semantics (STOP-AND-REPORT, house rule): a 400/503 FINAL on either family boundary (the M-1 'Unexpected reasoning effort' class verbatim, or any NEW phrasing), a wire effort OUTSIDE the pinned chain (raw 'high' on a qwen turn = the R5 leak class / the M-1 shape; 'xhigh' on a terra turn = the projection did not fire; 'ultra' anywhere = the cursor-leak class, cf. triage #37), a hook/effort anomaly on the compact request, or an acp_error. The explicit-request arm (user /effort mid-session) and the messages-bridge W5 clamp are NOT exercised by this case — no set_effort op exists (runner-extension flag in the recon_note; this lane does not edit run.py). RE-PIN 2026-09-22 (overwatch-adversarial, run full-sweep-20260922T004829Z): the pre-apex-ayl.86 text assumed the qwen-hop projection WROTE THE PROJECTED VALUE (xhigh) BACK INTO the session cursor, so terra (xhigh not in its menu) would project to the TERRA DEFAULT low. Post-.86 design (provider.rs module doc R-MENU-DERIVED + model_switch.rs handle_set_session_model, verified at ca31564): the session effort cursor is INHERITED across /model switches — NO projection write-back exists — and egress projects per target. The cursor after HOP-2 is still HIGH (valid, never clamped in place); HIGH IS in the terra menu {low,medium,high,max,ultra} -> it RIDES AS-IS. Observed 20260922T004829Z wire: req-005 sol effort=high, req-006 qwen effort=xhigh (egress projection HELD), req-007 terra effort=high (inherited cursor rides). p3 re-pinned \"effort\": \"low\" -> \"effort\": \"high\". Leak guards unchanged and still bind: no out-of-menu value may ride any target wire.",
+ "title": "ADVERSARIAL-CASES-1 case 5 (ADV1-R1): EFFORT-CLAMP — reasoning-effort projection across family menus (the R5/R6 effort-seam contract), driven by the SUPPORTED-OP APPROXIMATION: the brief's draft (XW-EFFORT-MID) used the SCHEMA-EXT-1 set_effort op, and the frozen engine has NO /effort op — so the cursor is pinned hermetically (config_patch models/default_reasoning_effort=high; idempotent, the live value is already high as of the 2026-09-19 re-verification) and the seam is exercised by the CARRIED-effort path across the ACP switch chain in ONE fresh session (no seed, no cell): HOP-1 gpt-6.1-sol (family codex) — cursor high IS in the sol menu {low,medium,high,max,ultra} -> rides as high (PREMISE, anti-vacuous). HOP-2 /model qwen3.8-flash-next (family codex->qwen = FAMILY SWITCH -> preemptive compact; no effort on the compact request per r3r req-003) — carried high NOT in the qwen menu {xhigh,medium,low} (EXPLICIT menu, config.toml re-verified 2026-09-18) -> R6 projection = TARGET DEFAULT xhigh. HOP-3 /model gpt-5.6-terra (family qwen->codex = FAMILY SWITCH -> preemptive compact) — carried xhigh NOT in the terra menu {low,medium,high,max,ultra} (EXPLICIT menu, re-verified 2026-09-18 — the slug-inference era note is STALE) -> projection = TERRA DEFAULT low. Code-derivable chain (at-effort-2hop first-hand cites): provider.rs:138-145 wire remap; reasoning_effort.rs:11 apply_supported_effort; remote_config/manager/mod.rs:572 project_effort; model_switch.rs Preserve arm stores the projected value back (which is what HOP-3 then carries). THE M-1 RISK (triage #17, XW-QWEN-EFFORT-CLAMP-1, apex-ayl.83; the proven W5 class, probe P6=400): if the seam DEGRADES instead of projecting (stock clamp or identity leak), the raw/clamped 'high' lands on the vLLM qwen, whose menu rejects it with the 'Unexpected reasoning effort' 400 — the HOP-2 leak guard + M-1 GATE pin that boundary. PREDICTED: every pin GREEN — the effort chain rides high -> xhigh -> low, the final terra request is a 200, no retry storm. RED semantics (STOP-AND-REPORT, house rule): a 400/503 FINAL on either family boundary (the M-1 'Unexpected reasoning effort' class verbatim, or any NEW phrasing), a wire effort OUTSIDE the pinned chain (raw 'high' on a qwen turn = the R5 leak class / the M-1 shape; 'xhigh' on a terra turn = the projection did not fire; 'ultra' anywhere = the cursor-leak class, cf. triage #37), a hook/effort anomaly on the compact request, or an acp_error. The explicit-request arm (user /effort mid-session) and the messages-bridge W5 clamp are NOT exercised by this case — no set_effort op exists (runner-extension flag in the recon_note; this lane does not edit run.py). RE-PIN 2026-09-22 (overwatch-adversarial, run full-sweep-20260922T004829Z): the pre-apex-ayl.86 text assumed the qwen-hop projection WROTE THE PROJECTED VALUE (xhigh) BACK INTO the session cursor, so terra (xhigh not in its menu) would project to the TERRA DEFAULT low. Post-.86 design (provider.rs module doc R-MENU-DERIVED + model_switch.rs handle_set_session_model, verified at ca31564): the session effort cursor is INHERITED across /model switches — NO projection write-back exists — and egress projects per target. The cursor after HOP-2 is still HIGH (valid, never clamped in place); HIGH IS in the terra menu {low,medium,high,max,ultra} -> it RIDES AS-IS. Observed 20260922T004829Z wire: req-005 sol effort=high, req-006 qwen effort=xhigh (egress projection HELD), req-007 terra effort=high (inherited cursor rides). p3 re-pinned \"effort\": \"low\" -> \"effort\": \"high\". Leak guards unchanged and still bind: no out-of-menu value may ride any target wire.",
  "bead": "apex-dqa",
  "suite": "cross-wire",
  "tier": "slim",
  "driver": "acp",
- "model": "gpt-5.6-sol",
+ "model": "gpt-6.1-sol",
  "wire": "responses",
  "wirecap": true,
  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
@@ -17,17 +17,17 @@
   {
    "op": "turn",
    "prompt": "Reply with exactly: XW-EFFORT-CLAMP-P1",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "switch",
-   "model": "qwen3.8-27b",
+   "model": "qwen3.8-flash-next",
    "via": "acp"
   },
   {
    "op": "turn",
    "prompt": "Reply with exactly: XW-EFFORT-CLAMP-P2",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "switch",
@@ -37,11 +37,11 @@
   {
    "op": "turn",
    "prompt": "Reply with exactly: XW-EFFORT-CLAMP-P3",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "recon_note",
-   "note": "RUNNER-EXTENSION FLAG (SCHEMA-EXT-1, doctrine §6 convergence): the M-1 class's EXACT seam — an explicit user /effort change mid-session onto a target family whose menu rejects the clamped image — needs a `set_effort` step op (the brief's draft used set_effort with wire:'messages' to force the messages-bridge override). Both campaign streams independently hit this schema wall (KE-3 N2 / §10.1); the op set is settled by convergence, the RECON guards remain. This case's supported-op approximation (config_patch cursor + switch chain) exercises the CARRIED-effort path through the same projection seam (project_effort, remote_config/manager/mod.rs:572; apply_supported_effort, reasoning_effort.rs:11) but NOT the explicit-request arm and NOT the messages-bridge W5 clamp (probe P6=400, the proven half of M-1 — the responses-wire projection is what this case pins). A set_effort op is owed; this lane does not edit run.py (report-and-stop discipline). WIRE READ (non-scoring): the three per-family turn requests are the fixture — req bodies for gpt-5.6-sol (hop 1), qwen3.8-27b (hop 2, post family-switch compact), and gpt-5.6-terra (hop 3, post family-switch compact); the EFFORT CHAIN RECORD recon lists every effort value that actually rode, in capture order, for the coordinator's R5/R6 seam adjudication."
+   "note": "RUNNER-EXTENSION FLAG (SCHEMA-EXT-1, doctrine §6 convergence): the M-1 class's EXACT seam — an explicit user /effort change mid-session onto a target family whose menu rejects the clamped image — needs a `set_effort` step op (the brief's draft used set_effort with wire:'messages' to force the messages-bridge override). Both campaign streams independently hit this schema wall (KE-3 N2 / §10.1); the op set is settled by convergence, the RECON guards remain. This case's supported-op approximation (config_patch cursor + switch chain) exercises the CARRIED-effort path through the same projection seam (project_effort, remote_config/manager/mod.rs:572; apply_supported_effort, reasoning_effort.rs:11) but NOT the explicit-request arm and NOT the messages-bridge W5 clamp (probe P6=400, the proven half of M-1 — the responses-wire projection is what this case pins). A set_effort op is owed; this lane does not edit run.py (report-and-stop discipline). WIRE READ (non-scoring): the three per-family turn requests are the fixture — req bodies for gpt-6.1-sol (hop 1), qwen3.8-flash-next (hop 2, post family-switch compact), and gpt-5.6-terra (hop 3, post family-switch compact); the EFFORT CHAIN RECORD recon lists every effort value that actually rode, in capture order, for the coordinator's R5/R6 seam adjudication."
   }
  ],
  "watchdog_s": 300,
@@ -72,7 +72,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "any": true,
     "grep": "\"effort\": \"high\"",
@@ -84,7 +84,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "any": true,
     "grep": "\"effort\": \"xhigh\"",
@@ -96,7 +96,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "all": true,
     "absent": true,
@@ -148,7 +148,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "min": 1,
     "max": 3,

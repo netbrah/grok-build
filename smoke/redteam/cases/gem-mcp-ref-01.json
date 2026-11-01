@@ -2,6 +2,7 @@
   "schema_version": 1,
   "id": "GEM-MCP-REF-01",
   "title": "Gemini (gemini-3.8-flash-cyber, LiteLLM proxy, RESPONSES wire): MCP tool discovery whose result carries a JSON-Schema $ref. One headless turn: search_tool for the local refprobe MCP fixture (fixtures/refprobe_mcp.py), whose cluster_probe inputSchema uses $defs + \"$ref\": \"#/$defs/cluster_ref\" (same shape as the ontap-cluster server's ssh_execute), then use_tool on it. Reproduces the operator-reported Vertex 400 from SCS session 01a179e9-392e-7093-a395-21692e2e9399: 'The referenced name `#/$defs/cluster_ref` in function_response.response does not match to a display_name in the function_response.parts.' Hypothesis under test: the proxy maps the search_tool function_call_output (JSON text) into Gemini function_response.response, and Vertex reads any {\"$ref\": ...} there as a pointer to a function-response part. Pre-registered red: FAIL (the 400) is the expected evidence before GEM-REF-1; after it, PASS requires the fixture payload in the reply, the use_tool call, the result on the wire and no escaped $ref in any row request (read the verdict from report.md).",
+  "bead": "apex-ogm5",
   "suite": "mcp-tool",
   "tier": "slim",
   "driver": "headless",
@@ -18,6 +19,32 @@
   "expected_red": {
     "id": "GEM-MCP-REF-400"
   },
+  "mcp_calls": [
+    {
+      "id": "rp1",
+      "server": "refprobe",
+      "tool": "cluster_probe",
+      "expect_name": "refprobe__cluster_probe",
+      "via": "search_tool_use_tool",
+      "args": {
+        "cluster": "vsim",
+        "command": "version"
+      },
+      "premise": "model",
+      "output_contains": "probe ok: cluster=vsim command=version"
+    }
+  ],
+  "tool_calls": [
+    {
+      "id": "ut1",
+      "tool": "use_tool",
+      "args": {
+        "tool_name": "refprobe__cluster_probe"
+      },
+      "premise": "model",
+      "output_contains": "probe ok: cluster=vsim command=version"
+    }
+  ],
   "steps": [
     {
       "op": "turn",
@@ -40,6 +67,19 @@
       }
     ],
     "wire": [
+      {
+        "id": "rp_ann",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gemini-3.8-flash-cyber"
+        },
+        "any": true,
+        "grep": "- refprobe (",
+        "label": "CONTROL (harness premise, anti-vacuous pin): the refprobe MCP server's turn-boundary announcement ('Connected MCP servers:' + '- refprobe (N tool(s)…)', rendered by xai-grok-tools search_tool/mod.rs:96-101 + :190-196) actually reached the row's wire — the rig OFFERED the MCP tool. 0 hits = BLOCKED/HARNESS (server never announced: startup failure, fixture missing, config not inherited), never a model conclusion. BYTE UNCERTAINTY (coordinator ruling RR-1): the refprobe announcement bytes cannot be verified offline; this grep copies the in-tree cg_ann shape ('- codegraph (') changing only the server name. T9's live run must confirm the pin hits; a miss reads BLOCKED (fail-closed, never a false PASS) and the fix is the pin bytes, not the verdict spec."
+      },
       {
         "id": "disc_on_wire",
         "kind": "grep",
@@ -98,6 +138,11 @@
   "scoring": {
     "require_wire_evidence": true,
     "vacuous_if": [
+      {
+        "pin": "rp_ann",
+        "class": "harness",
+        "note": "the refprobe MCP server never announced on the row wire — the rig failed (startup/fixture/config); no model conclusion about the $ref defect is possible without the offer."
+      },
       {
         "pin": "disc_on_wire",
         "class": "model",

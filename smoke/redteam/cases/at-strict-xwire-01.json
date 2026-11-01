@@ -1,44 +1,44 @@
 {
  "schema_version": 1,
  "id": "AT-STRICT-XWIRE-01",
- "title": "OVERWATCH-ADVERSARIAL — INVESTIGATION (no expected_red): the DEPLOY-SHAPE cross-family switch — qwen3.8-27b (3 thinking turns, family qwen) -> gpt-5.6-sol (family codex) where the sol row carries strict_responses_input=true EXPLICITLY (deploy config.toml shape: lines 16/642/673 = sol/terra/luna true; the East US 2 affinity pin is inherited unpatched from the hermetic home config). WHY THIS CASE EXISTS: the existing cross-family sol cases (RT-XREPLAY1/2) were written .62-era and pin strict=false on the sol row; NO case covers the strict=true deploy shape, which is what a daily qwen work session hitting /model sol actually runs. DESIGN PREDICTION (apex-ayl.123 XW-XREPLAY-1 doc, model_switch.rs:446-463 + provider.rs project_strict_responses_input): the preemptive family-switch compact is SKIPPED for Responses targets (family_switch_compact_required = not Responses); the .71 switch-time projection (xw_ store-side rekey) + the send-time STRICT projector own the seam: on every /responses send, each reasoning input item has `content` and `id` REMOVED (field removal, not empty-string) and `summary` retained. PREDICTED OBSERVATION: the first sol request carries reasoning items of shape {type: reasoning, summary: <text>} — NO id field at all, NO xw_/rs_ ids, NO content — and Azure either (A) ACCEPTS the id-less summary-only shape (200, sol_count 1, the clean path) or (B) rejects it (400 id-class, sol_count 2) and the 78a236f reactive model-bound strip + retry heals it (last sol request reasoning-free, 200). BOTH (A) and (B) with a healthy terminal state are the .123 design contract; a terminal acp_error, a sol_count >3 storm, an xw_/rs_ id riding a strict-row sol request (projection lapse), or the S1 token missing is a defect -> STOP-AND-REPORT. The 400 phrasing, if any, is captured as recon to extend the triage catalog signature (the known `id: ''` variant gains or confirms an `id`-absent variant on the strict projection path). ADJUDICATION NOTE 2026-09-22: sibling lenient-row proof in the same sweep (RT-XREPLAY1/2 @ full-sweep-20260922T004829Z) shows the strict=false shape 400s on the xw_ rekeyed id ('Expected an ID that begins with rs') and recovers via the reactive net — session healthy; this case isolates the strict=true differential. ADJUDICATED 2026-09-22 (run at-strict-xwire-01-invest-20260922T2358Z, bin d5b4d0d427b2 @ d47fd78): SHAPE A PROVEN — the strict deploy shape rides CLEAN. Wire: qwen reqs carried rs_-id reasoning (content+summary); the sole sol request (req-008, 17 items) carried 3 reasoning items of shape {type: reasoning, summary: [...]} ONLY — no id field, no content field (project_strict_responses_input removed both) — and Azure ACCEPTED it first-try (HTTP 200, sol_count 1, no 400, no reactive-net involvement; end_turn, S1 token, 0 acp_error). The 400+reactive-heal (shape B) is therefore the LENIENT-row outcome only (RT-XREPLAY1/2 evidence). last_req_no_reasoning (shape-B discriminator) re-pinned to the shape-A presence contract: id-less summary-only reasoning items MUST ride the last sol request — a FAIL now means drift (preemptive compact re-introduced, or items dropped/400'd) -> investigate. The 400-phrasing recon stays as the drift detector.",
+ "title": "OVERWATCH-ADVERSARIAL — INVESTIGATION (no expected_red): the DEPLOY-SHAPE cross-family switch — qwen3.8-flash-next (3 thinking turns, family qwen) -> gpt-6.1-sol (family codex) where the sol row carries strict_responses_input=true EXPLICITLY (deploy config.toml shape: lines 16/642/673 = sol/terra/luna true; the East US 2 affinity pin is inherited unpatched from the hermetic home config). WHY THIS CASE EXISTS: the existing cross-family sol cases (RT-XREPLAY1/2) were written .62-era and pin strict=false on the sol row; NO case covers the strict=true deploy shape, which is what a daily qwen work session hitting /model sol actually runs. DESIGN PREDICTION (apex-ayl.123 XW-XREPLAY-1 doc, model_switch.rs:446-463 + provider.rs project_strict_responses_input): the preemptive family-switch compact is SKIPPED for Responses targets (family_switch_compact_required = not Responses); the .71 switch-time projection (xw_ store-side rekey) + the send-time STRICT projector own the seam: on every /responses send, each reasoning input item has `content` and `id` REMOVED (field removal, not empty-string) and `summary` retained. PREDICTED OBSERVATION: the first sol request carries reasoning items of shape {type: reasoning, summary: <text>} — NO id field at all, NO xw_/rs_ ids, NO content — and Azure either (A) ACCEPTS the id-less summary-only shape (200, sol_count 1, the clean path) or (B) rejects it (400 id-class, sol_count 2) and the 78a236f reactive model-bound strip + retry heals it (last sol request reasoning-free, 200). BOTH (A) and (B) with a healthy terminal state are the .123 design contract; a terminal acp_error, a sol_count >3 storm, an xw_/rs_ id riding a strict-row sol request (projection lapse), or the S1 token missing is a defect -> STOP-AND-REPORT. The 400 phrasing, if any, is captured as recon to extend the triage catalog signature (the known `id: ''` variant gains or confirms an `id`-absent variant on the strict projection path). ADJUDICATION NOTE 2026-09-22: sibling lenient-row proof in the same sweep (RT-XREPLAY1/2 @ full-sweep-20260922T004829Z) shows the strict=false shape 400s on the xw_ rekeyed id ('Expected an ID that begins with rs') and recovers via the reactive net — session healthy; this case isolates the strict=true differential. ADJUDICATED 2026-09-22 (run at-strict-xwire-01-invest-20260922T2358Z, bin d5b4d0d427b2 @ d47fd78): SHAPE A PROVEN — the strict deploy shape rides CLEAN. Wire: qwen reqs carried rs_-id reasoning (content+summary); the sole sol request (req-008, 17 items) carried 3 reasoning items of shape {type: reasoning, summary: [...]} ONLY — no id field, no content field (project_strict_responses_input removed both) — and Azure ACCEPTED it first-try (HTTP 200, sol_count 1, no 400, no reactive-net involvement; end_turn, S1 token, 0 acp_error). The 400+reactive-heal (shape B) is therefore the LENIENT-row outcome only (RT-XREPLAY1/2 evidence). last_req_no_reasoning (shape-B discriminator) re-pinned to the shape-A presence contract: id-less summary-only reasoning items MUST ride the last sol request — a FAIL now means drift (preemptive compact re-introduced, or items dropped/400'd) -> investigate. The 400-phrasing recon stays as the drift detector.",
  "bead": "overwatch-adversarial",
  "suite": "cross-wire",
  "tier": "slim",
  "driver": "acp",
- "model": "qwen3.8-27b",
+ "model": "qwen3.8-flash-next",
  "wirecap": true,
  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
  "config_patch": {
-  "model/qwen3.8-27b/strict_responses_input": false,
-  "model/qwen3.8-27b/reasoning_effort": "medium",
-  "model/gpt-5.6-sol/strict_responses_input": true
+  "model/qwen3.8-flash-next/strict_responses_input": false,
+  "model/qwen3.8-flash-next/reasoning_effort": "medium",
+  "model/gpt-6.1-sol/strict_responses_input": true
  },
  "steps": [
   {
    "op": "turn",
    "prompt": "Reply with exactly: AT-STRICT-XW-01-Q1",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "turn",
    "prompt": "Reply with exactly: AT-STRICT-XW-01-Q2",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "turn",
    "prompt": "Reply with exactly: AT-STRICT-XW-01-Q3",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "switch",
-   "model": "gpt-5.6-sol",
+   "model": "gpt-6.1-sol",
    "via": "acp"
   },
   {
    "op": "turn",
    "prompt": "Reply with exactly: AT-STRICT-XW-01-S1",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "recon_note",
@@ -70,7 +70,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "any": true,
     "grep": "\"type\": \"reasoning\"",
@@ -83,7 +83,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "min": 1,
     "max": 3,
@@ -96,7 +96,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "all": true,
     "absent": true,
@@ -110,7 +110,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "all": true,
     "absent": true,
@@ -124,7 +124,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "which": "last",
     "status_in": [
@@ -139,7 +139,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "last": 1,
     "grep": "\"type\": \"reasoning\"",

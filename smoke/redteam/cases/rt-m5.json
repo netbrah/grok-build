@@ -1,36 +1,33 @@
 {
  "id": "RT-M5",
- "title": "Slim regression matrix: one frontier model per wire/handler class - responses wire: qwen3.8-27b (vLLM), glm-5.2 (vLLM), gpt-5.6-sol (Azure OpenAI), grok-4.6 (Vertex xai, gemini-format), gemini-3.7-flash (Vertex gemini, known-issue family), gemini-3-pro-preview (Vertex gemini pro); messages wire: claude-sonnet-5 (only messages-wire class). Full catalog sweep = generated RT-M6 (gen-matrix.py). Row asserts filter wire requests by body.model so nth resolution is per-row.",
+ "title": "Slim regression matrix: one frontier model per wire/handler class - responses wire: qwen3.8-flash-next (vLLM), gpt-6.1-sol (Azure OpenAI), grok-4.7 (Vertex xai, gemini-format), gemini-3.8-flash (Vertex gemini, known-issue family), gemini-3.1-pro-preview (Vertex gemini pro); messages wire: claude-sonnet-5.5 (only messages-wire class). Full catalog sweep = generated RT-M6 (gen-matrix.py). Row asserts filter wire requests by body.model so nth resolution is per-row. Premise change (REDTEAM-REFRESH T5.5, r3 section 3.4): the Azure OpenAI cell is re-celled from the retired TrueFoundry row onto the proxy AzStrict row gpt-6.1-sol (section 3.6), and the second vLLM cell is dropped (historical: it ran glm-5.2, which has no live row, and its section 3.2 successor qwen3.8-flash-next would collapse onto the qwen cell's wire id, section 3.7).",
  "rows": [
   {
-   "model": "qwen3.8-27b",
+   "model": "qwen3.8-flash-next",
    "prompt": "Reply with exactly: HT1-OK"
   },
   {
-   "model": "gpt-5.6-sol",
+   "model": "gpt-6.1-sol",
    "prompt": "Reply with exactly: HT1-OK"
   },
   {
-   "model": "grok-4.6",
+   "model": "grok-4.7",
    "prompt": "Reply with exactly: HT1-OK"
   },
   {
-   "model": "glm-5.2",
+   "model": "claude-sonnet-5.5",
    "prompt": "Reply with exactly: HT1-OK"
   },
   {
-   "model": "claude-sonnet-5",
+   "model": "gemini-3.8-flash",
    "prompt": "Reply with exactly: HT1-OK"
   },
   {
-   "model": "gemini-3.7-flash",
-   "prompt": "Reply with exactly: HT1-OK"
-  },
-  {
-   "model": "gemini-3-pro-preview",
+   "model": "gemini-3.1-pro-preview",
    "prompt": "Reply with exactly: HT1-OK"
   }
  ],
+ "timeouts": {"turn_s": 900},
  "watchdog_s": 300,
  "est_calls": 7,
  "row_asserts": {
@@ -42,20 +39,20 @@
     "eq": "/v1/responses",
     "where": {
      "method": "POST",
-     "$.body.model": "qwen3.8-27b"
+     "$.body.model": "qwen3.8-flash-next"
     },
-    "row_model": "qwen3.8-27b"
+    "row_model": "qwen3.8-flash-next"
    },
    {
     "kind": "field",
     "file": "req-*.json",
     "path": "$.body.model",
-    "eq": "qwen3.8-27b",
+    "eq": "qwen3.8-flash-next",
     "where": {
      "method": "POST",
-     "$.body.model": "qwen3.8-27b"
+     "$.body.model": "qwen3.8-flash-next"
     },
-    "row_model": "qwen3.8-27b"
+    "row_model": "qwen3.8-flash-next"
    },
    {
     "kind": "field",
@@ -64,20 +61,20 @@
     "eq": "/v1/responses",
     "where": {
      "method": "POST",
-     "$.body.model": "gpt-5.6-sol"
+     "$.body.model": "gpt-6.1-sol"
     },
-    "row_model": "gpt-5.6-sol"
+    "row_model": "gpt-6.1-sol"
    },
    {
     "kind": "field",
     "file": "req-*.json",
     "path": "$.body.model",
-    "eq": "gpt-5.6-sol",
+    "eq": "gpt-6.1-sol",
     "where": {
      "method": "POST",
-     "$.body.model": "gpt-5.6-sol"
+     "$.body.model": "gpt-6.1-sol"
     },
-    "row_model": "gpt-5.6-sol"
+    "row_model": "gpt-6.1-sol"
    },
    {
     "kind": "field",
@@ -86,42 +83,20 @@
     "eq": "/v1/responses",
     "where": {
      "method": "POST",
-     "$.body.model": "grok-4.6"
+     "$.body.model": "grok-4.7"
     },
-    "row_model": "grok-4.6"
+    "row_model": "grok-4.7"
    },
    {
     "kind": "field",
     "file": "req-*.json",
     "path": "$.body.model",
-    "eq": "grok-4.6",
+    "eq": "grok-4.7",
     "where": {
      "method": "POST",
-     "$.body.model": "grok-4.6"
+     "$.body.model": "grok-4.7"
     },
-    "row_model": "grok-4.6"
-   },
-   {
-    "kind": "field",
-    "file": "req-*.json",
-    "path": "$.path",
-    "eq": "/v1/responses",
-    "where": {
-     "method": "POST",
-     "$.body.model": "glm-5.2"
-    },
-    "row_model": "glm-5.2"
-   },
-   {
-    "kind": "field",
-    "file": "req-*.json",
-    "path": "$.body.model",
-    "eq": "glm-5.2",
-    "where": {
-     "method": "POST",
-     "$.body.model": "glm-5.2"
-    },
-    "row_model": "glm-5.2"
+    "row_model": "grok-4.7"
    },
    {
     "kind": "field",
@@ -130,31 +105,31 @@
     "eq": "/v1/messages",
     "where": {
      "method": "POST",
-     "$.body.model": "claude-sonnet-5"
+     "$.body.model": "claude-sonnet-5.5"
     },
-    "row_model": "claude-sonnet-5"
+    "row_model": "claude-sonnet-5.5"
    },
    {
     "kind": "field",
     "file": "req-*.json",
     "path": "$.body.model",
-    "eq": "claude-sonnet-5",
+    "eq": "claude-sonnet-5.5",
     "where": {
      "method": "POST",
-     "$.body.model": "claude-sonnet-5"
+     "$.body.model": "claude-sonnet-5.5"
     },
-    "row_model": "claude-sonnet-5"
+    "row_model": "claude-sonnet-5.5"
    },
    {
     "kind": "field",
     "file": "req-*.json",
     "path": "$.body.model",
-    "eq": "gemini-3.7-flash",
+    "eq": "gemini-3.8-flash",
     "where": {
      "method": "POST",
-     "$.body.model": "gemini-3.7-flash"
+     "$.body.model": "gemini-3.8-flash"
     },
-    "row_model": "gemini-3.7-flash"
+    "row_model": "gemini-3.8-flash"
    },
    {
     "kind": "field",
@@ -163,20 +138,20 @@
     "eq": "/v1/responses",
     "where": {
      "method": "POST",
-     "$.body.model": "gemini-3.7-flash"
+     "$.body.model": "gemini-3.8-flash"
     },
-    "row_model": "gemini-3.7-flash"
+    "row_model": "gemini-3.8-flash"
    },
    {
     "kind": "field",
     "file": "req-*.json",
     "path": "$.body.model",
-    "eq": "gemini-3-pro-preview",
+    "eq": "gemini-3.1-pro-preview",
     "where": {
      "method": "POST",
-     "$.body.model": "gemini-3-pro-preview"
+     "$.body.model": "gemini-3.1-pro-preview"
     },
-    "row_model": "gemini-3-pro-preview"
+    "row_model": "gemini-3.1-pro-preview"
    },
    {
     "kind": "field",
@@ -185,9 +160,9 @@
     "eq": "/v1/responses",
     "where": {
      "method": "POST",
-     "$.body.model": "gemini-3-pro-preview"
+     "$.body.model": "gemini-3.1-pro-preview"
     },
-    "row_model": "gemini-3-pro-preview"
+    "row_model": "gemini-3.1-pro-preview"
    }
   ]
  }

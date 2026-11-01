@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "id": "XW-VXM-VLQ",
-  "title": "XW-FIXTURES CATCH-of-record case, cell vxm-vlq (switch_model op, DRAFT \u2014 corpus lane, ratchet \u2461 2026-09-18 per Amendment A1.2; runner-visible copy lands in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical claude-phase history (10 records; 2 reasoning items id:'' + encrypted_content + summary \u2014 the proven VX-M empty-id persist ride; 2 tool pairs; assistant model_id claude-sonnet-5), switches claude-sonnet-5 -> qwen3.8-27b MID-SESSION (ACP session/set_model \u2014 NO preemptive wall: the claude row is family-unset so is_family_switch is false and the ride raw-rides), then one post-switch turn. PREDICTED OUTCOME (Amendment A1.2, code-derivable): (i) storage diff AT SWITCH TIME FAILS = the .71-class RED (no projector in-tree \u2014 the 2 id:'' rides persist in storage vs the T1 golden); (ii) the first post-switch /v1/responses request (body.model=qwen3.8-27b) carries the id:'' rides (non-strict row: project_strict_responses_input is a no-op, provider.rs:263-278) -> vLLM Responses->ChatCompletions shim pydantic 400 in the class-(a) dotted phrasing (L1801 live fragment sha256:1f591ef070d9, tdd-74 \u00a71) -> F1-F5 needle miss (F3 needs input[ + .id + invalid; the body has input_value, no bracket, no .id, no invalid) -> RetryDecision::Fatal (retry.rs:186) -> BRICK: the turn dies (terminal 400, no model-bound retry arm, persistent until compaction). The wire pins below are TODAY-era CATCH pins (re-pinned at RED-CLEARED/.71 promotion per the vxm-az DRAFT convention). STOP discipline (A1.2 + house rule): a live 400 phrasing that DIFFERS from the L1801 fragment, a classified-family recovery, or a 200 = new failure class or predicted-outcome miss -> report-and-stop with the verbatim phrasing; NEVER edit expected.json or a pin to fit.",
+  "title": "XW-FIXTURES CATCH-of-record case, cell vxm-vlq (switch_model op, DRAFT \u2014 corpus lane, ratchet \u2461 2026-09-18 per Amendment A1.2; runner-visible copy lands in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical claude-phase history (10 records; 2 reasoning items id:'' + encrypted_content + summary \u2014 the proven VX-M empty-id persist ride; 2 tool pairs; historical: assistant model_id claude-sonnet-5, the retired row the seed was authored on; the seed bytes are hands-off under R-5/Q-13), switches claude-sonnet-5.5 -> qwen3.8-flash-next MID-SESSION (ACP session/set_model \u2014 NO preemptive wall: the claude row is family-unset so is_family_switch is false and the ride raw-rides), then one post-switch turn. PREDICTED OUTCOME (Amendment A1.2, code-derivable): (i) storage diff AT SWITCH TIME FAILS = the .71-class RED (no projector in-tree \u2014 the 2 id:'' rides persist in storage vs the T1 golden); (ii) the first post-switch /v1/responses request (body.model=qwen3.8-flash-next) carries the id:'' rides (non-strict row: project_strict_responses_input is a no-op, provider.rs:263-278) -> vLLM Responses->ChatCompletions shim pydantic 400 in the class-(a) dotted phrasing (L1801 live fragment sha256:1f591ef070d9, tdd-74 \u00a71) -> F1-F5 needle miss (F3 needs input[ + .id + invalid; the body has input_value, no bracket, no .id, no invalid) -> RetryDecision::Fatal (retry.rs:186) -> BRICK: the turn dies (terminal 400, no model-bound retry arm, persistent until compaction). The wire pins below are TODAY-era CATCH pins (re-pinned at RED-CLEARED/.71 promotion per the vxm-az DRAFT convention). STOP discipline (A1.2 + house rule): a live 400 phrasing that DIFFERS from the L1801 fragment, a classified-family recovery, or a 200 = new failure class or predicted-outcome miss -> report-and-stop with the verbatim phrasing; NEVER edit expected.json or a pin to fit.",
   "bead": "apex-ayl.70",
   "suite": "cross-wire",
   "tier": "slim",
   "driver": "acp",
-  "model": "claude-sonnet-5",
+  "model": "claude-sonnet-5.5",
   "wirecap": true,
   "expected_red": {
     "id": "apex-ayl.71"
@@ -15,7 +15,7 @@
   "steps": [
     {
       "op": "switch_model",
-      "model": "qwen3.8-27b",
+      "model": "qwen3.8-flash-next",
       "via": "acp",
       "cell": "smoke/xwfix/cells/vxm-vlq",
       "assert_form": "storage"
@@ -25,6 +25,7 @@
       "prompt": "Reply with exactly: XW-VXM-VLQ-POSTSW1"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 4,
   "assert": {
@@ -35,7 +36,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "\"id\": \"\"",
@@ -54,7 +55,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "min": 1,
         "max": 4,
@@ -66,7 +67,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "which": "last",
         "status_in": [

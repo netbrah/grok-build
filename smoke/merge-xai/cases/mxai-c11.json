@@ -6,7 +6,7 @@
   "suite": "tool-call",
   "tier": "full",
   "driver": "headless",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wire": "responses",
   "output_format": "streaming-json",
   "wirecap": true,
@@ -31,7 +31,7 @@
   "steps": [
     {
       "op": "turn",
-      "timeout_s": 600,
+      "timeout_s": 900,
       "prompt": "Use the run_terminal_command tool with background: true and timeout: 15000 (milliseconds) to run the command: sleep 300. It will be killed at the timeout. Then use get_command_or_subagent_output to wait for that task until it reports a terminal status, and reply with exactly: TASK-TERMINAL <the exact status word the task reported> C11-DONE"
     },
     {

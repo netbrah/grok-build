@@ -1,10 +1,10 @@
 {
   "id": "RT-C5",
-  "title": "sol remote_compaction_v2 (flag ON), seed ~220k of 256k policy \u2014 D-ENC RECON: session-affinity probe for the proxy-team ask",
-  "model": "gpt-5.6-sol",
+  "title": "sol remote_compaction_v2 (flag ON through this case's own config_patch; the live config carries remote_compaction_v2=false on purpose, operator answer to Q-1, 2026-10-30), seed ~220k of 256k policy \u2014 D-ENC RECON: session-affinity probe for the proxy-team ask",
+  "model": "gpt-6.1-sol",
   "config_patch": {
     "features/remote_compaction_v2": true,
-    "model/gpt-5.6-sol/context_window": 256000
+    "model/gpt-6.1-sol/context_window": 256000
   },
   "seed": {
     "hist_tokens": 220000
@@ -15,6 +15,7 @@
       "prompt": "Reply with exactly: RT-C5-OK"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 600,
   "est_calls": 4,
   "recon": true,

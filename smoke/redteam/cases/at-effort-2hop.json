@@ -1,12 +1,12 @@
 {
  "schema_version": 1,
  "id": "AT-EFFORT-2HOP",
- "title": "OVERWATCH-ADVERSARIAL \u2014 2-hop effort-projection chain across THREE families in ONE fresh session (no seed, no cell, no expected_red): the session cursor is pinned hermetically to ultra (config_patch models/default_reasoning_effort=ultra \u2014 idempotent, the live value is already ultra as of the 2026-09-18 re-verification). Code-derivable chain (provider.rs:138-145 wire remap + multi_agent_mode hook; reasoning_effort.rs:11 apply_supported_effort; remote_config/manager/mod.rs:572 project_effort; model_switch.rs Preserve arm stores the projected value back): HOP-1 sol (family codex, mAV2 on): cursor ultra -> wire effort max + the PROACTIVE multi_agent_mode hook (ultra local effort -> proactive text). HOP-2 /model qwen3.8-27b (family codex->qwen = FAMILY SWITCH -> preemptive compact, no effort on the compact per r3r req-003): carried ultra not in the qwen menu {xhigh,medium,low} -> projection = TARGET DEFAULT xhigh; no hook (hook gated on the codex dialect, client.rs:1967 model_family=='codex'). HOP-3 /model gpt-5.6-terra (family qwen->codex = FAMILY SWITCH -> preemptive compact): carried xhigh not in the terra menu {low,medium,high,max,ultra} (EXPLICIT menu, config.toml re-verified 2026-09-18 \u2014 the slug-inference era note is STALE) -> projection = TERRA DEFAULT low; hook = EXPLICIT_REQUEST_ONLY flavor (codex family, non-ultra local effort). PREDICTED: every pin GREEN \u2014 the first live pin of the R6/effort-seam contract across three families. STOP-AND-REPORT (house rule): a 400/503 final on the terra boundary (the M-1 'Unexpected reasoning effort' class or a new phrasing), a wire effort OUTSIDE the pinned chain (raw ultra/max on a qwen turn = the R5 leak class), the multi_agent_mode literal on a qwen request (hook-gate lapse), or an acp_error. RE-PIN 2026-09-22 (overwatch-adversarial, run 20260922T004829Z): original pins predate apex-ayl.86 PROACTIVE-ULTRA-1 (b765b8d, 2026-09-19; case last touched 2026-09-18). Post-.86 design (provider.rs module doc, R-UNIFIED-ITEM + R-MENU-DERIVED, verified at ca31564): (a) the multi_agent_mode item rides EVERY family's every responses request \u2014 codex renders the bare keyword, other families the expanded sentence; mode text is effort-derived (cursor ultra -> proactive), NOT family-gated. (b) the session effort cursor is INHERITED across /model switches (model_switch.rs handle_set_session_model carries sampling_config.reasoning_effort; no projection write-back exists) \u2014 egress projects per target: qwen (no ultra in menu) -> menu-derived xhigh (R5 leak guard HELD: no raw/max/ultra on the qwen wire); terra (menu advertises ultra) -> ultra valid -> codex-frozen wire max + proactive. Observed 20260922T004829Z matches the design exactly. p2_no_hook -> p2_hook_expanded (expanded proactive sentence expected on qwen); p3_wire_low -> p3_wire_max; p3_no_max dropped.",
+ "title": "OVERWATCH-ADVERSARIAL \u2014 2-hop effort-projection chain across THREE families in ONE fresh session (no seed, no cell, no expected_red): the session cursor is pinned hermetically to ultra (config_patch models/default_reasoning_effort=ultra \u2014 idempotent, the live value is already ultra as of the 2026-09-18 re-verification). Code-derivable chain (provider.rs:138-145 wire remap + multi_agent_mode hook; reasoning_effort.rs:11 apply_supported_effort; remote_config/manager/mod.rs:572 project_effort; model_switch.rs Preserve arm stores the projected value back): HOP-1 sol (family codex, mAV2 on): cursor ultra -> wire effort max + the PROACTIVE multi_agent_mode hook (ultra local effort -> proactive text). HOP-2 /model qwen3.8-flash-next (family codex->qwen = FAMILY SWITCH -> preemptive compact, no effort on the compact per r3r req-003): carried ultra not in the qwen menu {xhigh,medium,low} -> projection = TARGET DEFAULT xhigh; no hook (hook gated on the codex dialect, client.rs:1967 model_family=='codex'). HOP-3 /model gpt-5.6-terra (family qwen->codex = FAMILY SWITCH -> preemptive compact): carried xhigh not in the terra menu {low,medium,high,max,ultra} (EXPLICIT menu, config.toml re-verified 2026-09-18 \u2014 the slug-inference era note is STALE) -> projection = TERRA DEFAULT low; hook = EXPLICIT_REQUEST_ONLY flavor (codex family, non-ultra local effort). PREDICTED: every pin GREEN \u2014 the first live pin of the R6/effort-seam contract across three families. STOP-AND-REPORT (house rule): a 400/503 final on the terra boundary (the M-1 'Unexpected reasoning effort' class or a new phrasing), a wire effort OUTSIDE the pinned chain (raw ultra/max on a qwen turn = the R5 leak class), the multi_agent_mode literal on a qwen request (hook-gate lapse), or an acp_error. RE-PIN 2026-09-22 (overwatch-adversarial, run 20260922T004829Z): original pins predate apex-ayl.86 PROACTIVE-ULTRA-1 (b765b8d, 2026-09-19; case last touched 2026-09-18). Post-.86 design (provider.rs module doc, R-UNIFIED-ITEM + R-MENU-DERIVED, verified at ca31564): (a) the multi_agent_mode item rides EVERY family's every responses request \u2014 codex renders the bare keyword, other families the expanded sentence; mode text is effort-derived (cursor ultra -> proactive), NOT family-gated. (b) the session effort cursor is INHERITED across /model switches (model_switch.rs handle_set_session_model carries sampling_config.reasoning_effort; no projection write-back exists) \u2014 egress projects per target: qwen (no ultra in menu) -> menu-derived xhigh (R5 leak guard HELD: no raw/max/ultra on the qwen wire); terra (menu advertises ultra) -> ultra valid -> codex-frozen wire max + proactive. Observed 20260922T004829Z matches the design exactly. p2_no_hook -> p2_hook_expanded (expanded proactive sentence expected on qwen); p3_wire_low -> p3_wire_max; p3_no_max dropped.",
  "bead": "overwatch-adversarial",
  "suite": "cross-wire",
  "tier": "slim",
  "driver": "acp",
- "model": "gpt-5.6-sol",
+ "model": "gpt-6.1-sol",
  "wirecap": true,
  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
  "config_patch": {
@@ -16,17 +16,17 @@
   {
    "op": "turn",
    "prompt": "Reply with exactly: AT-EFF-P1",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "switch",
-   "model": "qwen3.8-27b",
+   "model": "qwen3.8-flash-next",
    "via": "acp"
   },
   {
    "op": "turn",
    "prompt": "Reply with exactly: AT-EFF-P2",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "switch",
@@ -36,11 +36,11 @@
   {
    "op": "turn",
    "prompt": "Reply with exactly: AT-EFF-P3",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "recon_note",
-   "note": "WIRE READ (recon_note, non-scoring): the three per-family turn requests are the fixture \u2014 req bodies for gpt-5.6-sol (hop 1), qwen3.8-27b (hop 2, post family-switch compact), and gpt-5.6-terra (hop 3, post family-switch compact). The scored pins assert the effort remap chain (max -> xhigh -> low) and the hook presence/absence (proactive on sol, none on qwen, explicit_request_only on terra). A coordinator review over the captured req bodies confirms the verbatim developer-item hook text per family."
+   "note": "WIRE READ (recon_note, non-scoring): the three per-family turn requests are the fixture \u2014 req bodies for gpt-6.1-sol (hop 1), qwen3.8-flash-next (hop 2, post family-switch compact), and gpt-5.6-terra (hop 3, post family-switch compact). The scored pins assert the effort remap chain (max -> xhigh -> low) and the hook presence/absence (proactive on sol, none on qwen, explicit_request_only on terra). A coordinator review over the captured req bodies confirms the verbatim developer-item hook text per family."
   }
  ],
  "watchdog_s": 300,
@@ -71,7 +71,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "any": true,
     "grep": "\"effort\": \"max\"",
@@ -83,7 +83,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "any": true,
     "grep": "multi_agent_mode",
@@ -95,7 +95,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "any": true,
     "grep": "\"effort\": \"xhigh\"",
@@ -107,7 +107,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "all": true,
     "absent": true,
@@ -120,7 +120,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "all": true,
     "absent": true,
@@ -133,7 +133,7 @@
     "file": "req-*.json",
     "where": {
      "method": "POST",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "absent": false,
     "grep": "Multi-agent mode: proactive",

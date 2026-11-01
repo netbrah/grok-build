@@ -2,12 +2,12 @@
  "id": "RT-XREPLAY2",
  "title": "RE-PIN 2026-09-22 (overwatch-adversarial, run full-sweep-20260922T004829Z; operator ratification 'we opted for projection'): the decision-probe pins (lenient_reasoning_content_strip=true sol row: reasoning_text presence, rs_-id presence, exactly-1-sol-request) assumed the lenient strip produces a reasoning_text-shaped ride that Azure accepts first-try — the OBSERVED current-binary contract is the same .123 recovery shape as RT-XREPLAY1: the switch-time projection rekeys the store ids to xw_, the lenient row rides the reasoning items (type=reasoning, xw_ ids; the sweep wire shows NO reasoning_text items on this row — the strip is content-level, not a type change), the strict Azure upstream 400s on the xw_ id ('Expected an ID that begins with rs'), the reactive model-bound strip fires, the retry is clean (no reasoning, 200), and the session ends healthy. PINS NOW: (1) control (qwen reasoning exists); (2) sol_count 2..3; (3) first sol request carries \"id\": \"xw_ (verbatim ride); (4) first sol request 400 (deterministic lenient-row outcome); (5) last sol request has NO reasoning items (reactive strip) and is 200; (6) end_turn + S1 token + no acp_error. The pre-re-pin probe text is retained below for provenance — SUPERSEDED. NOTE: if the lenient_reasoning_content_strip flag's current code behavior diverges from 'content-level strip, type unchanged' (e.g. it does produce reasoning_text), the first-req pins will go red and that is the probe working -> adjudicate against provider.rs.",
  "driver": "acp",
- "model": "qwen3.8-27b",
+ "model": "qwen3.8-flash-next",
  "config_patch": {
-  "model/qwen3.8-27b/strict_responses_input": false,
-  "model/qwen3.8-27b/reasoning_effort": "medium",
-  "model/gpt-5.6-sol/strict_responses_input": false,
-  "model/gpt-5.6-sol/lenient_reasoning_content_strip": true
+  "model/qwen3.8-flash-next/strict_responses_input": false,
+  "model/qwen3.8-flash-next/reasoning_effort": "medium",
+  "model/gpt-6.1-sol/strict_responses_input": false,
+  "model/gpt-6.1-sol/lenient_reasoning_content_strip": true
  },
  "steps": [
   {
@@ -24,7 +24,7 @@
   },
   {
    "op": "switch",
-   "model": "gpt-5.6-sol",
+   "model": "gpt-6.1-sol",
    "via": "acp"
   },
   {
@@ -32,6 +32,7 @@
    "prompt": "Reply with exactly: RT-XREPLAY2-S1"
   }
  ],
+ "timeouts": {"turn_s": 900},
  "watchdog_s": 300,
  "est_calls": 8,
  "assert": {
@@ -42,7 +43,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "any": true,
     "grep": "\"type\": \"reasoning\"",
@@ -54,7 +55,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "any": true,
     "grep": "\"type\": \"reasoning\"",
@@ -66,7 +67,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "grep": "\"id\": \"xw_",
     "label": "RE-PIN .123 (was reasoning_text presence): the FIRST sol request carries the xw_-rekeyed reasoning ids verbatim (lenient row; content-level strip does not change the item type — sweep wire shows type=reasoning).",
@@ -79,7 +80,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "grep": "\"id\": \"rs_",
     "label": "RE-PIN .123 (was rs_-id presence): no raw rs_ id rides the sol wire — the store form is xw_-rekeyed post-.71; a rs_ id here = a path bypassing the rekey.",
@@ -92,7 +93,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "min": 2,
     "max": 3,
@@ -104,7 +105,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "which": "first",
     "status_in": [

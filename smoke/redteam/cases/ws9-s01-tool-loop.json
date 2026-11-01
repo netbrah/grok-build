@@ -1,14 +1,15 @@
 {
   "schema_version": 1,
   "id": "WS9-S01-TOOL-LOOP",
-  "title": "WS9 row S01 (normal tool loop) vs our llm-proxy — flagship seat gpt-5.6-sol (responses wire, strict_responses_input=true, live defaults). Two headless turns in one resumed session: baseline turn (WS9-S01-T1), then the tool-loop turn — TWO real run_terminal_command round-trips (echo nonces, write-free) followed by the exact terminal reply (WS9-S01-T2). Verdict semantics (discriminating-pin design, T21 house pattern): the harness premise is the control pin sh_call (escaped tool-arguments form — the tools[] schema and the prompt text cannot false-satisfy it): 0-hit => VACUOUS (the model never took the tool path — temperament, recorded, not a defect); with the premise held, the scored pins decide PASS/FAIL — the synthesized payload pins (the nonces must appear in the request tool-result payloads) + the ndjson pins (the model QUOTES the nonce output in its reply — container-agnostic payload proof). A 400 on a tool round-trip is NOT recovered-by-design on the strict sol row: it FAILs as a tool-path finding (strict-mode schema rejection is the point of the ship-gate row). Semantic-diff dimensions (semantics-not-bytes per recon-plan L130-131: family tool schemas intentionally differ): (1) tool invoked with declared args (name+args semantics, escaped-JSON pin), (2) result payload reached the model (nonce quoted in the reply), (3) loop closed (final text), (4) usage-field consistency + reasoning visibility = stream-fidelity baseline (recon records; cross-ref wstream cell ws9-s01-toolloop-sol for the SSE-frame view). No PROP gate (pure fidelity row); BRICK = S3 report-and-stop.",
+  "title": "WS9 row S01 (normal tool loop) vs our llm-proxy — flagship seat gpt-6.1-sol (responses wire, strict_responses_input=true, live defaults). Two headless turns in one resumed session: baseline turn (WS9-S01-T1), then the tool-loop turn — TWO real run_terminal_command round-trips (echo nonces, write-free) followed by the exact terminal reply (WS9-S01-T2). Verdict semantics (discriminating-pin design, T21 house pattern): the harness premise is the control pin sh_call (escaped tool-arguments form — the tools[] schema and the prompt text cannot false-satisfy it): 0-hit => VACUOUS (the model never took the tool path — temperament, recorded, not a defect); with the premise held, the scored pins decide PASS/FAIL — the synthesized payload pins (the nonces must appear in the request tool-result payloads) + the ndjson pins (the model QUOTES the nonce output in its reply — container-agnostic payload proof). A 400 on a tool round-trip is NOT recovered-by-design on the strict sol row: it FAILs as a tool-path finding (strict-mode schema rejection is the point of the ship-gate row). Semantic-diff dimensions (semantics-not-bytes per recon-plan L130-131: family tool schemas intentionally differ): (1) tool invoked with declared args (name+args semantics, escaped-JSON pin), (2) result payload reached the model (nonce quoted in the reply), (3) loop closed (final text), (4) usage-field consistency + reasoning visibility = stream-fidelity baseline (recon records; cross-ref wstream cell ws9-s01-toolloop-sol for the SSE-frame view). No PROP gate (pure fidelity row); BRICK = S3 report-and-stop.",
   "bead": "apex-ayl.78",
   "suite": "tool-call",
   "tier": "full",
   "driver": "headless",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wire": "responses",
   "output_format": "streaming-json",
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 5,
   "wirecap": true,
@@ -77,7 +78,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "any": true,
         "grep": "\\\"command\\\":\\\"echo WS9-S01-ECHO-A\\\"",

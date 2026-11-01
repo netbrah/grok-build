@@ -1,21 +1,21 @@
 {
   "id": "RT-S3",
-  "title": "v2 gate-ON (MA-3, unblocked): qwen3.8-27b parent, model row multi_agent_v2=true via runner-scoped config_patch (disclosed in MA-3 report; live ~/.grok config stays dark). All six v2 agent tools advertised on the wire; spawn_agent(helper) + wait_agent in T1, child reply arrives via the buffered mailbox flush on T2, parent answers with the child's reply.",
-  "model": "qwen3.8-27b",
+  "title": "v2 gate-ON (MA-3, unblocked): qwen3.8-flash-next parent, model row multi_agent_v2=true via runner-scoped config_patch (disclosed in MA-3 report; live ~/.grok config stays dark). All six v2 agent tools advertised on the wire; spawn_agent(helper) + wait_agent in T1, child reply arrives via the buffered mailbox flush on T2, parent answers with the child's reply.",
+  "model": "qwen3.8-flash-next",
   "config_patch": {
     "features/multi_agent_v2": true,
-    "model/qwen3.8-27b/multi_agent_v2": true
+    "model/qwen3.8-flash-next/multi_agent_v2": true
   },
   "steps": [
     {
       "op": "turn",
       "prompt": "Use the spawn_agent tool to start a background agent named helper. In its message, instruct it to reply with exactly: CHILD-OK. Then use wait_agent to wait for it to finish. Acknowledge with exactly: HELPER-SPAWNED",
-      "timeout_s": 240
+      "timeout_s": 900
     },
     {
       "op": "turn",
       "prompt": "What did the helper agent reply? Reply with exactly: <its reply> PARENT-OK",
-      "timeout_s": 120
+      "timeout_s": 900
     }
   ],
   "watchdog_s": 600,

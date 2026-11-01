@@ -1,7 +1,7 @@
 {
   "id": "RT-C2",
   "title": "Manual /compact via headless slash (RECON R-3: builtins run in headless turns)",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "steps": [
     {
       "op": "turn",
@@ -12,6 +12,7 @@
       "via": "headless"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 2,
   "assert": {

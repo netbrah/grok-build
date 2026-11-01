@@ -1,16 +1,17 @@
 {
   "schema_version": 1,
   "id": "MXAI-C01",
-  "title": "MERGE-XAI-SYNC C-01 (PIN S5/A2, exact-bytes retry invariant) — post-merge regression lane, gpt-5.6-sol on /v1/responses behind wiretap (frozen lane L-01, 06 §2 lane column). One bounded turn on the lane of record. Scored pins (live-verifiable without fault injection): (1) NO zstd content-encoding on ANY lane request capture (request_compression=None is the default; the A2 sibling seam build_encoded_request(builder, encoded) takes the already-validated carrier bytes and runs the identical should_compress/compress_body path — on our proxy the path is byte-identical to today's ours and must STAY uncompressed; a zstd header appearing = the seam or the proxy default regressed = defect); (2) the paired responses are not zstd-encoded (the compression=off default verified LIVE, per 06); (3) the turn recovers with exit 0 and no terminal error; (4) no request storm (1..2 lane requests). The EXACT-BYTES retry pair itself (retried body byte-identical to the original validated carrier) requires inducing a retried request (400-class or aborted turn): the live driver cannot induce one (wiretap2 is pass-through; no fault injection) — that arm is the zero-step mechanism case MXAI-C01-REPLAY (pre-placed original+retry pair, kind=golden byte pin, disabled until the wave-3 operator populates the fixture from a real retried-pair capture; sweep-0 redacted per fixtures/merge-xai/c-01-replay/META.json). VERDICT: PASS = all four scored pins green; the strict-bytes half of the cell is carried by C01-REPLAY once populated. STOP-AND-REPORT (house rule): any zstd header on either side, a storm, or a non-zero exit. NOTE (plan-text delta): 06's scenario column says 'induce a retried request on the messages route' while the lane column says 'sol/terra responses + wiretap'; the A2 seam is the messages-route sibling — this case runs the lane column (responses); the operator may re-point the same case at lane L-03 (sonnet /messages) by swapping model + where-filters only; C01-REPLAY is route-agnostic (fixture-defined). See smoke/merge-xai/README.md (DRIVER GAP C-01).",
+  "title": "MERGE-XAI-SYNC C-01 (PIN S5/A2, exact-bytes retry invariant) — post-merge regression lane, gpt-6.1-sol on /v1/responses behind wiretap (frozen lane L-01, 06 §2 lane column). One bounded turn on the lane of record. Scored pins (live-verifiable without fault injection): (1) NO zstd content-encoding on ANY lane request capture (request_compression=None is the default; the A2 sibling seam build_encoded_request(builder, encoded) takes the already-validated carrier bytes and runs the identical should_compress/compress_body path — on our proxy the path is byte-identical to today's ours and must STAY uncompressed; a zstd header appearing = the seam or the proxy default regressed = defect); (2) the paired responses are not zstd-encoded (the compression=off default verified LIVE, per 06); (3) the turn recovers with exit 0 and no terminal error; (4) no request storm (1..2 lane requests). The EXACT-BYTES retry pair itself (retried body byte-identical to the original validated carrier) requires inducing a retried request (400-class or aborted turn): the live driver cannot induce one (wiretap2 is pass-through; no fault injection) — that arm is the zero-step mechanism case MXAI-C01-REPLAY (pre-placed original+retry pair, kind=golden byte pin, disabled until the wave-3 operator populates the fixture from a real retried-pair capture; sweep-0 redacted per fixtures/merge-xai/c-01-replay/META.json). VERDICT: PASS = all four scored pins green; the strict-bytes half of the cell is carried by C01-REPLAY once populated. STOP-AND-REPORT (house rule): any zstd header on either side, a storm, or a non-zero exit. NOTE (plan-text delta): 06's scenario column says 'induce a retried request on the messages route' while the lane column says 'sol/terra responses + wiretap'; the A2 seam is the messages-route sibling — this case runs the lane column (responses); the operator may re-point the same case at lane L-03 (sonnet /messages) by swapping model + where-filters only; C01-REPLAY is route-agnostic (fixture-defined). See smoke/merge-xai/README.md (DRIVER GAP C-01).",
   "bead": "apex-l2d.4",
   "suite": "salvage",
   "tier": "full",
   "driver": "headless",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wire": "responses",
   "output_format": "streaming-json",
   "wirecap": true,
   "est_calls": 2,
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "env": {
     "store": false
@@ -38,7 +39,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "min": 1,
         "max": 2,

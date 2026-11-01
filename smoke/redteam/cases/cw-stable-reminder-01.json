@@ -39,7 +39,7 @@
     },
     {
       "op": "turn",
-      "prompt": "Reply with exactly: CW-STABLE-REMINDER-T3",
+      "prompt": "Perform exactly this tool call and no others: use the use_tool tool to call the codegraph explore tool (qualified name codegraph__codegraph_explore) with arguments query 'patch_responses_request normalize_content_types', projectPath /Users/palanisd/Projects/upstream/wt/grok-build-responses. Reply with exactly: CW-STABLE-REMINDER-T3",
       "timeout_s": 180
     }
   ],

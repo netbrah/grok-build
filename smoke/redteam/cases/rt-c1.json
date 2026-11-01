@@ -1,9 +1,9 @@
 {
   "id": "RT-C1",
   "title": "Local compaction local-fit: qwen, window 12000, seed ~11k (threshold 85%=10200)",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "config_patch": {
-    "model/qwen3.8-27b/context_window": 12000
+    "model/qwen3.8-flash-next/context_window": 12000
   },
   "seed": {
     "hist_tokens": 11000
@@ -14,6 +14,7 @@
       "prompt": "Reply with exactly: RT-C1-OK"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 4,
   "assert": {
@@ -59,11 +60,11 @@
         "kind": "field",
         "file": "req-*.json",
         "path": "$.body.model",
-        "eq": "qwen3.8-27b",
+        "eq": "qwen3.8-flash-next",
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "$.body.model": "qwen3.8-27b"
+          "$.body.model": "qwen3.8-flash-next"
         },
         "nth": 0
       },
@@ -74,7 +75,7 @@
           "where": {
             "method": "POST",
             "path": "/v1/responses",
-            "$.body.model": "qwen3.8-27b"
+            "$.body.model": "qwen3.8-flash-next"
           },
           "nth": 0
         },
@@ -83,7 +84,7 @@
           "where": {
             "method": "POST",
             "path": "/v1/responses",
-            "$.body.model": "qwen3.8-27b"
+            "$.body.model": "qwen3.8-flash-next"
           },
           "last": 0
         }

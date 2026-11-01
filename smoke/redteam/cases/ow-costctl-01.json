@@ -1,24 +1,24 @@
 {
  "schema_version": 1,
  "id": "OW-COSTCTL-01",
- "title": "apex-ayl.118 RED ratchet (openai side sweep F2+F11, GREEN path apex-ayl.102/.104) — cost levers unreachable on the responses wire: the case declares model/gpt-5.6-sol/service_tier=auto, max_tool_calls=5, parallel_tool_calls=false (config_patch intent; the lenient row parser ignores the keys pre-cut) and pins each field on the /v1/responses requests. The fork hardcodes all three to None (ST/conversation/responses.rs:203 service_tier, :187 max_tool_calls, :190 parallel_tool_calls — sweep F2 + F11), so the cost levers can never ride the wire. RED today (all three red pins 0-hit); GREEN when the apex-ayl.102/.104 cuts plumb config -> wire. Control pin (class harness, plain assert): body.model eq gpt-5.6-sol on the main (oldest) request — the harness always sends the model, so a miss is a harness failure, never vacuous.",
+ "title": "apex-ayl.118 RED ratchet (openai side sweep F2+F11, GREEN path apex-ayl.102/.104) — cost levers unreachable on the responses wire: the case declares model/gpt-6.1-sol/service_tier=auto, max_tool_calls=5, parallel_tool_calls=false (config_patch intent; the lenient row parser ignores the keys pre-cut) and pins each field on the /v1/responses requests. The fork hardcodes all three to None (ST/conversation/responses.rs:203 service_tier, :187 max_tool_calls, :190 parallel_tool_calls — sweep F2 + F11), so the cost levers can never ride the wire. RED today (all three red pins 0-hit); GREEN when the apex-ayl.102/.104 cuts plumb config -> wire. Control pin (class harness, plain assert): body.model eq gpt-6.1-sol on the main (oldest) request — the harness always sends the model, so a miss is a harness failure, never vacuous.",
  "bead": "apex-ayl.118",
  "suite": "wire-shape",
  "tier": "slim",
  "driver": "headless",
- "model": "gpt-5.6-sol",
+ "model": "gpt-6.1-sol",
  "wirecap": true,
  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
  "config_patch": {
-  "model/gpt-5.6-sol/service_tier": "auto",
-  "model/gpt-5.6-sol/max_tool_calls": 5,
-  "model/gpt-5.6-sol/parallel_tool_calls": false
+  "model/gpt-6.1-sol/service_tier": "auto",
+  "model/gpt-6.1-sol/max_tool_calls": 5,
+  "model/gpt-6.1-sol/parallel_tool_calls": false
  },
  "steps": [
   {
    "op": "turn",
    "prompt": "Reply with exactly: OW-COSTCTL-OK",
-   "timeout_s": 180
+   "timeout_s": 900
   }
  ],
  "watchdog_s": 300,
@@ -39,7 +39,7 @@
     "where": { "method": "POST", "path": "/v1/responses" },
     "last": 0,
     "path": "body.model",
-    "eq": "gpt-5.6-sol",
+    "eq": "gpt-6.1-sol",
     "label": "CONTROL (class harness): the main request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
    },
    {

@@ -86,6 +86,243 @@ PROVIDER_VARS_UNSET = [
     "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
 ]
 
+# REDTEAM-REFRESH T3 (r3 §4.3.1 as amended by r3a A5/A6): the declared
+# credential set, stated ONCE. The 7 names are every variable a live config
+# can route a request with — a row `env_key`, an `env_http_headers` variable,
+# and the product fallback chain that a row declaring neither resolves
+# through (auth_method.rs:13-15, :30-34). The swept subset is this tuple
+# minus `SWEEP_EXCLUDED_NAMES`: GROK_DIRECT_PLACEHOLDER_KEY is still handed to
+# the routes that declare it and matched by neither the scrub nor the sweep
+# (R2-4 — its value occurs in 1 155 files of the 2026-10-29 run of record,
+# the five real credentials in 0).
+XAI_CREDENTIAL_CHAIN = ("XAI_API_KEY", "GROK_CODE_XAI_API_KEY",
+                        "APEX_LLM_PROXY_KEY")
+CREDENTIAL_SURFACE_NAMES = ("APEX_LLM_PROXY_KEY", "CODEX_LLM_PROXY_KEY",
+                            "CODEX_TRUE_FOUNDRY_KEY",
+                            "GROK_CODE_XAI_API_KEY",
+                            "GROK_DIRECT_ONPREM_AUTH",
+                            "GROK_DIRECT_PLACEHOLDER_KEY",
+                            "XAI_API_KEY")
+SWEEP_EXCLUDED_NAMES = ("GROK_DIRECT_PLACEHOLDER_KEY",)
+# The one swept set every consumer shares (r3a A5): the write-time scrub, the
+# sweep backstop, slice_evidence and the literal check all read this tuple.
+# r3a A5 replaced r3 §4.3.1's 5-name derivation. A variable outside the
+# canonical tuple that a config declares is appended by credential_surface,
+# so a new row's key is swept the moment it lands.
+LITERAL_SWEEP_NAMES = tuple(n for n in sorted(CREDENTIAL_SURFACE_NAMES)
+                            if n not in SWEEP_EXCLUDED_NAMES)
+
+# r3 §4.3.4 / R2-7: the child environment is an explicit allowlist, not
+# `os.environ` minus a denylist. r2's name regex is deleted, not tightened:
+# a credential-shaped NAME is neither necessary nor sufficient to leak, and
+# `SCS_PASS` / `OPERATOR_SSH_KEY` ride to the binary on the frozen bytes.
+# Widening this is a one-line, reviewed, test-covered edit (R-15).
+CHILD_ENV_NON_CREDENTIAL_ALLOWLIST = (
+    "PATH", "HOME", "LANG", "LC_ALL", "TERM", "TZ", "USER", "SHELL",
+    "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS", "GROK_HOME", "GROK_AUTH_EXPIRED")
+
+
+def credential_surface(rows):
+    """The declared credential set for one config (r3 §4.3.1, r3a A5).
+
+    Both credential rungs a row can carry are read: `env_key` AND the
+    `env_http_headers` variable (the latter is the rung r1 could not see, and
+    it is what the two direct on-prem rows authenticate with). The fallback
+    chain is added only when some row declares NEITHER, because the chain is
+    what that row resolves through — a config with no such row contributes no
+    chain name, which is the assertion that fails if a rung is hard-coded in.
+
+    Derived from the config, never from the process env: §4.3.3 makes a
+    name's runtime state something to RECORD (present / absent-unreachable /
+    absent-reachable), not something to derive."""
+    names = []
+    chain_needed = False
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        for key in ("env_key", "credential_variable"):
+            var = row.get(key)
+            if isinstance(var, str) and var and var not in names:
+                names.append(var)
+        if not row.get("env_key") and not row.get("credential_variable"):
+            chain_needed = True
+    if chain_needed:
+        for rung in XAI_CREDENTIAL_CHAIN:
+            if rung not in names:
+                names.append(rung)
+    swept = [n for n in LITERAL_SWEEP_NAMES if n in names]
+    swept += [n for n in names
+              if n not in LITERAL_SWEEP_NAMES
+              and n not in SWEEP_EXCLUDED_NAMES]
+    return {"names": names,
+            "swept_names": swept,
+            "excluded_names": [n for n in names
+                               if n in SWEEP_EXCLUDED_NAMES]}
+
+
+def literal_sweep_values(env=None):
+    """The VALUES the §4.4 rules match, in LITERAL_SWEEP_NAMES order.
+
+    An unset name contributes nothing (r3a A5: absent is a state, not a
+    failure) and an excluded name never appears (R2-4). This function never
+    prints, logs, hashes or returns anything derived from a value — callers
+    use the list for in-memory matching only, which is what keeps RR-2 true
+    while the sweep still matches the real deployment's keys."""
+    env = os.environ if env is None else env
+    return [env[n] for n in LITERAL_SWEEP_NAMES
+            if n not in SWEEP_EXCLUDED_NAMES and env.get(n)]
+
+
+def strip_credential_scheme(value):
+    """The form §4.4.1 rule 1 compares on: a leading `Basic ` / `Bearer ` is
+    removed from BOTH the value and the candidate span. The proxy echoes the
+    TrueFoundry token with its scheme word stripped and the on-prem
+    credential is a `Basic` blob captured without the word, so a rule that
+    matched the whole header value missed every real leak (§2.5)."""
+    return re.sub(r"^(?:basic|bearer)\s+", "", value or "", flags=re.I)
+
+
+def credential_env_meta(names, env=None):
+    """env_meta's credential block (r3 §4.3.3): the STATE of each declared
+    name, never its value. An unset name is `ABSENT` — recorded, not fatal;
+    a set one is a digest, so the report says which rung the run had without
+    publishing it."""
+    env = os.environ if env is None else env
+    out = {}
+    for name in names or ():
+        val = env.get(name)
+        out[name] = "ABSENT" if not val else "set:" + sha256_12(val)
+    return out
+
+
+def resolve_route_credentials(route_map, env=None, declared=None):
+    """(values, causes) for one case's route map (r3 §4.3.3, r3a A6).
+
+    `values` maps credential VARIABLE NAME -> the value the child and the
+    wiretap must both present, so the two never disagree about which key a
+    row runs with. A name no reachable route resolves to is simply absent
+    from it, which is §4.3.3's `absent-and-unreachable` state: rc unchanged,
+    nothing recorded as a failure.
+
+    `causes` is that case's BLOCKED reason list. A route whose variable is
+    DECLARED by the config and unset in `env` blocks the case with
+    `credential-unset: <NAME>`; a route that declares no variable resolves
+    through `XAI_CREDENTIAL_CHAIN` in auth_method.rs order, taking the FIRST
+    name that is SET, and blocks only when no rung is set — naming the whole
+    chain, because the caller cannot tell which rung was meant (r3a A6).
+
+    `declared=None` means no config declaration was supplied, so only the
+    chain leg can produce a cause: the declared-name rule needs the derived
+    set, which is the caller's (`credential_surface`)."""
+    env = os.environ if env is None else env
+    declared = set(declared or ())
+    values = {}
+    causes = []
+    for wire_id in sorted(route_map or {}):
+        route = route_map[wire_id]
+        if not isinstance(route, dict):
+            continue
+        var = route.get("credential_variable")
+        if isinstance(var, str) and var:
+            val = env.get(var)
+            if val:
+                values[var] = val
+            elif var in declared:
+                cause = "credential-unset: %s" % var
+                if cause not in causes:
+                    causes.append(cause)
+            continue
+        for rung in XAI_CREDENTIAL_CHAIN:
+            if env.get(rung):
+                values[rung] = env[rung]
+                break
+        else:
+            cause = "credential-unset: %s" % "|".join(XAI_CREDENTIAL_CHAIN)
+            if cause not in causes:
+                causes.append(cause)
+    return values, causes
+
+
+def write_credential_block(run_dir, causes, wire_ids):
+    """Records §4.3.3's `absent-and-reachable` cause where finalize_verdict's
+    first rule already reads route causes, before the case runs any step: a
+    credential the route does not have must never be forwarded anyway."""
+    wire_dir = os.path.join(run_dir, "wire")
+    os.makedirs(wire_dir, mode=0o700, exist_ok=True)
+    with open(os.path.join(wire_dir, ROUTE_BLOCK_FILE), "a") as fh:
+        for cause in causes:
+            fh.write(json.dumps({"kind": "credential-unset",
+                                 "wire_model_id": ",".join(wire_ids),
+                                 "detail": cause}) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# R-12 (r3 §4.5 item 3): the two auth-failure classes. The 2026-10-29
+# classifier's single `credentials-403` class mixed "our harness auth is
+# broken" with "right key, wrong origin"; the second is a provider answer and
+# the first is a harness defect, and only the second should ever read as one.
+# ---------------------------------------------------------------------------
+AUTH_CLASS_UPSTREAM = "upstream-auth-error"
+AUTH_CLASS_LOCAL = "harness-auth-failure"
+AUTH_STATUSES = (401, 403)
+
+
+def _wire_candidates(wire_dir):
+    """The dirs to read: a caller may hand the run dir or the wire dir."""
+    out = []
+    for cand in (wire_dir, os.path.join(wire_dir or "", "wire")):
+        if cand and os.path.isdir(cand):
+            out.append(cand)
+    return out
+
+
+def _auth_status_seen(wire_dir):
+    """True when this cell has an auth signal at all: a captured 401/403, or
+    an `auth_error` body, or a credential-unset cause. Nothing else may be
+    read as an auth failure — `auth_failure_class` calls a dir with no
+    captured request a harness failure, and that must not fire on a row that
+    never had an auth problem."""
+    for cand in _wire_candidates(wire_dir):
+        for path in sorted(globmod.glob(os.path.join(cand,
+                                                     "resp-*.jsonl"))):
+            try:
+                with open(path, errors="replace") as fh:
+                    text = fh.read()
+            except Exception:
+                continue
+            try:
+                head = json.loads(text.split("\n", 1)[0] or "{}")
+            except Exception:
+                head = {}
+            if head.get("status") in AUTH_STATUSES:
+                return True
+            if '"auth_error"' in text:
+                return True
+    return False
+
+
+def auth_failure_class(wire_dir):
+    """Which auth class this cell's auth failure belongs to (R-12).
+
+    The rule is mechanical, not interpretive: an UPSTREAM auth problem has a
+    captured request that reached an origin and an upstream 401/403. A LOCAL
+    one has ZERO captured requests — nothing ever left, so the failure is
+    ours (an unset credential, a route map that never resolved, a header the
+    wiretap did not inject) and must never be reported as a provider
+    rejection. Returns None when the cell saw no auth status at all."""
+    requests = 0
+    auth_status = False
+    for cand in _wire_candidates(wire_dir):
+        requests += len(globmod.glob(os.path.join(cand, "req-*.json")))
+        if _auth_status_seen(cand):
+            auth_status = True
+    if not requests:
+        return AUTH_CLASS_LOCAL
+    if auth_status:
+        return AUTH_CLASS_UPSTREAM
+    return None
+
 
 def utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -221,6 +458,269 @@ def live_upstream(live_home: str) -> str:
             base = base[:-3]
         return base
     return DEFAULT_UPSTREAM
+
+
+def _origin_from_base_url(base) -> str:
+    """REDTEAM-REFRESH T2 (r3 §4.2.1): the origin (scheme://host[:port]) a
+    base_url value points at.
+
+    The wiretap appends the full route path the client issues against
+    base_url (/v1/<route>), so an origin must NOT already end in /v1 — the
+    same rule live_upstream applies to the deployment default, shared here so
+    a row and the default are reduced identically."""
+    base = (base or "").strip().rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base.rstrip("/")
+
+
+def hermetic_default_origin(cfg_text) -> str:
+    """The origin a row with no base_url of its own inherits: the config's
+    models_base_url, else base_url, else the deployment default."""
+    for key in ("models_base_url", "base_url"):
+        m = re.search(r'^%s\s*=\s*"([^"]*)"' % key, cfg_text or "", re.M)
+        if m and m.group(1).strip():
+            return _origin_from_base_url(m.group(1))
+    return DEFAULT_UPSTREAM
+
+
+def _model_section(header):
+    """Split a TOML header body into (model_id, sub_table).
+
+    A ROW is `[model."<id>"]` or its bare-key twin `[model.<id>]` — the
+    live config uses both (3 of its 18 rows are bare) and api_backend_for_model
+    has always read both, so a row parser that accepts only the quoted spelling
+    silently drops those rows. `[...<id>.<sub>]` is a sub-table
+    (env_http_headers, extra_headers, reasoning_efforts, supported_efforts) and
+    must never be mistaken for a row; `[[...]]` is an array of tables and is
+    never a row. A TOML bare key holds no '.', so the first '.' after the row
+    name opens the sub-table."""
+    if not header.startswith("model."):
+        return (None, None)
+    rest = header[len("model."):]
+    if not rest:
+        return (None, None)
+    if rest[0] in "\"'":
+        end = rest.find(rest[0], 1)
+        if end < 0:
+            return (None, None)
+        return (rest[1:end], rest[end + 1:].lstrip(".") or None)
+    name, _, sub = rest.partition(".")
+    if not name:
+        return (None, None)
+    return (name, sub or None)
+
+
+def derive_row_routes(cfg_text, default_origin):
+    """REDTEAM-REFRESH T2 (r3 §4.2.1) — the per-row route table.
+
+    One line scan, no TOML dependency (the L18 discipline the runner already
+    follows in api_backend_for_model). Each `[model."<id>"]` row contributes:
+
+      * `origin` — its own base_url, else `default_origin` (a row that
+        declares none inherits the config default exactly as the product
+        resolves it);
+      * `wire_model_id` — its `model` field, else the row name. THE MAP IS
+        KEYED ON THIS, not the row name: the wire carries the model id, and
+        two rows may answer to one id (r3 §4.2.1);
+      * the credential that row authenticates with, as a VARIABLE NAME and a
+        header name — never a value. env_http_headers' insert wins because
+        that insert runs before the auth-header one (client.rs:2198 -> :1743);
+        else the row's env_key; else None, meaning the product fallback chain
+        (auth_method.rs:13-15, :30-34), whose rung T2 must not guess (r3
+        §4.2.1: the chain's answer depends on the process env).
+
+    Returns a list in config order."""
+    rows = {}
+
+    def row(name):
+        if name not in rows:
+            rows[name] = {"row_name": name, "wire_model_id": name,
+                          "base_url": None, "env_key": None,
+                          "auth_scheme": None, "credential_variable": None,
+                          "credential_header": None}
+        return rows[name]
+
+    current = None        # row named by a [model."<id>"] header
+    current_hdr = None    # row whose [model."<id>".env_http_headers] this is
+    for raw in (cfg_text or "").splitlines():
+        line_text = raw.strip()
+        if not line_text or line_text.startswith("#"):
+            continue
+        if line_text.startswith("[") and line_text.endswith("]"):
+            name, sub = _model_section(line_text[1:-1].strip())
+            current = current_hdr = None
+            if name is not None and sub is None:
+                current = name
+                row(name)
+            elif name is not None and sub == "env_http_headers":
+                current_hdr = name
+            continue
+        if "=" not in line_text:
+            continue
+        key, val = line_text.split("=", 1)
+        key = key.strip().strip('"\'')
+        val = val.strip().strip('"\'')
+        if current_hdr is not None:
+            r = row(current_hdr)
+            if r["credential_variable"] is None and key and val:
+                r["credential_variable"] = val
+                r["credential_header"] = key.lower()
+            continue
+        if current is None:
+            continue
+        r = row(current)
+        if key == "base_url":
+            r["base_url"] = val
+        elif key == "model":
+            r["wire_model_id"] = val or r["row_name"]
+        elif key == "env_key":
+            r["env_key"] = val
+        elif key == "auth_scheme":
+            r["auth_scheme"] = val
+    out = []
+    for name in rows:
+        r = rows[name]
+        if r["credential_variable"] is None:
+            r["credential_variable"] = r["env_key"]
+            r["credential_header"] = ("x-api-key"
+                                      if r["auth_scheme"] == "x-api-key"
+                                      else "authorization")
+        out.append({"row_name": name,
+                    "wire_model_id": r["wire_model_id"],
+                    "origin": (_origin_from_base_url(r["base_url"])
+                               if r["base_url"] else default_origin),
+                    "credential_variable": r["credential_variable"],
+                    "credential_header": r["credential_header"],
+                    # T3 (r3a A5): a row whose env_http_headers wins still
+                    # declares an env_key, and BOTH are credential rungs the
+                    # sweep must cover. The route map keeps using
+                    # credential_variable alone (r3 §4.2.1).
+                    "env_key": r["env_key"]})
+    return out
+
+
+UNROUTED_FILE = "unrouted.jsonl"
+ROUTE_BLOCK_FILE = "route-block.jsonl"
+
+
+def _read_cause_names(wire_dir, filename, field):
+    """Distinct values of `field` in one of a case's cause files, in first-seen
+    order. [] when the file is absent — the normal case: a case whose requests
+    all route cleanly never creates either file."""
+    if not wire_dir:
+        return []
+    path = os.path.join(wire_dir, filename)
+    if not os.path.isfile(path):
+        return []
+    names = []
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                v = d.get(field) if isinstance(d, dict) else None
+                if isinstance(v, str) and v and v not in names:
+                    names.append(v)
+    except OSError:
+        return []
+    return names
+
+
+def _count_cause_lines(wire_dir, filename):
+    """Line count of a cause file (0 when absent)."""
+    if not wire_dir:
+        return 0
+    path = os.path.join(wire_dir, filename)
+    if not os.path.isfile(path):
+        return 0
+    try:
+        with open(path) as fh:
+            return sum(1 for line in fh if line.strip())
+    except OSError:
+        return 0
+
+
+def write_route_block(run_dir, causes):
+    """Records the r3b B1 rule-3 decisions where finalize_verdict's first rule
+    reads them. Written BEFORE the case runs any step: an ambiguous pin route
+    is decided up front, so nothing can be forwarded on a guessed origin."""
+    wire_dir = os.path.join(run_dir, "wire")
+    os.makedirs(wire_dir, mode=0o700, exist_ok=True)
+    with open(os.path.join(wire_dir, ROUTE_BLOCK_FILE), "a") as fh:
+        for cause in causes:
+            # The kind is the cause's own prefix, so the
+            # selector-path cause (RR-3 F-3 "ambiguous-route")
+            # stays distinct from the pin-path one (r3b B1 rule 3
+            # "ambiguous-pin-route") in the file itself.
+            kind, _, wid = cause.partition(":")
+            fh.write(json.dumps({"kind": (kind.strip()
+                                  or "ambiguous-pin-route"),
+                                 "wire_model_id": wid.strip(),
+                                 "detail": cause}) + "\n")
+
+
+def _add_selector(seq, val):
+    if isinstance(val, str) and val and val not in seq:
+        seq.append(val)
+
+
+def case_route_selectors(case, rows_override=None):
+    """(selectors, pin_ids) for the route map — the r3a A4 selector set.
+
+    selectors (what the case declares it will run): `model`, `steps[].model`,
+    `rows[].model` (or the --rows override), `agents_json.*/model`,
+    `tool_calls[].args.model`, and every `model/<id>/...` config_patch key.
+    pin_ids (ids a pin selects a request BY): every `where.body.model` in
+    `assert.wire` and `row_asserts.wire` — a pin that names an id the map
+    cannot resolve must fail closed too, not silently score 0 hits.
+    """
+    selectors = []
+    pins = []
+    _add_selector(selectors, case.get("model"))
+    for st in case.get("steps") or []:
+        if not isinstance(st, dict):
+            continue
+        _add_selector(selectors, st.get("model"))
+        agents = st.get("agents_json")
+        if isinstance(agents, dict):
+            for agent in agents.values():
+                if isinstance(agent, dict):
+                    _add_selector(selectors, agent.get("model"))
+        for tc in st.get("tool_calls") or []:
+            if isinstance(tc, dict) and isinstance(tc.get("args"), dict):
+                _add_selector(selectors, tc["args"].get("model"))
+    rows = rows_override or case.get("rows") or []
+    if isinstance(rows, str):
+        # `--rows a,b` (run.py:24, argparse :5999) arrives as ONE CLI
+        # string, which the rows path splits at :3780. Iterating a str
+        # yields characters: the rows actually run would never reach
+        # the map and the map would fill with one-letter keys.
+        rows = [part.strip() for part in rows.split(",")
+                if part.strip()]
+    for entry in rows:
+        if isinstance(entry, dict):
+            _add_selector(selectors, entry.get("model"))
+        else:
+            _add_selector(selectors, entry)
+    for key in (case.get("config_patch") or {}):
+        parts = str(key).split("/")
+        if len(parts) >= 2 and parts[0] == "model":
+            _add_selector(selectors, parts[1])
+    for block in (case.get("assert"), case.get("row_asserts")):
+        if not isinstance(block, dict):
+            continue
+        for spec in block.get("wire") or []:
+            if not isinstance(spec, dict) or not isinstance(spec.get("where"),
+                                                           dict):
+                continue
+            _add_selector(pins, spec["where"].get("body.model"))
+    return (selectors, pins)
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +898,13 @@ class HermeticHome:
         os.chmod(stub_dst, 0o755)
         cfg = cfg.replace(os.path.join(live_home, "proxy-auth-stub.sh"),
                           stub_dst)
+        # REDTEAM-REFRESH T2 (r3 §4.2.1): the route table must be derived
+        # from the config as this case sees it (case patch applied) BEFORE
+        # every base_url is rewritten to the one loopback port — after the
+        # rewrite every row has the same origin and the per-row distinction
+        # this item exists to enforce is gone.
+        self.route_cfg = cfg
+        self.default_origin = hermetic_default_origin(cfg)
         if wire_port:
             proxy_base = "http://127.0.0.1:%d/v1" % wire_port
             cfg = re.sub(r'^base_url\s*=\s*"[^"]*"',
@@ -422,6 +929,125 @@ class HermeticHome:
     def session_dir_for(self, cwd: str, sid: str) -> str:
         return os.path.join(self.home, "sessions",
                             encode_cwd_dirname(cwd), sid)
+
+    def row_routes(self):
+        if getattr(self, "_row_routes", None) is None:
+            self._row_routes = derive_row_routes(self.route_cfg,
+                                                self.default_origin)
+        return self._row_routes
+
+    def route_map(self, selectors, pin_ids):
+        """(map, causes) — the routes this case may use, keyed on the WIRE
+        MODEL ID (r3 §4.2.1), plus the r3b B1 pin decisions.
+
+        A route is the triple (origin, credential_variable, credential_header);
+        two rows sharing a wire id share a route only if their triples are
+        identical, which is what makes `gpt-6.1-sol` / `gpt-6.1-sol-1m`
+        ambiguous today while `claude-opus-5.5` / `-1m` are not. The
+        sol pair shares ONE origin — the named row's base_url and the
+        config's models_base_url reduce to the same host — and differs
+        in the credential: `gpt-6.1-sol` declares env_key
+        CODEX_LLM_PROXY_KEY, `gpt-6.1-sol-1m` declares no row
+        credential and resolves through the product fallback chain.
+
+        Pin rules, in order (r3b B1):
+          1. a pin whose wire id a selector already resolves adds nothing —
+             the selected row's own route stands, sibling rows excluded;
+          2. else, if every row with that wire id shares one route, add them;
+          3. else record "ambiguous-pin-route: <wire id>" in `causes`: the
+             case must BLOCK rather than guess an origin.
+        An empty selector set declares nothing, so every live row IS
+        routed — EXCEPT an id whose own rows disagree on the route
+        triple, which the F-3 collision path drops while recording
+        "ambiguous-route: <wire id>" (today exactly `gpt-6.1-sol`, for
+        the credential reason above). An id no live row declares adds NO
+        route (ruling RR-3 F-1,
+        r3 §4.2.1: "there is no second key and no default-origin
+        fallback"): the request is refused by the wiretap and the case reads
+        BLOCKED `unrouted: <id>`, exactly as an unresolvable pin already does.
+
+        Selector ambiguity (ruling RR-3 F-3, r3b B1 rule 3 applied to the
+        selector channel): two selected rows on one wire id with DIFFERENT
+        triples leave the key out and record
+        "ambiguous-route: <wire id>" — dict order never picks the
+        origin a credential is later presented to.
+
+        Values are variable NAMES and origins only — never a credential value
+        (r3 §4.2.1; the blob reaches the wiretap through the env seam)."""
+        routes = self.row_routes()
+        by_name = {r["row_name"]: r for r in routes}
+        by_wire = {}
+        for r in routes:
+            by_wire.setdefault(r["wire_model_id"], []).append(r)
+        out = {}
+        causes = []
+
+        def triple(r):
+            return (r["origin"], r["credential_variable"],
+                    r["credential_header"])
+
+        def route_triple(route):
+            """The triple of an ALREADY-BUILT route, for the RR-3
+            F-3 collision test (a built route lists its rows, a row does
+            not)."""
+            return (route["origin"], route["credential_variable"],
+                    route["credential_header"])
+
+        def add(wire_id, group):
+            out[wire_id] = {"origin": group[0]["origin"],
+                            "credential_variable":
+                                group[0]["credential_variable"],
+                            "credential_header": group[0]["credential_header"],
+                            "row_names": [g["row_name"] for g in group]}
+
+        sels = [s for s in (selectors or []) if isinstance(s, str) and s]
+        pins = [p for p in (pin_ids or []) if isinstance(p, str) and p]
+        if not sels:
+            sels = list(by_name)
+        undecided = set()
+        for sel in sels:
+            r = by_name.get(sel)
+            if r is not None:
+                wire_id = r["wire_model_id"]
+                if wire_id in undecided:
+                    continue
+                prev = out.get(wire_id)
+                if prev is not None and route_triple(prev) != triple(r):
+                    # RR-3 F-3: two selected rows, one wire id, two
+                    # triples. Neither wins: dropping the key and
+                    # recording the cause is what stops the LAST
+                    # selector from silently choosing the origin.
+                    out.pop(wire_id, None)
+                    undecided.add(wire_id)
+                    causes.append("ambiguous-route: %s" % wire_id)
+                    continue
+                same = [g for g in by_wire[wire_id]
+                        if triple(g) == triple(r)]
+                add(wire_id, same)
+                continue
+            group = by_wire.get(sel)
+            if group is None:
+                # RR-3 F-1: an unresolvable selector adds no route,
+                # so its request is refused and the case BLOCKS.
+                # A synthesized default-origin entry here is r3 §2.4
+                # re-manufactured: a credential presented to an
+                # origin that does not serve the row.
+                continue
+            elif len({triple(g) for g in group}) == 1:
+                add(sel, group)
+            else:
+                causes.append("ambiguous-pin-route: %s" % sel)
+        for pin in pins:
+            if pin in out:
+                continue
+            group = by_wire.get(pin)
+            if not group:
+                continue
+            if len({triple(g) for g in group}) > 1:
+                causes.append("ambiguous-pin-route: %s" % pin)
+                continue
+            add(pin, group)
+        return (out, sorted(set(causes)))
 
 
 def _align_models_cache(cache_path: str, wire_port) -> None:
@@ -663,14 +1289,36 @@ class TurnResult:
         self.wire_model_calls = 0
 
 
-def build_env(home: str, extra_unset=None) -> dict:
-    # apex-ayl.22 D-7: the case env.provider_vars_unset extends the
-    # runner L1 set (the union is unset; a subset declaration is
-    # rejected at the NEW-case gate).
+def build_env(home: str, extra_unset=None,
+              credential_names=None) -> dict:
+    """The child environment (r3 §4.3.4, R2-7): an explicit ALLOWLIST.
+
+    The frozen rule was `os.environ` minus four names, so every credential in
+    the runner's environment — plus SCS_PASS, OPERATOR_SSH_KEY and anything
+    else the operator happens to export — reached the binary that writes a
+    report folder. `os.environ` is now read only to LOOK UP allowlisted names,
+    never to enumerate them, so an undeclared name is absent by construction
+    rather than by a pattern that has to be right every time.
+
+    `credential_names` is the union's credential half: the variables of the
+    routes THIS case can reach, from resolve_route_credentials. Nothing else
+    credential-shaped rides in, and a route the case cannot name gets no key.
+
+    apex-ayl.22 D-7 is preserved: the case env.provider_vars_unset extends the
+    runner L1 set and wins even over an allowlisted name (a subset
+    declaration is rejected at the NEW-case gate)."""
     unset = set(PROVIDER_VARS_UNSET)
     if extra_unset:
         unset.update(extra_unset)
-    env = {k: v for k, v in os.environ.items() if k not in unset}
+    env = {}
+    for name in CHILD_ENV_NON_CREDENTIAL_ALLOWLIST:
+        value = os.environ.get(name)
+        if value is not None and name not in unset:
+            env[name] = value
+    for name in credential_names or ():
+        value = os.environ.get(name)
+        if value is not None and name not in unset:
+            env[name] = value
     env["GROK_AUTH_EXPIRED"] = "1"
     # kiloecho P0 class 1 (defense-in-depth): never hand the binary a
     # relative GROK_HOME.
@@ -681,13 +1329,15 @@ def build_env(home: str, extra_unset=None) -> dict:
 def run_headless_turn(bin_path, home, cwd, model, prompt, resume_sid,
                       output_format="streaming-json", extra_args=None,
                       timeout_s=300, kill_after_s=None,
-                      capture_dir=None, extra_unset=None):
+                      capture_dir=None, extra_unset=None,
+                      credential_names=None):
     args = [bin_path, "-m", model, "-p", prompt,
             "--output-format", output_format, "--always-approve"]
     if resume_sid:
         args += ["--resume", resume_sid]
     args += extra_args or []
-    env = build_env(home, extra_unset)
+    env = build_env(home, extra_unset,
+                  credential_names)
     start = time.time()
     proc = subprocess.Popen(args, cwd=cwd, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -828,7 +1478,8 @@ class AcpSession:
     def __init__(self, bin_path, home, cwd, model, log_path,
                  timeout_s=180, init_timeout_s=None,
                  set_model_timeout_s=None, extra_unset=None,
-                 load_first_sid=None, env=None):
+                 load_first_sid=None, env=None,
+                 credential_names=None):
         self.env = dict(env) if env is not None else None
         self.bin_path = bin_path
         self.home = home
@@ -839,6 +1490,7 @@ class AcpSession:
         # apex-ayl.22 D-7: the case env.provider_vars_unset extends
         # the runner L1 set (build_env unset union).
         self.extra_unset = extra_unset
+        self.credential_names = credential_names
         # apex-ayl.22 D-6: the case timeouts beat the hardcoded floors
         # (timeouts.acp_init_s / timeouts.acp_set_model_s).
         self.init_timeout_s = (init_timeout_s
@@ -875,7 +1527,9 @@ class AcpSession:
         self._utf8 = codecs.getincrementaldecoder("utf-8")()
 
     def start(self):
-        env = self.env if self.env is not None else build_env(self.home, self.extra_unset)
+        env = (self.env if self.env is not None else
+               build_env(self.home, self.extra_unset,
+                         self.credential_names))
         self.proc = subprocess.Popen(
             [self.bin_path, "agent", "stdio"], cwd=self.cwd, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1268,7 +1922,8 @@ class AcpSession:
 
 
 class Wiretap:
-    def __init__(self, port, upstream, capture_dir, ambient_key):
+    def __init__(self, port, upstream, capture_dir, ambient_key,
+                 route_map=None):
         self.port = port
         self.capture_dir = capture_dir
         env = dict(os.environ)
@@ -1276,12 +1931,20 @@ class Wiretap:
             # HYG-1: hand the key to wiretap via env, never argv
             # (argv is ps-visible; 5 dead orphans leaked it that way).
             env["WIRETAP_AMBIENT_KEY"] = ambient_key
-        self.proc = subprocess.Popen(
-            [sys.executable, os.path.abspath(WIRETAP),
-             "--port", str(port), "--upstream", upstream,
-             "--capture", capture_dir],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env=env)
+        argv = [sys.executable, os.path.abspath(WIRETAP),
+                "--port", str(port), "--upstream", upstream,
+                "--capture", capture_dir]
+        if route_map is not None:
+            # REDTEAM-REFRESH T2 (r3 §4.2.1): the route map is the whole
+            # routing authority, so it is never an argv option — it names each
+            # row's origin and credential VARIABLE and goes through the same
+            # env seam as the ambient key. Values are not in it by
+            # construction: derive_row_routes reads names only.
+            env["WIRETAP_ROUTE_MAP"] = json.dumps(route_map, sort_keys=True)
+        self.argv = argv
+        self.env = env
+        self.proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, env=env)
         self.out_log = open(capture_dir + ".wiretap-stdout.log", "w")
 
     def wait_ready(self, timeout=15):
@@ -1626,7 +2289,25 @@ def wire_path_for_model(config_text, model_id):
     return WIRE_PATHS.get(backend, "/v1/responses")
 
 
-def synth_output_pins(case):
+def row_wire_id(name, routes=None):
+    """REDTEAM-REFRESH T4 (r3 §4.7, M-11): the wire model id the row NAMED
+    `name` sends — its `model` override, else the name itself.
+
+    `routes` is the case's own row table (`HermeticHome.row_routes()`: the
+    config as this case sees it, before the base_url rewrite). An id that
+    names no row (an id already spelled as the wire byte, a catalog model,
+    an unknown id) comes back verbatim, so a pin that already carries the
+    byte selects the same captures (§4.7 invariant 1). No table, as on the
+    key-free path (no wiretap), means no resolution."""
+    if not isinstance(name, str) or not name:
+        return name
+    for r in routes or ():
+        if r.get("row_name") == name:
+            return r.get("wire_model_id") or name
+    return name
+
+
+def synth_output_pins(case, routes=None):
     """apex-ayl.22 D-4b: an output_contains on a declared mcp_call/
     tool_call IS a scored synthesized wire-grep pin. The runner
     synthesizes a wire assert (file = req-*.json, where = the case
@@ -1635,7 +2316,11 @@ def synth_output_pins(case):
     class) stays the case's own pin — the synthesis adds the payload
     check, it does not replace the lifecycle pin. Legacy cases (no
     declarations) get no pins. The runner never rewrites prompts —
-    the contract is the declared output_contains."""
+    the contract is the declared output_contains.
+
+    REDTEAM-REFRESH T4 (r3 §4.7, r3a A10): `body.model` is the wire id the
+    case's row sends (`row_wire_id` over `routes`), not the row name; with
+    no table the authored byte stands."""
     out = []
     where = {"method": "POST"}
     wire = case.get("wire")
@@ -1643,7 +2328,7 @@ def synth_output_pins(case):
         where["path"] = WIRE_PATHS[wire]
     model = case.get("model")
     if isinstance(model, str) and model:
-        where["body.model"] = model
+        where["body.model"] = row_wire_id(model, routes)
     for decl in (list(case.get("mcp_calls") or []) +
                  list(case.get("tool_calls") or [])):
         oc = decl.get("output_contains")
@@ -2923,28 +3608,85 @@ def _last_response_status(capture_dir, model):
     return None
 
 
-def recheck_models_available(upstream, model, ambient_key):
-    """apex-ayl.22 D-5: a FRESH `GET /v1/models` through the proxy
-    (HYG-1: the ambient key goes in the in-memory header, never
-    argv/disk). Returns True iff `model` is still in the catalog. Any
-    failure to reach or parse the catalog is False (fail-closed: a
-    catalog we cannot confirm is treated as changed — the cell FAILs,
-    no retry; 404 != 400, manifest §4)."""
+class RecheckUnavailable(Exception):
+    """r3a A13: the route gave no readable model list. That is a different
+    fact from "the model left the catalog" — one is a route that cannot
+    answer the question, the other is an answer. r3b B7 exists because the
+    frozen code folded both into a silent no-retry that recorded nothing."""
+
+    def __init__(self, host, status):
+        self.host = host
+        self.status = status
+        Exception.__init__(self, "recheck unsupported on %s (%s)"
+                           % (host, status))
+
+
+def _url_host(url):
+    rest = (url or "").split("://", 1)[-1]
+    return rest.split("/", 1)[0] or "?"
+
+
+def _route_for_model(route_ctx, model):
+    """(wire_id, route) for the `model` value a case declares.
+
+    r3b B7 is exactly this lookup: a case declares a row NAME, while
+    `_last_response_status` matches captures on `body.model`, the WIRE ID.
+    Looking the row name up finds no capture, so the recheck was never
+    reached and every env-retry on a named row was silently lost."""
+    route_map = (route_ctx or {}).get("route_map") or {}
+    route = route_map.get(model)
+    if isinstance(route, dict):
+        return model, route
+    for wire_id, candidate in route_map.items():
+        if (isinstance(candidate, dict)
+                and model in (candidate.get("row_names") or [])):
+            return wire_id, candidate
+    return model, None
+
+
+def recheck_models_available(origin, model, credential):
+    """apex-ayl.22 D-5, route-aware per r3a A13: a FRESH `GET /v1/models` on
+    the ROUTE's own origin, authenticating with that ROUTE's credential.
+
+    The ambient key no longer rides along (r3a A13 leg 3): a route that
+    declares `env_key = SOME_OTHER_KEY` must not be probed with the proxy
+    key, which is r3 §2.4's credential/origin mismatch re-created on a GET.
+    When the route's credential variable IS the ambient key the value is the
+    same and the proxy row is unaffected. HYG-1 still holds: the value goes
+    in the in-memory header, never argv or disk.
+
+    Returns True iff `model` (the WIRE id) is in the catalog. A route that
+    gives no readable answer raises RecheckUnavailable so the caller records
+    why the retry was lost; a catalog that answers and no longer lists the id
+    returns False (a catalog change is a FAIL, not an env flap; 404 != 400).
+    """
     if not model:
         return False
-    url = (upstream or "").rstrip("/") + "/v1/models"
+    import urllib.error
+    host = _url_host(origin)
+    url = (origin or "").rstrip("/") + "/v1/models"
     req = urllib.request.Request(url)
-    if ambient_key:
-        req.add_header("Authorization", "Bearer " + ambient_key)
+    if credential:
+        value = credential
+        if not re.match(r"^(?:basic|bearer)\s", value, flags=re.I):
+            value = "Bearer " + value
+        req.add_header("Authorization", value)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            if getattr(resp, "status", 200) != 200:
-                return False
+            status = getattr(resp, "status", 200)
+            if status != 200:
+                raise RecheckUnavailable(host, status)
             data = json.loads(resp.read().decode("utf-8", "replace"))
-    except Exception:
-        return False
+    except RecheckUnavailable:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise RecheckUnavailable(host, exc.code)
+    except Exception as exc:
+        raise RecheckUnavailable(host, type(exc).__name__)
     items = data.get("data") if isinstance(data, dict) else data
-    for it in items or []:
+    if not isinstance(items, list):
+        raise RecheckUnavailable(host, "no model list")
+    for it in items:
         if isinstance(it, dict) and it.get("id") == model:
             return True
         if it == model:
@@ -2953,7 +3695,7 @@ def recheck_models_available(upstream, model, ambient_key):
 
 
 def _retry_decision(case, capture_dir, model, attempt, max_attempts,
-                    upstream, ambient_key=""):
+                    upstream, ambient_key="", route_ctx=None):
     """apex-ayl.22 D-5: the env retry decision table. `attempt` = the
     attempt that just completed (1-based); `max_attempts` = the case's
     retry.max_attempts = the max env RETRIES per cell (the cap; the
@@ -2975,18 +3717,39 @@ def _retry_decision(case, capture_dir, model, attempt, max_attempts,
     if attempt > max_attempts:
         return (False, "retry cap: attempt %d exceeds max_attempts %d"
                 % (attempt, max_attempts), None)
-    last = _last_response_status(capture_dir, model)
+    # r3b B7: resolve the row NAME to its WIRE ID before the capture lookup,
+    # or the lookup can never find the request this case made.
+    wire_id, route = _route_for_model(route_ctx, model)
+    last = _last_response_status(capture_dir, wire_id)
     if last is None or last[0] not in on_status:
         return (False, "last response status %r not in on_status %r"
                 % (last[0] if last else None, on_status), None)
     if retry_block.get("recheck_models"):
-        present = recheck_models_available(upstream, model, ambient_key)
+        origin = upstream
+        credential = ambient_key
+        if route is not None:
+            origin = route.get("origin") or upstream
+            values = (route_ctx or {}).get("credential_values") or {}
+            var = route.get("credential_variable")
+            if var:
+                credential = values.get(var, "")
+            else:
+                for rung in XAI_CREDENTIAL_CHAIN:
+                    if values.get(rung):
+                        credential = values[rung]
+                        break
+        try:
+            present = recheck_models_available(origin, wire_id, credential)
+        except RecheckUnavailable as exc:
+            # r3a A13: still fail-closed (no retry), but the lost retry is
+            # now NAMED instead of silent (r3b B7).
+            return (False, str(exc), False)
         if not present:
             return (False,
                     "model %r gone on recheck (catalog change, not an "
-                    "env flap)" % model, False)
+                    "env flap)" % wire_id, False)
         return (True, "env flap: last status %d in on_status %r; model "
-                "%r still in catalog" % (last[0], on_status, model),
+                "%r still in catalog" % (last[0], on_status, wire_id),
                 True)
     return (True, "env flap: last status %d in on_status %r"
             % (last[0], on_status), None)
@@ -3014,6 +3777,25 @@ def finalize_verdict(case, pre_status, results, wire_dir=None):
         return (pre_status if pre_status == "RECON" else pre_status), info
     if pre_status == "SKIP":
         return pre_status, info
+    # REDTEAM-REFRESH T2 (r3 §4.2.2 rule 1, r3a A2): a request the route map
+    # could not resolve never reached any origin, so nothing this case scored
+    # is interpretable. An undecided pin route (r3b B1 rule 3) is the same
+    # class: the harness never chose where the request belonged.
+    if wire_dir:
+        undecided = _read_cause_names(wire_dir, ROUTE_BLOCK_FILE,
+                                      "detail")
+        if undecided:
+            # The cause file carries the whole cause string, so the
+            # row and verdict.json report the kind actually
+            # decided — "ambiguous-pin-route: <id>" (r3b B1) or
+            # "ambiguous-route: <id>" (RR-3 F-3) — instead of one
+            # hardcoded prefix covering both.
+            info["blocked_reason"] = "; ".join(undecided)
+            return "BLOCKED", info
+        unrouted = _read_cause_names(wire_dir, UNROUTED_FILE, "body_model")
+        if unrouted:
+            info["blocked_reason"] = "unrouted: " + ", ".join(unrouted)
+            return "BLOCKED", info
     # D-8: require_wire_evidence downgrade (a claim without a file is
     # not a claim) — precedes the premise pass.
     violations = audit_wire_evidence(case, results, wire_dir)
@@ -3128,21 +3910,31 @@ def run_case(case, args, budget):
     max_attempts = max(1, int(retry_block.get("max_attempts", 1)))
     attempt = 1
     run_dir = base_run_dir
-    row = _run_case_once(case, args, budget, run_dir, attempt)
+    # T3 (r3a A13): the route table this case decided is what the recheck
+    # asks — the row name is not an origin and not a wire id. _run_case_once
+    # fills it because it is the only place that has the hermetic config
+    # before its base_urls collapse onto the wiretap.
+    route_ctx = {}
+    row = _run_case_once(case, args, budget, run_dir, attempt, route_ctx)
     rechecks = []
     while row["status"] in ("FAIL", "BLOCKED"):
         ok, reason, recheck = _retry_decision(
             case, os.path.join(run_dir, "wire"), case.get("model"),
             attempt, max_attempts, live_upstream(args.live_home),
-            getattr(args, "ambient_key", ""))
+            getattr(args, "ambient_key", ""), route_ctx=route_ctx)
+        if recheck is not None:
+            # r3b B7: a LOST retry is recorded too, so "the catalog could not
+            # be read" is visible in the row instead of looking like a
+            # failure with no explanation.
+            rechecks.append({"op": "recheck_models",
+                             "model": _route_for_model(
+                                 route_ctx, case.get("model"))[0],
+                             "present": recheck,
+                             "reason": reason,
+                             "ts": utc_ts()})
         if not ok:
             log("  %s: no env retry (%s)" % (cid, reason))
             break
-        if recheck is not None:
-            rechecks.append({"op": "recheck_models",
-                             "model": case.get("model"),
-                             "present": recheck,
-                             "ts": utc_ts()})
         backoff = retry_block.get("backoff_s", 30)
         log("  %s: env retry %d/%d after %ss backoff (%s)"
             % (cid, attempt + 1, max_attempts, backoff, reason))
@@ -3157,7 +3949,7 @@ def run_case(case, args, budget):
     return row
 
 
-def _run_case_once(case, args, budget, run_dir, attempt):
+def _run_case_once(case, args, budget, run_dir, attempt, route_out=None):
     cid = case["id"]
     os.makedirs(run_dir, exist_ok=True)
     started = time.time()
@@ -3228,9 +4020,44 @@ def _run_case_once(case, args, budget, run_dir, attempt):
         # the runner L1 set for every binary launch in this case.
         extra_unset = (case.get("env") or {}).get(
             "provider_vars_unset")
+        # T3 §4.3.4: no route map (no wiretap) means
+        # no reachable-route credential to hand over.
+        case_credential_names = []
         home = HermeticHome(run_dir, args.live_home,
                             case.get("config_patch", {}), port,
                             keep=args.keep_home)
+        # REDTEAM-REFRESH T2 (r3 §4.2.1, r3b B1): the case's routes are
+        # decided before anything runs. Only a case the wiretap fronts has a
+        # map — the L1 key-free path starts no wiretap (and reaches no
+        # origin), so routing cannot and must not change it.
+        route_map = None
+        if wirecap:
+            r_sel, r_pins = case_route_selectors(case,
+                                                getattr(args, "rows", None))
+            route_map, route_causes = home.route_map(r_sel, r_pins)
+            if route_causes:
+                write_route_block(run_dir, route_causes)
+                mark("BLOCKED", "; ".join(route_causes))
+                return _finish(case, run_dir, ctx, results, status,
+                               started, None, home, args, budget,
+                               attempt=attempt)
+            # r3 §4.3.3: the third unset state — a name a REACHABLE route
+            # resolves to — blocks this case before its first step. Nothing
+            # may be forwarded with a credential the route does not have.
+            surface = credential_surface(home.row_routes())
+            cred_values, cred_causes = resolve_route_credentials(
+                route_map, declared=surface["names"])
+            if cred_causes:
+                write_credential_block(run_dir, cred_causes,
+                                       sorted(route_map))
+                mark("BLOCKED", "; ".join(cred_causes))
+                return _finish(case, run_dir, ctx, results, status,
+                               started, None, home, args, budget,
+                               attempt=attempt)
+            case_credential_names = sorted(cred_values)
+            if route_out is not None:
+                route_out["route_map"] = route_map
+                route_out["credential_values"] = cred_values
         case_cwd = case_cwd or home.cwd
         upstream = live_upstream(args.live_home)
         wt = None
@@ -3273,7 +4100,7 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                     % (cid, port))
             if wirecap:
                 wt = Wiretap(port, upstream, ctx.capture_dir,
-                             args.ambient_key)
+                             args.ambient_key, route_map=route_map)
                 if not wt.wait_ready():
                     mark("BLOCKED", "wiretap did not start")
                     return _finish(case, run_dir, ctx, results, status,
@@ -3363,6 +4190,7 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                              set_model_timeout_s=
                              _effective_set_model_timeout(case),
                              extra_unset=extra_unset,
+                             credential_names=case_credential_names,
                              load_first_sid=_xw_load_sid)
             acp.start()
             ctx.acp = acp
@@ -3405,20 +4233,27 @@ def _run_case_once(case, args, budget, run_dir, attempt):
         rows = case.get("rows")
         if rows:
             ctx.row_order = []
+            # REDTEAM-REFRESH T4 (r3 §4.7, s0 F-10): the run order records
+            # the wire id each row sends; the authored names ride beside it,
+            # one entry per row, so two rows on one wire id stay apart.
+            ctx.row_names = []
+            ctx.row_routes = home.row_routes() if wirecap else None
             want = {r.strip() for r in args.rows.split(",")} if args.rows \
                 else None
             for row in rows:
                 model = row["model"]
                 if want and model not in want:
                     continue
-                ctx.row_order.append(model)
+                ctx.row_order.append(row_wire_id(model, ctx.row_routes))
+                ctx.row_names.append(model)
                 tr = run_headless_turn(
                     args.bin, home.home, case_cwd, model,
                     row.get("prompt", "Reply with exactly: HT1-OK"),
                     None, output_format=fmt,
                     timeout_s=_effective_turn_timeout(case),
                     capture_dir=ctx.capture_dir,
-                    extra_unset=extra_unset)
+                    extra_unset=extra_unset,
+                    credential_names=case_credential_names)
                 ctx.turns.append({"op": "row", "model": model,
                                   "exit": tr.exit_code,
                                   "killed": tr.killed,
@@ -3500,7 +4335,8 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                                            _effective_turn_timeout(case)),
                         kill_after_s=step.get("kill_after_s"),
                         capture_dir=ctx.capture_dir,
-                        extra_unset=extra_unset)
+                        extra_unset=extra_unset,
+                        credential_names=case_credential_names)
                     ctx.turns.append({"op": "turn", "step": si,
                                       "model": model,
                                       "exit": tr.exit_code,
@@ -3546,7 +4382,8 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                         timeout_s=60,
                         kill_after_s=step.get("after_s", 1.5),
                         capture_dir=ctx.capture_dir,
-                        extra_unset=extra_unset)
+                        extra_unset=extra_unset,
+                        credential_names=case_credential_names)
                     ctx.turns.append({"op": "kill", "step": si,
                                       "killed": tr.killed,
                                       "elapsed": tr.elapsed})
@@ -3623,7 +4460,8 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                         ctx.session_id, output_format=fmt, extra_args=extra,
                         timeout_s=_effective_turn_timeout(case),
                         capture_dir=ctx.capture_dir,
-                        extra_unset=extra_unset)
+                        extra_unset=extra_unset,
+                        credential_names=case_credential_names)
                     ctx.turns.append({"op": "compact", "step": si,
                                       "exit": tr.exit_code,
                                       "killed": tr.killed,
@@ -3730,7 +4568,10 @@ def _run_case_once(case, args, budget, run_dir, attempt):
             # own explicit wire pins). apex-2o6: also for proxy:none
             # (the pre-placed wire dir is the evidence source).
             wire_specs = list(assert_block.get("wire", []))
-            wire_specs.extend(synth_output_pins(case))
+            # T4 (r3 §4.7): only a case the wiretap fronts has a row table;
+            # the key-free path keeps the authored byte (r3 §2.6).
+            wire_specs.extend(synth_output_pins(
+                case, home.row_routes() if wirecap else None))
             for spec in wire_specs:
                 if spec.get("kind") == "recon" or spec.get("op") == "recon":
                     results.append(check_recon(spec, ctx))
@@ -3832,15 +4673,36 @@ def _row_model_for_spec(spec):
     return rm
 
 
+def _row_position(ctx, rm):
+    """REDTEAM-REFRESH T4 (r3 §4.7, r3a A10, s0 F-10): the run-order position
+    of the row a row-scoped spec names, or None when no single row of this
+    run is it (the caller records the recon `wire.row-skip`).
+
+    A row name addresses that row only: a declared row that did not run is
+    never stood in for by a row that sends the same wire id. Any other
+    identity goes through `row_wire_id` and addresses the one row of this
+    run that sends it; an id two rows of this run send addresses neither, as
+    before T4 (r3 §3.7 keeps both members of a pair out of one case)."""
+    names = getattr(ctx, "row_names", None) or []
+    order = getattr(ctx, "row_order", [])
+    routes = getattr(ctx, "row_routes", None)
+    if rm in names:
+        return names.index(rm)
+    if any(r.get("row_name") == rm for r in routes or ()):
+        return None
+    wid = row_wire_id(rm, routes)
+    return order.index(wid) if order.count(wid) == 1 else None
+
+
 def _finish(case, run_dir, ctx, results, status, started, wt, home, args,
             budget, row_asserts=None, attempt=1):
     if wt:
         wt.stop()
     if row_asserts:
-        run_order = getattr(ctx, "row_order", [])
         for spec in row_asserts.get("wire", []):
             rm = _row_model_for_spec(spec)
-            if rm and rm not in run_order:
+            pos = _row_position(ctx, rm) if rm else None
+            if rm and pos is None:
                 results.append(AssertResult(
                     spec, "wire.row-skip", True,
                     "row %s not in this run (filtered by --rows)" % rm,
@@ -3853,7 +4715,7 @@ def _finish(case, run_dir, ctx, results, status, started, wt, home, args,
                     # own requests (default 0 = newest of that row).
                     spec.setdefault("nth", 0)
                 else:
-                    spec["nth"] = run_order.index(rm)
+                    spec["nth"] = pos
             results.append(check_wire(spec, os.path.join(run_dir, "wire")))
     hard_fails = [r for r in results if not r.ok and not r.recon]
     if row_asserts and hard_fails and status == "PASS":
@@ -3890,6 +4752,16 @@ def _finish(case, run_dir, ctx, results, status, started, wt, home, args,
            "snapshots": ctx.snapshots,
            "run_dir": run_dir,
            "attempt": attempt}
+    # r3b B4: BLOCKED alone does not say what to fix. blocked_reason is set by
+    # finalize_verdict (route causes, harness premise, NO-EVIDENCE) and the
+    # triage hint below keys off it. `unrouted` is recorded whenever the
+    # wiretap refused something — including the recon / SKIP rows whose status
+    # rule 1 deliberately leaves alone.
+    if vinfo.get("blocked_reason"):
+        row["blocked_reason"] = vinfo["blocked_reason"]
+    unrouted_n = _count_cause_lines(wire_dir, UNROUTED_FILE)
+    if unrouted_n:
+        row["unrouted"] = unrouted_n
     # apex-ayl.22 D-7: anomalies are RECORDED, never FAILed —
     # store=true on responses-req bodies (the store=false invariant
     # for proxy runs) and a case env.home that is not "hermetic"
@@ -3953,7 +4825,11 @@ def _triage_block(case, row, ctx, run_dir, home):
     v = ctx.verdict or {}
     on_status = (case.get("retry") or {}).get("on_status") or []
     last = _last_response_status(wire_dir, model)
-    if v.get("no_evidence") or v.get("blocked_reason"):
+    reason = v.get("blocked_reason") or ""
+    if reason.startswith(("unrouted:", "ambiguous-pin-route:",
+                          "ambiguous-route:")):
+        hint = "route-map"
+    elif v.get("no_evidence") or v.get("blocked_reason"):
         hint = "env"
     elif last is not None and last[0] in on_status:
         hint = "env"
@@ -3977,6 +4853,13 @@ def _triage_block(case, row, ctx, run_dir, home):
                                                        last[0]))
     else:
         ready.append("ls %s/resp-*.jsonl 2>/dev/null || true" % wire_dir)
+    # R-12: `credentials-403` covered both "our harness auth is broken" and
+    # "right key, wrong origin". They are decided apart mechanically — see
+    # auth_failure_class — and the key is always present so a reader cannot
+    # mistake an absent class for an upstream verdict.
+    auth_class = None
+    if reason.startswith("credential-unset") or _auth_status_seen(wire_dir):
+        auth_class = auth_failure_class(wire_dir)
     return {"session_id": ctx.session_id,
             "session_dir": session_dir,
             "cwd": cwd,
@@ -3986,6 +4869,7 @@ def _triage_block(case, row, ctx, run_dir, home):
             "wire_dir": wire_dir,
             "unified_log": unified_log,
             "classification_hint": hint,
+            "auth_class": auth_class,
             "ready_commands": ready}
 
 
@@ -4080,11 +4964,89 @@ def unredacted_mcp_env_values(text):
     return out
 
 
-def redaction_sweep(root: str, ambient_key: str, files=None):
-    """Grep the run dir (or the named files within it) for the ambient key
-    + key-like heuristics. Returns (hits, details)."""
+# r3 §4.4.1's bare-token shapes. The proxy's echo carries NO scheme word, so
+# r1's `Basic\s+…` heuristic could not match either leak class; the shapes
+# below are fixed and bounded ("no length-or-charset guessing beyond rule 2",
+# §4.4.1) so no legitimate payload is mangled.
+JWT_SHAPE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+                       r"\.[A-Za-z0-9_-]{10,}")
+SK_SHAPE = re.compile(r"sk[_-][A-Za-z0-9_.\-]{16,}",
+                     re.IGNORECASE)
+AUTH_SCHEME_BLOB = re.compile(
+    r"(?:Bearer|Basic)\s+([A-Za-z0-9_\-+/]{40,}={0,2})")
+ERROR_FIELD_BLOB = re.compile(
+    r'"(?:param|message)"\s*:\s*"([A-Za-z0-9_\-+/]{40,}={0,2})"')
+
+
+def _sweep_line(text, offset):
+    return text.count("\n", 0, offset) + 1
+
+
+def _sweep_hit(root, path, lineno, pattern, fragment):
+    """§4.4.2: a detail is `path:line: <pattern> <sha256_12>` and NOTHING
+    else. The frozen code appended `key-heuristic %r % frag[:40]`, writing up
+    to 40 characters of a live key into report.json — the very artifact the
+    sweep exists to protect — and write_report copies details into it."""
+    return "%s:%d: %s %s" % (os.path.relpath(path, root), lineno, pattern,
+                             sha256_12(fragment))
+
+
+def _sweep_texts(root, ambient_key, files=None, texts=None):
+    """The shared §4.4.1 pass over (relpath, path, text) triples. Returns
+    (hits, details)."""
     hits = 0
     details = []
+    values = [strip_credential_scheme(v) for v in literal_sweep_values()]
+    values = [v for v in values if v]
+    for rel, path, text in texts:
+        if ambient_key:
+            for m in re.finditer(re.escape(ambient_key), text):
+                hits += 1
+                details.append(_sweep_hit(root, path,
+                                          _sweep_line(text, m.start()),
+                                          "ambient-key", ambient_key))
+        for value in values:
+            for m in re.finditer(re.escape(value), text):
+                hits += 1
+                details.append(_sweep_hit(root, path,
+                                          _sweep_line(text, m.start()),
+                                          "credential-literal", value))
+        for pattern, rx, group in (("jwt-shape", JWT_SHAPE, 0),
+                                   ("sk-shape", SK_SHAPE, 0),
+                                   ("base64-blob-shape", AUTH_SCHEME_BLOB,
+                                    1),
+                                   ("error-field-blob-shape",
+                                    ERROR_FIELD_BLOB, 1),
+                                   ("key-heuristic", KEY_HEURISTIC, 0)):
+            for m in rx.finditer(text):
+                frag = m.group(group) if group else m.group(0)
+                if ambient_key and frag in ambient_key:
+                    continue
+                hits += 1
+                details.append(_sweep_hit(root, path,
+                                          _sweep_line(text, m.start()),
+                                          pattern, frag))
+        for i, name in unredacted_mcp_env_values(text):
+            hits += 1
+            details.append("%s:%d: mcp env value NOT redacted in "
+                           "servers_updated (name=%s)"
+                           % (rel, i, name))
+    return hits, details
+
+
+def redaction_sweep(root: str, ambient_key: str, files=None):
+    """The backstop layer of §4.4 over the run dir (or the named files in
+    it): the ambient key, the declared credential values on their STRIPPED
+    form, and the bare-token shapes — case-insensitively, because `Sk-` and
+    `SK-` forms pass a case-sensitive sweep and git grep skips the captures
+    that carry them (Agents.md §9). Returns (hits, details).
+
+    The sweep is a BACKSTOP, not the only layer: the wiretap scrubs the same
+    content at the response write path (§4.4.1), so a leak is caught before
+    it lands and again before it is shared."""
+    hits = 0
+    details = []
+    found = []
     for dirpath, dirnames, filenames in os.walk(root):
         for fn in filenames:
             if files is not None and fn not in files:
@@ -4095,33 +5057,108 @@ def redaction_sweep(root: str, ambient_key: str, files=None):
                     text = fh.read()
             except Exception:
                 continue
-            n = text.count(ambient_key) if ambient_key else 0
-            if n:
-                hits += n
-                details.append("%s: %d ambient-key hit(s)"
-                               % (os.path.relpath(p, root), n))
-            for m in KEY_HEURISTIC.finditer(text):
-                frag = m.group(0)
-                if ambient_key and frag in ambient_key:
-                    continue
-                hits += 1
-                details.append("%s: key-heuristic %r"
-                               % (os.path.relpath(p, root), frag[:40]))
-            for i, name in unredacted_mcp_env_values(text):
-                hits += 1
-                details.append(
-                    "%s:%d: mcp env value NOT redacted in "
-                    "servers_updated (name=%s)"
-                    % (os.path.relpath(p, root), i, name))
-    return hits, details
+            found.append((os.path.relpath(p, root), p, text))
+    return _sweep_texts(root, ambient_key, files=files, texts=found)
+
+
+GREP = "/usr/bin/grep"
+# Indirection so the §4.4.5 test can observe the argv this check builds; the
+# rule it pins is that no credential value is ever an argv element (HYG-1).
+GREP_RUNNER = subprocess.run
+
+
+def literal_check(root: str, env=None):
+    """The house literal-key check (Agents.md §9, r3 §4.4.5): grep the report
+    dir for the declared credential VALUES.
+
+    It belongs to the post-report sweep, never `--selftest` (§4.4.5):
+    `--selftest` reads no key, no report dir and no binary by design, and
+    this check needs the values. The patterns reach grep through a **file**
+    (`grep -rlF -f`), never `-e`: argv is ps-visible, and 5 dead wiretap
+    orphans leaked the ambient key that way (HYG-1). The patterns file is
+    0600 and unlinked as soon as grep returns.
+
+    An unset declared name contributes no pattern and is not an error —
+    §4.3.3's states, not an abort. Returns (hits, details)."""
+    values = literal_sweep_values(env)
+    if not values:
+        return 0, ["literal check: no declared credential value set "
+                   "(skipped — nothing to match)"]
+    fd, pat = tempfile.mkstemp(prefix="rt-literal-", suffix=".patterns",
+                               dir=os.environ.get("TMPDIR") or None)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            for value in values:
+                fh.write(value + "\n")
+                stripped = strip_credential_scheme(value)
+                if stripped != value:
+                    fh.write(stripped + "\n")
+        proc = GREP_RUNNER([GREP, "-rlF", "-f", pat, root],
+                           capture_output=True, text=True)
+    finally:
+        try:
+            os.unlink(pat)
+        except OSError:
+            pass
+    if proc.returncode == 1:
+        return 0, []
+    if proc.returncode != 0:
+        return 0, ["literal check: grep rc %d (check did not run)"
+                   % proc.returncode]
+    names = [n for n in proc.stdout.splitlines() if n.strip()]
+    digests = sorted(sha256_12(n) for n in names)
+    return len(names), ["literal check: %d file(s) match a credential value "
+                        "(names sha256_12 %s)" % (len(names), digests)]
+
+
+def run_verdict_code(bad=0, sweep_hits=0):
+    """§4.4.3: the leak count joins the verdict. The frozen code returned
+    `1 if bad else 0` over FAIL/BLOCKED rows only, so a run that published a
+    live credential exited 0. The sweep may ADD a failure and never mask one
+    that the rows already found."""
+    return 1 if (bad or sweep_hits) else 0
+
+
+def persist_run_verdict(out: str, rows, sweep_hits=0, code=0):
+    """§4.4.3 / s0 F-8: `--daemon` self-daemonizes and the ORIGINAL process
+    exits 0, so even a correct exit code never reaches the caller's `$?`. The
+    verdict is therefore also written into the report dir, with a FIXED key
+    set and no captured text, for a caller that cannot see `$?` to read a
+    false green as one."""
+    statuses = [r.get("status") for r in rows or []]
+    doc = {"status": "PASS" if not code else "FAIL",
+           "exit_code": code,
+           "sweep_hits": sweep_hits,
+           "rows_total": len(statuses),
+           "rows_pass": sum(1 for s in statuses if s == "PASS"),
+           "rows_fail": sum(1 for s in statuses if s == "FAIL"),
+           "rows_blocked": sum(1 for s in statuses if s == "BLOCKED")}
+    path = os.path.join(out, "run-verdict.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+    return doc
 
 
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 
-def slice_evidence(row, limit=10, secrets=()):
-    """For FAIL rows: the 10-line log/wire slice around the broken assert."""
+def slice_evidence(row, limit=10, secrets=None):
+    """For FAIL rows: the 10-line log/wire slice around the broken assert.
+
+    §4.4.4: the frozen call site passed `secrets=(args.ambient_key,)`, so a
+    TrueFoundry or on-prem credential inside a FAIL row's slice rode into
+    report.md untouched — which is how a 403-heavy run turns its own report
+    into a leak. The default is now the whole swept set; `redact` is a
+    byte-exact replacement, so the excluded placeholder changes no real
+    secret's coverage by being absent from it."""
+    if secrets is None:
+        secrets = tuple(literal_sweep_values())
     run_dir = row.get("run_dir")
     if not run_dir or not os.path.isdir(run_dir):
         return []
@@ -4268,7 +5305,8 @@ def write_report(out: str, rows, env_meta, args, sweep_hits, sweep_details):
         for anom in r.get("anomalies") or []:
             md.append("- anomaly: %s" % anom)
         if r["status"] == "FAIL":
-            md.extend(slice_evidence(r, secrets=(args.ambient_key,)))
+            md.extend(slice_evidence(
+                r, secrets=(args.ambient_key,) + tuple(literal_sweep_values())))
         md.append("")
     if sweep_details:
         md.append("## Redaction sweep details")
@@ -5813,6 +6851,15 @@ def main(argv=None):
     for case in cases:
         log("=== %s: %s" % (case["id"], case.get("title", "")))
         rows.append(run_case(case, a, budget))
+    unrouted_total = 0
+    for _unr in globmod.glob(os.path.join(a.out, "**", UNROUTED_FILE),
+                             recursive=True):
+        unrouted_total += _count_cause_lines(os.path.dirname(_unr),
+                                             UNROUTED_FILE)
+    env_meta["wiretap_unrouted"] = unrouted_total
+    if unrouted_total:
+        log("HT-1: %d request(s) refused by the route map "
+            "(wiretap_unrouted)" % unrouted_total)
     sweep_hits, sweep_details = redaction_sweep(a.out, ambient)
     md = write_report(a.out, rows, env_meta, a, sweep_hits, sweep_details)
     # G4 contract covers the run dir INCLUDING the generated reports, so
@@ -5827,10 +6874,26 @@ def main(argv=None):
             % sweep_hits)
     else:
         log("redaction sweep: 0 hits")
+    # r3 §4.4.5: the literal-key check belongs HERE (post-report, over the
+    # report dir), never in --selftest. Key-free mode has no credential to
+    # check, so it is skipped with a printed reason rather than passing
+    # silently.
+    if ambient:
+        lit_hits, lit_details = literal_check(a.out)
+        sweep_hits += lit_hits
+        sweep_details.extend(lit_details)
+    else:
+        log("literal check: skipped (key-free run — no credential set)")
     log("report: %s" % md)
     log("calls used: %d / %d" % (budget.used, budget.limit))
     bad = [r for r in rows if r["status"] in ("FAIL", "BLOCKED")]
-    return 1 if bad else 0
+    # §4.4.3: a leaked credential fails the run, and the verdict is persisted
+    # because --daemon swallows the exit status (s0 F-8).
+    code = run_verdict_code(bad=len(bad), sweep_hits=sweep_hits)
+    persist_run_verdict(a.out, rows, sweep_hits=sweep_hits, code=code)
+    log("verdict: %s exit=%d sweep_hits=%d (run-verdict.json)"
+        % ("FAIL" if code else "PASS", code, sweep_hits))
+    return code
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@
     {"op":"turn","prompt":"Without calling any tool, repeat the complete JSON object from the previous archive package_manifest tool result. Prefix your answer with HTS-3V1S-LNR-LUNA-DONE and include nothing else."}
   ],
   "assert": {"exit":0,"ndjson":[{"id":"no_error","op":"absent","event":"acp_error"},{"id":"two_ends","op":"count","event":"acp_end","min":2},{"id":"done","op":"text_contains","value":"HTS-3V1S-LNR-LUNA-DONE"}],"wire":[{"id":"row_seen","kind":"field","file":"req-*.json","where":{"method":"POST","path":"/v1/responses","body.model":"gpt-6-luna"},"path":"$.body.model","eq":"gpt-6-luna"},{"id":"store_first_match","kind":"field","file":"req-*.json","where":{"method":"POST","path":"/v1/responses","body.model":"gpt-6-luna"},"path":"$.body.store","eq":false},{"id":"status_record","kind":"resp_status","file":"req-*.json","where":{"method":"POST","path":"/v1/responses","body.model":"gpt-6-luna"},"which":"last"}]},
-  "timeouts": {"turn_s":300,"acp_init_s":180,"acp_set_model_s":180,"mcp_startup_s":30},
+  "timeouts": {"turn_s":900,"acp_init_s":180,"acp_set_model_s":180,"mcp_startup_s":30},
   "watchdog_s": 900,
   "retry": {"on_status":[],"max_attempts":0,"backoff_s":0,"recheck_models":false},
   "scoring": {"require_wire_evidence":true},

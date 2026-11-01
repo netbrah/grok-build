@@ -6,7 +6,7 @@
   "suite": "recon",
   "tier": "full",
   "driver": "headless",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wire": "responses",
   "output_format": "streaming-json",
   "wirecap": true,
@@ -15,6 +15,7 @@
     "store": false
   },
   "est_calls": 3,
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "tool_calls": [
     {

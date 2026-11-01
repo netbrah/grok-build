@@ -1,14 +1,15 @@
 {
   "schema_version": 1,
   "id": "WS9-S02-TOOL-FAIL",
-  "title": "WS9 row S02 (tool failure) vs our llm-proxy — seat qwen3.8-27b (responses wire, vLLM-dialect, lenient row). Two headless turns in one resumed session: turn 1 runs a REAL failing command (sh -c 'echo WS9-S02-FAILMARK; exit 3') exactly once via run_terminal_command; turn 2 (restating the exact command) asks the model to report the exit code it observed. Verdict semantics: the control pin fail_call (escaped tool-arguments form) 0-hit => VACUOUS (the model never took the tool path — recorded, not a defect); with the premise held, the scored claim is FAILURE-SEMANTICS PROPAGATION: the model must reply WS9-S02-EXIT-3 on turn 2 (the non-zero exit code reached the model through the tool result — the semantic diff dimension: the result payload must carry the output AND the exit status; bytes differ by family by design). A wrong/missing code = FAIL (S2-class: persistent user-visible fidelity loss — the model lost the exit status). NO RETRY STORM: the failed command must not be blindly re-executed (request-count pin; the XREPLAY-1/COMP-3 storm shape is the defect class). No PROP gate; BRICK = S3 report-and-stop.",
+  "title": "WS9 row S02 (tool failure) vs our llm-proxy — seat qwen3.8-flash-next (responses wire, vLLM-dialect, lenient row). Two headless turns in one resumed session: turn 1 runs a REAL failing command (sh -c 'echo WS9-S02-FAILMARK; exit 3') exactly once via run_terminal_command; turn 2 (restating the exact command) asks the model to report the exit code it observed. Verdict semantics: the control pin fail_call (escaped tool-arguments form) 0-hit => VACUOUS (the model never took the tool path — recorded, not a defect); with the premise held, the scored claim is FAILURE-SEMANTICS PROPAGATION: the model must reply WS9-S02-EXIT-3 on turn 2 (the non-zero exit code reached the model through the tool result — the semantic diff dimension: the result payload must carry the output AND the exit status; bytes differ by family by design). A wrong/missing code = FAIL (S2-class: persistent user-visible fidelity loss — the model lost the exit status). NO RETRY STORM: the failed command must not be blindly re-executed (request-count pin; the XREPLAY-1/COMP-3 storm shape is the defect class). No PROP gate; BRICK = S3 report-and-stop.",
   "bead": "apex-ayl.78",
   "suite": "tool-call",
   "tier": "full",
   "driver": "headless",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "wire": "responses",
   "output_format": "streaming-json",
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 5,
   "wirecap": true,
@@ -61,7 +62,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "\\\"command\\\":\\\"sh -c 'echo WS9-S02-FAILMARK; exit 3'\\\"",
@@ -73,7 +74,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "min": 2,
         "max": 4,

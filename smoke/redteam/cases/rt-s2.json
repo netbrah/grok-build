@@ -1,7 +1,7 @@
 {
   "id": "RT-S2",
   "title": "v2 TOOLS-DARK PIN (MA-2 G18 negative evidence as a REGRESSION PIN; flips at MA-3): NO v2 tool names advertised; v1 spawn_subagent present. Turn is killed mid-model-call: tool list only, minimal proxy use.",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "steps": [
     {
       "op": "turn",
@@ -58,6 +58,6 @@
   },
   "config_patch": {
     "features/multi_agent_v2": false,
-    "model/qwen3.8-27b/multi_agent_v2": false
+    "model/qwen3.8-flash-next/multi_agent_v2": false
   }
 }

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "MGW-COMPACTV2-01",
-  "title": "REMOTE-COMPACTION-1 (apex-ayl.139): remote_compaction_v2 instrumented run — the codex-family remote arm rides the wire end-to-end. The hermetic home flips features/remote_compaction_v2=true via config_patch (the flag is a global feature, NOT a per-model catalog field — the baked catalog carries no such row field; live config is now true per apex-576 so this patch is a redundant hermetic pin, the fleet-shape no-patch twin is MGW-COMPACTV2-02), on the gpt-5.6-terra row (model_family codex, ApiBackend::Responses — the two conditions of the compact_codex_conversation_v2 gate, client.rs; qwen/glm vLLM families fail the dialect gate and stay local by construction). Steps: turn 1 mints a reasoning history on /v1/responses; the /compact step fires the harness compaction deterministically; the v2 arm must issue the remote contract — a normal streaming POST /v1/responses (NOT a /responses/compact route) advertising x-codex-beta-features: remote_compaction_v2 with a trailing {type: compaction_trigger} input item; the response must end with exactly one compaction output item (cmp_* id; encitem_ lineage in the terminal output array) plus response.completed. SELECTOR NOTE (run 1, 20260924T035705Z): the v2 compact request carries NO x-grok-req-id header (the xai-compact- tag is the LOCAL self-summarize arm's marker, comp3 lineage) — the beta-features header is the unique v2-arm discriminator in this deployment, and it is the where-filter. PREDICTED: PASS = exactly one /v1/responses request advertising the beta feature, carrying both protocol markers (header + trigger item + parallel_tool_calls=true body contract), HTTP 200, a compaction output item in its stream, and the post-compact turn completes (no acp_error). Live-proxy probe 2026-09-24 (terra, minimal body): 200 + single compaction item, no 403 — the route is enabled. RED classes: 0 beta-advertising requests (flag/row/fusion failed — the case's own premise), 2+ (the .82 strip-retry storm class), a 400 'Unsupported Responses API input item type: compaction_trigger' (Family 9 — proxy stopped modeling the trigger), or an acp_error (the 01a09be2 collapse class).",
+  "title": "REMOTE-COMPACTION-1 (apex-ayl.139): remote_compaction_v2 instrumented run — the codex-family remote arm rides the wire end-to-end. The hermetic home flips features/remote_compaction_v2=true via config_patch (the flag is a global feature, NOT a per-model catalog field — the baked catalog carries no such row field; the live config carries the flag false on purpose (operator answer to Q-1, 2026-10-30; it was true per apex-576 when this case was written), so this patch is the only thing that arms the flag in the hermetic home, not a redundant pin; the fleet-shape no-patch twin MGW-COMPACTV2-02 is disabled under r3 section 6.3 O-3), on the gpt-5.6-terra row (model_family codex, ApiBackend::Responses — the two conditions of the compact_codex_conversation_v2 gate, client.rs; qwen/glm vLLM families fail the dialect gate and stay local by construction). Steps: turn 1 mints a reasoning history on /v1/responses; the /compact step fires the harness compaction deterministically; the v2 arm must issue the remote contract — a normal streaming POST /v1/responses (NOT a /responses/compact route) advertising x-codex-beta-features: remote_compaction_v2 with a trailing {type: compaction_trigger} input item; the response must end with exactly one compaction output item (cmp_* id; encitem_ lineage in the terminal output array) plus response.completed. SELECTOR NOTE (run 1, 20260924T035705Z): the v2 compact request carries NO x-grok-req-id header (the xai-compact- tag is the LOCAL self-summarize arm's marker, comp3 lineage) — the beta-features header is the unique v2-arm discriminator in this deployment, and it is the where-filter. PREDICTED: PASS = exactly one /v1/responses request advertising the beta feature, carrying both protocol markers (header + trigger item + parallel_tool_calls=true body contract), HTTP 200, a compaction output item in its stream, and the post-compact turn completes (no acp_error). Live-proxy probe 2026-09-24 (terra, minimal body): 200 + single compaction item, no 403 — the route is enabled. RED classes: 0 beta-advertising requests (flag/row/fusion failed — the case's own premise), 2+ (the .82 strip-retry storm class), a 400 'Unsupported Responses API input item type: compaction_trigger' (Family 9 — proxy stopped modeling the trigger), or an acp_error (the 01a09be2 collapse class).",
   "bead": "apex-ayl.139",
   "suite": "compaction",
   "tier": "slim",
@@ -20,7 +20,7 @@
     {
       "op": "turn",
       "prompt": "Think step by step: why does a hash table degrade toward a linked list as the load factor climbs past 1? Show the collision math, then the answer.",
-      "timeout_s": 300
+      "timeout_s": 900
     },
     {
       "op": "compact",
@@ -29,9 +29,10 @@
     {
       "op": "turn",
       "prompt": "Reply with exactly: MGW-COMPACTV2-OK",
-      "timeout_s": 300
+      "timeout_s": 900
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 600,
   "est_calls": 6,
   "assert": {
@@ -109,6 +110,10 @@
         "kind": "grep",
         "id": "compact_item",
         "file": "resp-*.jsonl",
+        "where": {
+          "path": "/v1/responses",
+          "headers.x-codex-beta-features": "remote_compaction_v2"
+        },
         "any": true,
         "grep": "compaction",
         "label": "COMPACTION ITEM: a response stream carried a compaction output item (item.type=compaction) — the v2 contract's terminal payload (response.output_item.done + response.completed consumed by CodexRemoteCompactionV2Collector). Turn streams never carry it, so a hit identifies the compact response."

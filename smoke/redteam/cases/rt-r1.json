@@ -1,7 +1,7 @@
 {
   "id": "RT-R1",
   "title": "kill -9 mid-session: qwen 3-turn session, SIGKILL during turn 4, resume 2 turns; history intact, no phantom turns",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "steps": [
     {
       "op": "turn",
@@ -29,6 +29,7 @@
       "prompt": "RT-R1 T6: Reply with exactly: RT-R1-T6"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 12,
   "assert": {

@@ -1,8 +1,8 @@
 {
   "id": "RT-M2",
-  "title": "Cross-wire R->M qwen->claude-sonnet-5 via ACP; R8 suppression verifiable: first messages request must carry NO thinking blocks from qwen-identity items",
+  "title": "Cross-wire R->M qwen->claude-sonnet-5.5 via ACP; R8 suppression verifiable: first messages request must carry NO thinking blocks from qwen-identity items",
   "driver": "acp",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "steps": [
     {
       "op": "turn",
@@ -18,7 +18,7 @@
     },
     {
       "op": "switch",
-      "model": "claude-sonnet-5",
+      "model": "claude-sonnet-5.5",
       "via": "acp"
     },
     {
@@ -34,6 +34,7 @@
       "prompt": "Reply with exactly: RT-M2-C3"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 8,
   "assert": {
@@ -54,7 +55,7 @@
         "kind": "field",
         "file": "req-*.json",
         "path": "$.body.model",
-        "eq": "claude-sonnet-5",
+        "eq": "claude-sonnet-5.5",
         "where": {
           "method": "POST",
           "path": "/v1/messages"

@@ -1,11 +1,11 @@
 {
   "id": "RT-CROSSWIRE1",
-  "title": "CROSSWIRE-1 subcase (i) responses->messages: qwen3.8-27b (responses wire, reasoning items) -> ACP switch -> claude-sonnet-5 (messages wire) -> 1 turn. The post-switch /v1/messages request replays the foreign qwen history; R8 PREEMPTIVE model-identity suppression must strip the foreign (qwen-identity) thinking blocks. Tolerant verdict (rt-xreplay1 discipline): the acceptance outcome is the FINDING — 200 (R8 sufficed, zero reactive-strip involvement) OR 400->strip+retry->200 (R8 missed something and the CROSSWIRE-1 reactive strip recovered). Both PASS; a retry storm (>=3 messages requests) or an unrecovered acp_error FAILs as a defect.",
+  "title": "CROSSWIRE-1 subcase (i) responses->messages: qwen3.8-flash-next (responses wire, reasoning items) -> ACP switch -> claude-sonnet-5.5 (messages wire) -> 1 turn. The post-switch /v1/messages request replays the foreign qwen history; R8 PREEMPTIVE model-identity suppression must strip the foreign (qwen-identity) thinking blocks. Tolerant verdict (rt-xreplay1 discipline): the acceptance outcome is the FINDING — 200 (R8 sufficed, zero reactive-strip involvement) OR 400->strip+retry->200 (R8 missed something and the CROSSWIRE-1 reactive strip recovered). Both PASS; a retry storm (>=3 messages requests) or an unrecovered acp_error FAILs as a defect.",
   "driver": "acp",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "config_patch": {
-    "model/qwen3.8-27b/reasoning_effort": "medium",
-    "model/qwen3.8-27b/strict_responses_input": false
+    "model/qwen3.8-flash-next/reasoning_effort": "medium",
+    "model/qwen3.8-flash-next/strict_responses_input": false
   },
   "steps": [
     {
@@ -22,7 +22,7 @@
     },
     {
       "op": "switch",
-      "model": "claude-sonnet-5",
+      "model": "claude-sonnet-5.5",
       "via": "acp"
     },
     {
@@ -30,6 +30,7 @@
       "prompt": "Reply with exactly: RT-CW1-I-C1"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 10,
   "assert": {
@@ -47,7 +48,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "\"type\": \"reasoning\"",
@@ -59,7 +60,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "nth": 0,
         "grep": "\"type\": \"thinking\"",
@@ -72,7 +73,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "min": 1,
         "max": 2,
@@ -84,7 +85,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "which": "last",
         "status_in": [

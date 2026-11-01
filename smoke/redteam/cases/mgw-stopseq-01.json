@@ -1,16 +1,16 @@
 {
  "schema_version": 1,
  "id": "MGW-STOPSEQ-01",
- "title": "apex-ayl.112 RED ratchet (msgw-sweep F2) — stop_sequences typed-unread on the /v1/messages wire; RE-PINNED at the F2 cut (apex-ayl.113) to the VALUE shape now that the config surface exists: the case declares model/claude-sonnet-5/stop_sequences='MGW-STOPSEQ-END' via config_patch (row key is the comma-split STRING; resolved config is Option<Vec<String>>; producer maps to the wire array) and pins body.stop_sequences[0] eq 'MGW-STOPSEQ-END' on the main /v1/messages request (nth:0 = NEWEST = MAIN per runner _nth_select; the title frame from the same row also carries the value, so the value pin is frame-robust). stop_sequences is the only stop control besides end-of-turn; ignoring it is dangerous (operators cannot cap a runaway model mid-sentence). Pre-cut RED: the lenient row parser drops the unknown stop_sequences key and the producer hardcodes None (ST/conversation/messages.rs:937) so the path is missing. GREEN when the cut plumbs config -> request -> wire.",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F2) — stop_sequences typed-unread on the /v1/messages wire; RE-PINNED at the F2 cut (apex-ayl.113) to the VALUE shape now that the config surface exists: the case declares model/claude-sonnet-5.5/stop_sequences='MGW-STOPSEQ-END' via config_patch (row key is the comma-split STRING; resolved config is Option<Vec<String>>; producer maps to the wire array) and pins body.stop_sequences[0] eq 'MGW-STOPSEQ-END' on the main /v1/messages request (nth:0 = NEWEST = MAIN per runner _nth_select; the title frame from the same row also carries the value, so the value pin is frame-robust). stop_sequences is the only stop control besides end-of-turn; ignoring it is dangerous (operators cannot cap a runaway model mid-sentence). Pre-cut RED: the lenient row parser drops the unknown stop_sequences key and the producer hardcodes None (ST/conversation/messages.rs:937) so the path is missing. GREEN when the cut plumbs config -> request -> wire.",
  "bead": "apex-ayl.112",
  "suite": "wire-shape",
  "tier": "slim",
  "driver": "headless",
- "model": "claude-sonnet-5",
+ "model": "claude-sonnet-5.5",
  "wirecap": true,
  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
  "config_patch": {
-  "model/claude-sonnet-5/stop_sequences": "MGW-STOPSEQ-END"
+  "model/claude-sonnet-5.5/stop_sequences": "MGW-STOPSEQ-END"
  },
  "steps": [
   {

@@ -1,24 +1,24 @@
 {
  "schema_version": 1,
  "id": "OW-REASONSURF-01",
- "title": "apex-ayl.118 RED ratchet (openai side sweep F3+F4) — the reasoning surface is hardcoded and unextendable on the responses wire: the case pins (a) the fork's hardcoded reasoning.summary=concise (ST/conversation/responses.rs:200 — sweep F3, passes today; RE-PIN if the cut adds gating), and (b) RED pins on body.reasoning.context and body.reasoning.mode — both absent from the fork Reasoning type (FK response.rs:810-828 — sweep F4), so the operator cannot set the reasoning context (gpt-5.6 defaults to all_turns, uncontrollable) or the mode. RED today (both red paths missing -> the field pins fail 'missing'); GREEN when the cut extends the Reasoning surface with config plumbing. Two turns: a math T1 + an exact-OK T2. Control pin (class harness, plain assert): body.model eq gpt-5.6-sol on the main (oldest) request — the harness always sends the model, so a miss is a harness failure, never vacuous.",
+ "title": "apex-ayl.118 RED ratchet (openai side sweep F3+F4) — the reasoning surface is hardcoded and unextendable on the responses wire: the case pins (a) the fork's hardcoded reasoning.summary=concise (ST/conversation/responses.rs:200 — sweep F3, passes today; RE-PIN if the cut adds gating), and (b) RED pins on body.reasoning.context and body.reasoning.mode — both absent from the fork Reasoning type (FK response.rs:810-828 — sweep F4), so the operator cannot set the reasoning context (gpt-5.6 defaults to all_turns, uncontrollable) or the mode. RED today (both red paths missing -> the field pins fail 'missing'); GREEN when the cut extends the Reasoning surface with config plumbing. Two turns: a math T1 + an exact-OK T2. Control pin (class harness, plain assert): body.model eq gpt-6.1-sol on the main (oldest) request — the harness always sends the model, so a miss is a harness failure, never vacuous.",
  "bead": "apex-ayl.118",
  "suite": "wire-shape",
  "tier": "slim",
  "driver": "headless",
- "model": "gpt-5.6-sol",
+ "model": "gpt-6.1-sol",
  "wirecap": true,
  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
  "steps": [
   {
    "op": "turn",
    "prompt": "Find the remainder when 7^8432 is divided by 5557. Show your work using modular exponentiation. End your reply with exactly: OW-REASONSURF-T1",
-   "timeout_s": 240
+   "timeout_s": 900
   },
   {
    "op": "turn",
    "prompt": "Reply with exactly: OW-REASONSURF-OK",
-   "timeout_s": 180
+   "timeout_s": 900
   }
  ],
  "watchdog_s": 420,
@@ -39,7 +39,7 @@
     "where": { "method": "POST", "path": "/v1/responses" },
     "last": 0,
     "path": "body.model",
-    "eq": "gpt-5.6-sol",
+    "eq": "gpt-6.1-sol",
     "label": "CONTROL (class harness): the main (oldest) request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
    },
    {

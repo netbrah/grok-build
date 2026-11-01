@@ -1,8 +1,8 @@
 {
   "id": "RT-M3",
-  "title": "Cross-wire M->R claude-sonnet-5->qwen via ACP; RECON by design (pre-CROSSWIRE-1): responses-side may replay foreign reasoning VERBATIM \u2014 record accept OR 400 + exact error",
+  "title": "Cross-wire M->R claude-sonnet-5.5->qwen via ACP; RECON by design (pre-CROSSWIRE-1): responses-side may replay foreign reasoning VERBATIM \u2014 record accept OR 400 + exact error",
   "driver": "acp",
-  "model": "claude-sonnet-5",
+  "model": "claude-sonnet-5.5",
   "steps": [
     {
       "op": "turn",
@@ -18,7 +18,7 @@
     },
     {
       "op": "switch",
-      "model": "qwen3.8-27b",
+      "model": "qwen3.8-flash-next",
       "via": "acp"
     },
     {
@@ -30,6 +30,7 @@
       "prompt": "Reply with exactly: RT-M3-Q2"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 7,
   "recon": true,
@@ -47,7 +48,7 @@
         "kind": "field",
         "file": "req-*.json",
         "path": "$.body.model",
-        "eq": "qwen3.8-27b",
+        "eq": "qwen3.8-flash-next",
         "where": {
           "method": "POST",
           "path": "/v1/responses"

@@ -1,18 +1,19 @@
 {
   "schema_version": 1,
   "id": "WS9-S04-MODEL-SWITCH",
-  "title": "WS9 row S04 (model switch) vs our llm-proxy — JIG L2 LIVE projection row (responses->responses, cross-family: qwen3.8-27b vLLM-dialect source, lenient row armed in-case so the foreign reasoning id+content RIDE, -> gpt-5.6-sol strict_responses_input=true target, live defaults). ACP session: 3 qwen turns (real reasoning history) -> in-session /model flip (ACP setModel) -> 2 sol turns. This is the ship-gate cross-model row: the first post-switch sol request replays the foreign qwen history into the strict target. Verdict semantics (tolerant, CROSSWIRE-1 discipline): PASS = the post-switch request is accepted (200 directly by the preemptive strip, or 400->strip+retry->200 by the .58 reactive net — both are acceptable outcomes; the count pin discriminates: 1 = preemptive sufficed, 2 = reactive strip fired once); FINDING = a documented delta shape on review (e.g. the reasoning items arrive T3-dropped rather than T1-rekeyed — pre-.71 baseline, the tier floor ratchets only after XW-PROJECT-1 lands, JIG ratchet 5); FAIL (S3 report-and-stop) = retry storm (>=3 sol requests) or an unrecovered acp_error. Invariant pins (xwfix 5-invariant set): (2) NO foreign encrypted_content survives into ANY sol request (all:true absent — 0 tolerance); (1)/(3)/(4) ride the wire reads (the post-switch request is the fixture). GOLDEN-WAIT (JIG L2): the additive `golden` wire-assert kind is not merged at this launch (JIG ratchet 1 pending, .70 op side + .79) — the first post-switch sol request body is RECORDED (wire capture) as the xwfix fixture to byte-pin (normalize: ids, timestamps, request-ids, group_ids) when the kind lands; no guessed golden in this wave. No expected_red: the switch mechanism is proven (RT-CROSSWIRE1/1B carried GREEN in WAVE-S), so this row is a GREEN regression pin; any new 400/500 shape not in the triage catalog = new-failure-class rule (catalog row + cell in the same session, .51 discipline).",
+  "title": "WS9 row S04 (model switch) vs our llm-proxy — JIG L2 LIVE projection row (responses->responses, cross-family: qwen3.8-flash-next vLLM-dialect source, lenient row armed in-case so the foreign reasoning id+content RIDE, -> gpt-6.1-sol strict_responses_input=true target, live defaults). ACP session: 3 qwen turns (real reasoning history) -> in-session /model flip (ACP setModel) -> 2 sol turns. This is the ship-gate cross-model row: the first post-switch sol request replays the foreign qwen history into the strict target. Verdict semantics (tolerant, CROSSWIRE-1 discipline): PASS = the post-switch request is accepted (200 directly by the preemptive strip, or 400->strip+retry->200 by the .58 reactive net — both are acceptable outcomes; the count pin discriminates: 1 = preemptive sufficed, 2 = reactive strip fired once); FINDING = a documented delta shape on review (e.g. the reasoning items arrive T3-dropped rather than T1-rekeyed — pre-.71 baseline, the tier floor ratchets only after XW-PROJECT-1 lands, JIG ratchet 5); FAIL (S3 report-and-stop) = retry storm (>=3 sol requests) or an unrecovered acp_error. Invariant pins (xwfix 5-invariant set): (2) NO foreign encrypted_content survives into ANY sol request (all:true absent — 0 tolerance); (1)/(3)/(4) ride the wire reads (the post-switch request is the fixture). GOLDEN-WAIT (JIG L2): the additive `golden` wire-assert kind is not merged at this launch (JIG ratchet 1 pending, .70 op side + .79) — the first post-switch sol request body is RECORDED (wire capture) as the xwfix fixture to byte-pin (normalize: ids, timestamps, request-ids, group_ids) when the kind lands; no guessed golden in this wave. No expected_red: the switch mechanism is proven (RT-CROSSWIRE1/1B carried GREEN in WAVE-S), so this row is a GREEN regression pin; any new 400/500 shape not in the triage catalog = new-failure-class rule (catalog row + cell in the same session, .51 discipline).",
   "bead": "apex-ayl.78",
   "suite": "cross-wire",
   "tier": "full",
   "driver": "acp",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
   "config_patch": {
-    "model/qwen3.8-27b/strict_responses_input": false,
-    "model/qwen3.8-27b/reasoning_effort": "medium"
+    "model/qwen3.8-flash-next/strict_responses_input": false,
+    "model/qwen3.8-flash-next/reasoning_effort": "medium"
   },
   "tolerant": true,
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 8,
   "wirecap": true,
@@ -39,7 +40,7 @@
     },
     {
       "op": "switch",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6.1-sol",
       "via": "acp"
     },
     {
@@ -52,7 +53,7 @@
     },
     {
       "op": "recon_note",
-      "note": "GOLDEN-WAIT (JIG L2): the FIRST post-switch gpt-5.6-sol request body (oldest req-NNN.json with body.model=gpt-5.6-sol in this run's wire/) is the xwfix fixture to byte-pin (normalize list: ids, timestamps, request-ids, group_ids) when the additive `golden` wire-assert kind lands (JIG ratchet 1: .70 op side + .79). Until then the tier adjudication (T1 rekeyed vs T3 dropped for the foreign qwen reasoning items; floor ratchets after .71) is a coordinator review step over that capture. No guessed golden in this wave."
+      "note": "GOLDEN-WAIT (JIG L2): the FIRST post-switch gpt-6.1-sol request body (oldest req-NNN.json with body.model=gpt-6.1-sol in this run's wire/) is the xwfix fixture to byte-pin (normalize list: ids, timestamps, request-ids, group_ids) when the additive `golden` wire-assert kind lands (JIG ratchet 1: .70 op side + .79). Until then the tier adjudication (T1 rekeyed vs T3 dropped for the foreign qwen reasoning items; floor ratchets after .71) is a coordinator review step over that capture. No guessed golden in this wave."
     }
   ],
   "assert": {
@@ -78,7 +79,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "\"type\": \"reasoning\"",
@@ -90,7 +91,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "all": true,
         "grep": "encrypted_content",
@@ -103,7 +104,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "min": 0,
         "max": 2,
@@ -115,7 +116,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "which": "last",
         "status_in": [

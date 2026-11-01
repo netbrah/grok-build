@@ -3,16 +3,16 @@
   "id": "RT-MSW-C",
   "bead": "apex-ayl.126.7",
   "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
-  "title": "MODEL-SWITCH-SIGHT-1 SW-C (apex-ayl.126.7) — messages->responses IDLE switch: claude-sonnet-5 (2 turns, signed thinking minted on the second turn per the rt-46c1 first-request-no-thinking pattern) -> ACP session/set_model qwen3.8-27b (idle) -> 1 qwen turn. Corrected expectation at d5f045b (first-hand): NO compaction by TWO independent mechanisms concurring — (1) the claude-sonnet-5 row is family-unset (no model_family in the live config; fill_from_catalog_inference never fills Anthropic rows) so is_family_switch is false and the compact gate never fires for claude->qwen; (2) even if it were a family switch, the Responses target skips the preemptive compact (family_switch_compact_required(Responses)=false, apex-ayl.123). The XW-PROJECT-1 switch-time projection DOES fire (any model-id change, idle) at the VLLenient boundary: the foreign claude reasoning items are T1 xw_-rekeyed + encrypted_content-stripped + summary/content KEPT in the store (projection.rs T1), and the lenient qwen row rides the re-keyed store ids verbatim (the rt-xreplay1 lenient-row lesson: the lenient vLLM-shim row accepts xw_ ids — no Azure id-shape 400, no reactive strip needed). Pins: compaction artifacts absent; switch_projection_persisted telemetry present; store xw_ rekey present + zero encrypted_content (T1 strip, final store); first qwen request reasoning items present + xw_ ids present + zero encrypted_content + claude text ride-along + store=false + 200; the second claude request carried a thinking config (anti-vacuous: real signed reasoning pre-existed); no acp_error; exactly 3 turns.",
+  "title": "MODEL-SWITCH-SIGHT-1 SW-C (apex-ayl.126.7) — messages->responses IDLE switch: claude-sonnet-5.5 (2 turns, signed thinking minted on the second turn per the rt-46c1 first-request-no-thinking pattern) -> ACP session/set_model qwen3.8-flash-next (idle) -> 1 qwen turn. Corrected expectation at d5f045b (first-hand): NO compaction by TWO independent mechanisms concurring — (1) the claude-sonnet-5.5 row is family-unset (no model_family in the live config; fill_from_catalog_inference never fills Anthropic rows) so is_family_switch is false and the compact gate never fires for claude->qwen; (2) even if it were a family switch, the Responses target skips the preemptive compact (family_switch_compact_required(Responses)=false, apex-ayl.123). The XW-PROJECT-1 switch-time projection DOES fire (any model-id change, idle) at the VLLenient boundary: the foreign claude reasoning items are T1 xw_-rekeyed + encrypted_content-stripped + summary/content KEPT in the store (projection.rs T1), and the lenient qwen row rides the re-keyed store ids verbatim (the rt-xreplay1 lenient-row lesson: the lenient vLLM-shim row accepts xw_ ids — no Azure id-shape 400, no reactive strip needed). Pins: compaction artifacts absent; switch_projection_persisted telemetry present; store xw_ rekey present + zero encrypted_content (T1 strip, final store); first qwen request reasoning items present + xw_ ids present + zero encrypted_content + claude text ride-along + store=false + 200; the second claude request carried a thinking config (anti-vacuous: real signed reasoning pre-existed); no acp_error; exactly 3 turns.",
   "suite": "cross-wire",
   "tier": "slim",
   "driver": "acp",
-  "model": "claude-sonnet-5",
+  "model": "claude-sonnet-5.5",
   "wire": "messages",
   "config_patch": {
-    "model/claude-sonnet-5/reasoning_effort": "medium",
-    "model/qwen3.8-27b/reasoning_effort": "medium",
-    "model/qwen3.8-27b/strict_responses_input": false
+    "model/claude-sonnet-5.5/reasoning_effort": "medium",
+    "model/qwen3.8-flash-next/reasoning_effort": "medium",
+    "model/qwen3.8-flash-next/strict_responses_input": false
   },
   "steps": [
     {
@@ -25,7 +25,7 @@
     },
     {
       "op": "switch",
-      "model": "qwen3.8-27b",
+      "model": "qwen3.8-flash-next",
       "via": "acp"
     },
     {
@@ -33,6 +33,7 @@
       "prompt": "Reply with exactly: RT-MSWC-Q1"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 10,
   "assert": {
@@ -108,7 +109,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "any": true,
         "grep": "\"thinking\"",
@@ -121,7 +122,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "min": 2,
         "max": 4,
@@ -134,7 +135,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "min": 1,
         "max": 2,
@@ -147,7 +148,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "grep": "\"type\": \"reasoning\"",
@@ -160,7 +161,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "grep": "\"id\": \"xw_",
@@ -173,7 +174,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "grep": "encrypted_content",
@@ -187,7 +188,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "grep": "RT-MSWC-C2",
@@ -200,7 +201,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "grep": "\"store\": false",
@@ -213,7 +214,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "which": "last",
         "status_in": [

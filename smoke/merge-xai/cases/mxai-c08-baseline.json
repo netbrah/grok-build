@@ -6,7 +6,7 @@
   "suite": "session-resume",
   "tier": "full",
   "driver": "headless",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wire": "responses",
   "output_format": "streaming-json",
   "wirecap": true,
@@ -15,11 +15,12 @@
     "store": false
   },
   "est_calls": 4,
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "steps": [
     {
       "op": "switch_model",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6.1-sol",
       "via": "resume",
       "cell": "smoke/redteam/fixtures/merge-xai/c-08-cell",
       "note": "CELL SEED (baseline run, pre-merge binary): same redacted c-08-cell fixture as the post-merge run — the seeded identity is a fixture constant, which is what makes the two runs comparable. The op's storage-form diff (xwfix_cell_diff.storage) is an incidental mechanism byproduct in BOTH runs (expected.json == pre_switch.json by fixture design) and is ignored in this recon case."
@@ -35,7 +36,7 @@
     },
     {
       "op": "switch",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6.1-sol",
       "via": "resume"
     },
     {

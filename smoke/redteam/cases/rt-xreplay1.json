@@ -2,11 +2,11 @@
  "id": "RT-XREPLAY1",
  "title": "RE-PIN 2026-09-22 (overwatch-adversarial, runs full-sweep-20260922T004829Z + at-strict-xwire-01-invest-20260922T2358Z; operator ratification: 'we aimed for that behavior on responses family switch, we opted for projection'): the .62 R-1 amended contract (preemptive lossy compact before any cross-family responses ride) is SUPERSEDED by apex-ayl.123 XW-XREPLAY-1 — for Responses targets the preemptive compact is SKIPPED (family_switch_compact_required(Responses)=false, model_switch.rs:446-463) and the .71 switch-time projection (xw_ store rekey) + send-time projectors + 78a236f reactive 400 net own the seam. This case keeps the strict_responses_input=false sol row (LENIENT shape) and now pins the ADJUDICATED RECOVERY CONTRACT: (1) NO compact markers on the sol wire (proactive compact must NOT run — the compact_summary/compact_noreasoning/s2_continued/s2_noreasoning pins are flipped to absence); (2) the FIRST sol request (last:0) carries the foreign reasoning with xw_-rekeyed ids (the lenient row rides verbatim; the .71 rekeyed store ids ride); (3) that request 400s on the Azure id-shape validation ('Expected an ID that begins with rs') — the deterministic lenient-row outcome; (4) the reactive model-bound strip fires: the LAST sol request carries NO reasoning items and is 200; (5) sol_count 2..3 (1 = the ride became legal without a 400 = design improvement -> investigate; 3 = one tolerated storm); (6) terminal health: end_turn, S1 token, no acp_error. Observed wire 20260922T004829Z (bin d5b4d0d427b2 @ ca31564): req-008 (17 items, 3 xw_ reasoning) -> 400 'Invalid input[8].id xw_4293fae7…'; req-009 (14 items, 0 reasoning) -> 200; end_turn, no acp_error. Pre-amendment and .62-amendment expectation text retained below for provenance only — SUPERSEDED.",
  "driver": "acp",
- "model": "qwen3.8-27b",
+ "model": "qwen3.8-flash-next",
  "config_patch": {
-  "model/qwen3.8-27b/strict_responses_input": false,
-  "model/qwen3.8-27b/reasoning_effort": "medium",
-  "model/gpt-5.6-sol/strict_responses_input": false
+  "model/qwen3.8-flash-next/strict_responses_input": false,
+  "model/qwen3.8-flash-next/reasoning_effort": "medium",
+  "model/gpt-6.1-sol/strict_responses_input": false
  },
  "steps": [
   {
@@ -23,7 +23,7 @@
   },
   {
    "op": "switch",
-   "model": "gpt-5.6-sol",
+   "model": "gpt-6.1-sol",
    "via": "acp"
   },
   {
@@ -31,6 +31,7 @@
    "prompt": "Reply with exactly: RT-XREPLAY1-S1"
   }
  ],
+ "timeouts": {"turn_s": 900},
  "watchdog_s": 300,
  "est_calls": 10,
  "assert": {
@@ -49,7 +50,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "qwen3.8-27b"
+     "body.model": "qwen3.8-flash-next"
     },
     "any": true,
     "grep": "\"type\": \"reasoning\"",
@@ -62,7 +63,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "min": 2,
     "max": 3,
@@ -75,7 +76,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "last": 0,
     "grep": "faithful, concise summary",
@@ -89,7 +90,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "last": 0,
     "grep": "\"type\": \"reasoning\"",
@@ -103,7 +104,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "last": 1,
     "grep": "\"type\": \"reasoning\"",
@@ -117,7 +118,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "last": 1,
     "grep": "This session is being continued",
@@ -131,7 +132,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "which": "last",
     "status_in": [
@@ -154,7 +155,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "last": 0,
     "grep": "\"id\": \"xw_",
@@ -167,7 +168,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "gpt-5.6-sol"
+     "body.model": "gpt-6.1-sol"
     },
     "which": "first",
     "status_in": [

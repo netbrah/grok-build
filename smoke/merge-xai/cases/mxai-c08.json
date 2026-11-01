@@ -6,7 +6,7 @@
   "suite": "session-resume",
   "tier": "full",
   "driver": "headless",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wire": "responses",
   "output_format": "streaming-json",
   "wirecap": true,
@@ -14,11 +14,12 @@
     "store": false
   },
   "est_calls": 4,
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "steps": [
     {
       "op": "switch_model",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6.1-sol",
       "via": "resume",
       "cell": "smoke/redteam/fixtures/merge-xai/c-08-cell",
       "note": "CELL SEED (xwfix mechanism, not a live switch): seeds the session from the redacted c-08-cell pre_switch.json VERBATIM at case start (headless ordering) — the pre-minted identity the ADOPTION pin scores against. The op's storage-form diff (xwfix_cell_diff.storage, scored at switch time) is an INCIDENTAL BYPRODUCT here: the fixture's expected.json == pre_switch.json (identity cells seed a golden-equal history; the 06 C-08 verdict is the identity round-trip, not a storage golden), so it is trivially green at switch time. Label: mechanism byproduct, not the verdict surface."
@@ -34,7 +35,7 @@
     },
     {
       "op": "switch",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6.1-sol",
       "via": "resume"
     },
     {

@@ -1,7 +1,7 @@
 {
   "id": "RT-R3",
   "title": "Long-idle resume: session idle 60s, resume 1 turn; no timeout/auth-refresh surprise (024ef68 regression pin); R-6: record whether idle/auth surfaces a distinct event",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "steps": [
     {
       "op": "turn",
@@ -16,6 +16,7 @@
       "prompt": "RT-R3 T2: Reply with exactly: RT-R3-T2"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 2,
   "assert": {

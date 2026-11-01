@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "id": "MXAI-C07",
-  "title": "MERGE-XAI-SYNC C-07 (PIN M7, MAV2 child projection + mailbox) — sol parent (frozen lane L-01 responses) spawns a v2 subagent on the qwen lane (L-04 responses); the 06 §2 C-07 scenario: 'spawn v2 subagent, exchange one message parent→child→parent'. One bounded turn (AT-SPAWN-XWIRE pattern, 600s headroom): the parent spawns a background worker with model qwen3.8-27b; the child sends the parent exactly MXAI-C07-PART1 via send_message; the parent wait_agents and quotes it back (PART1-RECEIVED … CHILD-ACK). M7 wire face on the child's FIRST request (the OLDEST qwen request in this run — where {POST /v1/responses, body.model=qwen3.8-27b}: every qwen request is the child's; the parent is sol): (1) MIRROR-PRESENT: the child's tools[] is the parent's VerbatimMirror builtin inventory — the non-collab builtins run_terminal_command + read_file appear as tool-schema entries (the '\"name\": \"…\"' form — prompt-text-independent); (2) V2-COLLAB-KEPT: the v2 collab tool send_message is KEPT on the child (exempt from the projection drop list — the 5 v2 collab tools are the exemption set); (3) V1-COLLAB-DROPPED: the v1 ActiveAgentMessage tool send_subagent_message is ABSENT from the child's first request (the drop the projection exists to make — crate-verified, child_tool_projection.rs: VerbatimMirror minus send_subagent_message ONLY). CONTROL (anti-vacuous): a qwen child request exists (child_ran). The mailbox pin (part1) + the terminal (CHILD-ACK) close the round-trip. VERDICT: PASS = the child ran 1..6 requests with a 200 final, mirror/kept/dropped all green, PART1 reached the parent, no error terminal. VACUOUS (model class, child_ran/part1/done): the model never spawned / never sent / never closed — recorded, never a silent pass. STOP-AND-REPORT (house rule): an acp_error, a child request storm (>6), or a non-200 final on the child boundary (new phrasing = triage).",
+  "title": "MERGE-XAI-SYNC C-07 (PIN M7, MAV2 child projection + mailbox) — sol parent (frozen lane L-01 responses) spawns a v2 subagent on the qwen lane (L-04 responses); the 06 §2 C-07 scenario: 'spawn v2 subagent, exchange one message parent→child→parent'. One bounded turn (AT-SPAWN-XWIRE pattern, 600s headroom): the parent spawns a background worker with model qwen3.8-flash-next; the child sends the parent exactly MXAI-C07-PART1 via send_message; the parent wait_agents and quotes it back (PART1-RECEIVED … CHILD-ACK). M7 wire face on the child's FIRST request (the OLDEST qwen request in this run — where {POST /v1/responses, body.model=qwen3.8-flash-next}: every qwen request is the child's; the parent is sol): (1) MIRROR-PRESENT: the child's tools[] is the parent's VerbatimMirror builtin inventory — the non-collab builtins run_terminal_command + read_file appear as tool-schema entries (the '\"name\": \"…\"' form — prompt-text-independent); (2) V2-COLLAB-KEPT: the v2 collab tool send_message is KEPT on the child (exempt from the projection drop list — the 5 v2 collab tools are the exemption set); (3) V1-COLLAB-DROPPED: the v1 ActiveAgentMessage tool send_subagent_message is ABSENT from the child's first request (the drop the projection exists to make — crate-verified, child_tool_projection.rs: VerbatimMirror minus send_subagent_message ONLY). CONTROL (anti-vacuous): a qwen child request exists (child_ran). The mailbox pin (part1) + the terminal (CHILD-ACK) close the round-trip. VERDICT: PASS = the child ran 1..6 requests with a 200 final, mirror/kept/dropped all green, PART1 reached the parent, no error terminal. VACUOUS (model class, child_ran/part1/done): the model never spawned / never sent / never closed — recorded, never a silent pass. STOP-AND-REPORT (house rule): an acp_error, a child request storm (>6), or a non-200 final on the child boundary (new phrasing = triage).",
   "bead": "apex-l2d.4",
   "suite": "tool-call",
   "tier": "full",
   "driver": "acp",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wire": "responses",
   "wirecap": true,
   "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
@@ -22,7 +22,7 @@
       "tool": "spawn_agent",
       "args": {
         "task_name": "worker",
-        "model": "qwen3.8-27b"
+        "model": "qwen3.8-flash-next"
       },
       "premise": "model"
     }
@@ -30,12 +30,12 @@
   "steps": [
     {
       "op": "turn",
-      "timeout_s": 600,
-      "prompt": "Use the spawn_agent tool to start a background agent named worker with model qwen3.8-27b (pass model: qwen3.8-27b in the tool arguments). In its message, give it this task: use the send_message tool to send the parent agent (root) a message containing exactly: MXAI-C07-PART1, and only then finish. After spawning, use wait_agent to wait for the worker to finish, then reply with exactly: PART1-RECEIVED <the exact message the worker sent you> CHILD-ACK"
+      "timeout_s": 900,
+      "prompt": "Use the spawn_agent tool to start a background agent named worker with model qwen3.8-flash-next (pass model: qwen3.8-flash-next in the tool arguments). In its message, give it this task: use the send_message tool to send the parent agent (root) a message containing exactly: MXAI-C07-PART1, and only then finish. After spawning, use wait_agent to wait for the worker to finish, then reply with exactly: PART1-RECEIVED <the exact message the worker sent you> CHILD-ACK"
     },
     {
       "op": "recon_note",
-      "note": "M7 SURFACE (recon_note, non-scoring): the child's first request (the oldest qwen capture, last:0 under the where scope) is the projection surface — tools[] there is the VerbatimMirror verdict (mirror-present + v2-collab-kept + v1-collab-dropped). The qwen where-filter is child-scoped: the parent is sol, so every body.model=qwen3.8-27b /v1/responses request in this run is the child's. The companion child_calls count band (1..6) bounds N for the last:0 selection (the B-i count-tolerance lesson). The mailbox round-trip is ndjson-scored (part1 + done) — the wire face of the mailbox is the plaintext text frame (the MA-4 opaque-carrier defect class would surface as an error terminal, not a wire pin)."
+      "note": "M7 SURFACE (recon_note, non-scoring): the child's first request (the oldest qwen capture, last:0 under the where scope) is the projection surface — tools[] there is the VerbatimMirror verdict (mirror-present + v2-collab-kept + v1-collab-dropped). The qwen where-filter is child-scoped: the parent is sol, so every body.model=qwen3.8-flash-next /v1/responses request in this run is the child's. The companion child_calls count band (1..6) bounds N for the last:0 selection (the B-i count-tolerance lesson). The mailbox round-trip is ndjson-scored (part1 + done) — the wire face of the mailbox is the plaintext text frame (the MA-4 opaque-carrier defect class would surface as an error terminal, not a wire pin)."
     }
   ],
   "assert": {
@@ -72,11 +72,11 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "\"model\"",
-        "label": "CONTROL (anti-vacuous pin): a /v1/responses request with body.model=qwen3.8-27b exists — the child actually ran on its own model+wire (every qwen request in this case is the child's). 0-hit = the model never spawned the child = every M7 pin below is vacuous."
+        "label": "CONTROL (anti-vacuous pin): a /v1/responses request with body.model=qwen3.8-flash-next exists — the child actually ran on its own model+wire (every qwen request in this case is the child's). 0-hit = the model never spawned the child = every M7 pin below is vacuous."
       },
       {
         "kind": "grep",
@@ -85,7 +85,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "grep": "\"name\": \"run_terminal_command\"",
@@ -98,7 +98,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "grep": "\"name\": \"read_file\"",
@@ -111,7 +111,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "grep": "\"name\": \"send_message\"",
@@ -124,7 +124,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "absent": true,
@@ -138,7 +138,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "min": 1,
         "max": 6,
@@ -151,7 +151,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "which": "last",
         "status_in": [
@@ -165,7 +165,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "last": 0,
         "grep": "\"name\":"

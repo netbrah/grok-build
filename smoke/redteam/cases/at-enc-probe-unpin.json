@@ -6,29 +6,29 @@
  "suite": "cross-wire",
  "tier": "slim",
  "driver": "acp",
- "model": "gpt-5.6-sol",
+ "model": "gpt-6.1-sol-1m",
  "wirecap": true,
  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
  "steps": [
   {
    "op": "turn",
    "prompt": "No tools; answer directly in prose. Compute 7^8432 mod 5557 by repeated squaring. Show every squaring step modulo 5557, then the final product of the needed powers and the answer.",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "turn",
    "prompt": "No tools; answer directly. How many ways are there to tile a 2x7 rectangle with 2x1 dominoes? Derive the recurrence, then state the number.",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "turn",
    "prompt": "No tools; answer directly. Solve x^2 = 5 (mod 119) for all residue classes mod 119. Show the prime factorization of 119 and the CRT combination steps.",
-   "timeout_s": 300
+   "timeout_s": 900
   },
   {
    "op": "turn",
    "prompt": "No tools; answer directly. Verify your turn-1 result by a second method (Euler's theorem with phi(5557), or repeated squaring recomputed), and state whether the two methods agree.",
-   "timeout_s": 300
+   "timeout_s": 900
   }
  ],
  "watchdog_s": 600,
@@ -47,7 +47,7 @@
     "kind": "recon",
     "file": "req-*.json",
     "field": "body.model",
-    "label": "PROBE P2 EVIDENCE \u2014 read the captures: for each req-NNN.json (model=gpt-5.6-sol, path /v1/responses) record: (1) number of reasoning items with encrypted_content (rides leaving), (2) resp-NNN.jsonl status (200 vs 503 + VERBATIM message), (3) whether a retry request follows the 503 and WHAT CHANGED in it (whole reasoning items dropped = coarse .58 strip; field-only drop = surgical). The baseline table in the findings doc is filled from these."
+    "label": "PROBE P2 EVIDENCE \u2014 read the captures: for each req-NNN.json (model=gpt-6.1-sol, path /v1/responses) record: (1) number of reasoning items with encrypted_content (rides leaving), (2) resp-NNN.jsonl status (200 vs 503 + VERBATIM message), (3) whether a retry request follows the 503 and WHAT CHANGED in it (whole reasoning items dropped = coarse .58 strip; field-only drop = surgical). The baseline table in the findings doc is filled from these."
    }
   ]
  }

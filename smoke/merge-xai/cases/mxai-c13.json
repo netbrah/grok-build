@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "id": "MXAI-C13",
-  "title": "MERGE-XAI-SYNC C-13 (ADOPT 01 §3 S6, MCP long-prefix admission) — the upstream 1.0.31 behavior: an MCP tool whose fully-qualified name exceeds the 256-byte cap is ADMITTED (the base DROPS it); and OUR M7 child_tool_projection passes it to spawned children (the ours-side shape that must survive the merge). The rig: a hermetic MCP stdio stub (smoke/redteam/fixtures/merge-xai/c-13-mcp/mcp-longprefix-stub.py — stdlib-only JSON-RPC newline-delimited; initialize + tools/list exposing ONE 300-char tool 'longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' on server 'mxai_longprefix'; tools/call echoes args.echo — a test-double fixture, NOT a harness extension) whose qualified name 'mxai_longprefix__<300>' = 317 bytes (>256 — the admission edge). SETUP IS OPERATOR-DRIVEN (not a step-machine driver gap): config_patch is scalar-only and CANNOT add [mcp_servers.mxai_longprefix] (command/args are lists) — the operator provisions the server in the LIVE config from the stub fixture before the cell runs (README runbook; the hermetic home inherits the live mcp_servers block); an UNPROVISIONED server = BLOCKED (the harness-class premise lp_ann 0-hits — the announcement never reaches the wire), never a silent FAIL. PARENT ARM (turn 1 = announcement baseline; turn 2 = the coverage turn): a REAL use_tool round-trip to the 317-byte FQ tool with echo MXAI-C13-ECHO (discriminating pins: the escaped-JSON 'tool_name' key + the escaped-JSON FQ name — the prompt's plain mention and the announcement text cannot satisfy them). CHILD ARM (the M7 half, same turn): the parent spawns a qwen3.8-27b child instructed to call the SAME long-prefix tool with echo MXAI-C13-CHILD and finish, then wait_agents and quotes the child's result. SCORED PINS: (1) lp_ann (HARNESS premise — BLOCKED if 0-hit): the announcement '- mxai_longprefix (' reached the wire (the rig offered the tool); (2) lp_call + lp_tgt (MODEL premises): the parent issued a use_tool targeting the FQ name; (3) child_tool_closed (MODEL premise): the child's qwen request carries a function_call_output (the child round-trip CLOSED on the >256 tool — a real execution, not an emission); (4) done: the parent's terminal carries MXAI-C13-CALLED; (5) child_longprefix_ok (MODEL premise — THE M7 VERDICT): the parent's terminal carries MXAI-C13-CHILD — the child USED the >256 tool = the child_tool_projection passed it (ours' M7 shape under the merge); absent = the upstream base drop landed in the projection (or the model didn't spawn — the premise pass sorts it; the wire record adjudicates). VERDICT: PASS = all pins green (long-prefix admission + child projection both verified); VACUOUS = the model didn't take the path; BLOCKED = the server never announced. STOP-AND-REPORT: an acp_error, a 400/503 on the MCP boundary, or a child request storm.",
+  "title": "MERGE-XAI-SYNC C-13 (ADOPT 01 §3 S6, MCP long-prefix admission) — the upstream 1.0.31 behavior: an MCP tool whose fully-qualified name exceeds the 256-byte cap is ADMITTED (the base DROPS it); and OUR M7 child_tool_projection passes it to spawned children (the ours-side shape that must survive the merge). The rig: a hermetic MCP stdio stub (smoke/redteam/fixtures/merge-xai/c-13-mcp/mcp-longprefix-stub.py — stdlib-only JSON-RPC newline-delimited; initialize + tools/list exposing ONE 300-char tool 'longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' on server 'mxai_longprefix'; tools/call echoes args.echo — a test-double fixture, NOT a harness extension) whose qualified name 'mxai_longprefix__<300>' = 317 bytes (>256 — the admission edge). SETUP IS OPERATOR-DRIVEN (not a step-machine driver gap): config_patch is scalar-only and CANNOT add [mcp_servers.mxai_longprefix] (command/args are lists) — the operator provisions the server in the LIVE config from the stub fixture before the cell runs (README runbook; the hermetic home inherits the live mcp_servers block); an UNPROVISIONED server = BLOCKED (the harness-class premise lp_ann 0-hits — the announcement never reaches the wire), never a silent FAIL. PARENT ARM (turn 1 = announcement baseline; turn 2 = the coverage turn): a REAL use_tool round-trip to the 317-byte FQ tool with echo MXAI-C13-ECHO (discriminating pins: the escaped-JSON 'tool_name' key + the escaped-JSON FQ name — the prompt's plain mention and the announcement text cannot satisfy them). CHILD ARM (the M7 half, same turn): the parent spawns a qwen3.8-flash-next child instructed to call the SAME long-prefix tool with echo MXAI-C13-CHILD and finish, then wait_agents and quotes the child's result. SCORED PINS: (1) lp_ann (HARNESS premise — BLOCKED if 0-hit): the announcement '- mxai_longprefix (' reached the wire (the rig offered the tool); (2) lp_call + lp_tgt (MODEL premises): the parent issued a use_tool targeting the FQ name; (3) child_tool_closed (MODEL premise): the child's qwen request carries a function_call_output (the child round-trip CLOSED on the >256 tool — a real execution, not an emission); (4) done: the parent's terminal carries MXAI-C13-CALLED; (5) child_longprefix_ok (MODEL premise — THE M7 VERDICT): the parent's terminal carries MXAI-C13-CHILD — the child USED the >256 tool = the child_tool_projection passed it (ours' M7 shape under the merge); absent = the upstream base drop landed in the projection (or the model didn't spawn — the premise pass sorts it; the wire record adjudicates). VERDICT: PASS = all pins green (long-prefix admission + child projection both verified); VACUOUS = the model didn't take the path; BLOCKED = the server never announced. STOP-AND-REPORT: an acp_error, a 400/503 on the MCP boundary, or a child request storm.",
   "bead": "apex-l2d.4",
   "suite": "mcp-tool",
   "tier": "full",
   "driver": "acp",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wire": "responses",
   "wirecap": true,
   "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
@@ -15,7 +15,7 @@
   "timeouts": {
     "acp_init_s": 240,
     "mcp_startup_s": 30,
-    "turn_s": 600
+    "turn_s": 900
   },
   "mcp_calls": [
     {
@@ -37,7 +37,7 @@
       "tool": "spawn_agent",
       "args": {
         "task_name": "child",
-        "model": "qwen3.8-27b"
+        "model": "qwen3.8-flash-next"
       },
       "premise": "model"
     }
@@ -49,8 +49,8 @@
     },
     {
       "op": "turn",
-      "timeout_s": 600,
-      "prompt": "Perform exactly these tool uses, in this order, and no other tools: (1) use the use_tool tool to call the MCP tool on server mxai_longprefix (qualified name mxai_longprefix__longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) with argument echo 'MXAI-C13-ECHO'; (2) use the spawn_agent tool to start a background agent named child with model qwen3.8-27b (pass model: qwen3.8-27b in the tool arguments) and give it this task: use the use_tool tool to call the MCP tool on server mxai_longprefix (qualified name mxai_longprefix__longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) with argument echo 'MXAI-C13-CHILD', and only then finish; (3) use wait_agent to wait for the child to finish. When the tool result and the child's result are both in hand, reply with exactly: MXAI-C13-CALLED <the tool result> CHILD-RESULT <the child's final reply>"
+      "timeout_s": 900,
+      "prompt": "Perform exactly these tool uses, in this order, and no other tools: (1) use the use_tool tool to call the MCP tool on server mxai_longprefix (qualified name mxai_longprefix__longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) with argument echo 'MXAI-C13-ECHO'; (2) use the spawn_agent tool to start a background agent named child with model qwen3.8-flash-next (pass model: qwen3.8-flash-next in the tool arguments) and give it this task: use the use_tool tool to call the MCP tool on server mxai_longprefix (qualified name mxai_longprefix__longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) with argument echo 'MXAI-C13-CHILD', and only then finish; (3) use wait_agent to wait for the child to finish. When the tool result and the child's result are both in hand, reply with exactly: MXAI-C13-CALLED <the tool result> CHILD-RESULT <the child's final reply>"
     },
     {
       "op": "recon_note",
@@ -86,7 +86,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "any": true,
         "grep": "- mxai_longprefix (",
@@ -99,7 +99,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "any": true,
         "grep": "\\\"tool_name\\\":",
@@ -112,7 +112,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "any": true,
         "grep": "\\\"mxai_longprefix__longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"",
@@ -125,7 +125,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "\"type\": \"function_call_output\"",
@@ -138,7 +138,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "min": 1,
         "max": 6,
@@ -151,7 +151,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "which": "last",
         "label": "VERDICT RECORD (evidence-only, machine-readable): the upstream HTTP status of the LAST sol request (no status_in — a 400 on the MCP round-trip is a tool-path FINDING surfaced by the round-trip pins, and the session-title side call (same body.model, 500s proxy-side) may land last, so an assertive status_in would false-fail — the t21 status_rec convention)."

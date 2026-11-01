@@ -2,6 +2,9 @@
   "schema_version": 1,
   "id": "MGW-COMPACTV2-02",
   "title": "REMOTE-COMPACTION-ENABLE-1 (apex-576): FLEET-SHAPE pin for the v2 remote arm - NO config_patch. The live ~/.grok/config.toml carries features/remote_compaction_v2=true (flipped 2026-09-24, operator sign-off; REMOTE-COMPACTION-1 .139 verified the arm), and the hermetic home inherits it verbatim - so this case proves the flag rides from the LIVE CONFIG tier end-to-end, the shape the fleet runs in. Same wire contract as MGW-COMPACTV2-01: streaming POST /v1/responses (NOT a unary /responses/compact route - that route exists upstream but the harness never calls it; probes: 400 contract error on terra naming input|previous_response_id, 500 'COMPACT responses is not supported for vertex_ai' for gemini, 401 unrecognized path for glm/qwen vLLM) advertising x-codex-beta-features: remote_compaction_v2 with the trailing compaction_trigger item; exactly one compaction output item (cmp_*/encitem_ lineage) + response.completed; post-compact turn clean. SELECTOR: the v2 compact request carries NO x-grok-req-id (the xai-compact- tag is the LOCAL self-summarize arm, session_compact.rs) - the beta-features header is the unique v2-arm discriminator and the where-filter. PREDICTED: PASS = one beta-advertising request, both protocol markers, HTTP 200, compaction item in the stream, no acp_error. RED = 0 beta-advertising requests (live-config flip did not ride - the point of this case) or 2+ (the .82 strip-retry storm class).",
+  "disabled": true,
+  "reason": "Premise not preserved (r3 section 6.3 option O-3, the plan default, confirmed by the operator's answer to Q-1 on 2026-10-30): this case's subject is that features/remote_compaction_v2=true rides from the LIVE ~/.grok/config.toml tier with no config_patch, and the operator turned that flag off in the live config on purpose; it will be turned on again only after a per-model-row version of remote compaction v2 replaces the global flag (operator-answer-Q1-remote-compaction-v2-20261030.json). The recorded live state is features.remote_compaction_v2 = false (r3 section 6.2; live-rows-20261030-tf-retired.json top_level.features), so the case can only print its own predicted RED (0 beta-advertising requests). Giving it a config_patch (r3 section 6.3 O-2) is rejected because that would destroy its subject; the v2 remote arm stays covered by the self-pinning MGW-COMPACTV2-01 and RT-C5.",
+  "unblocks_at": "Q-1 re-opened by the operator: remote compaction v2 is re-armed for the live config, changing the state r3 section 6.2 records (r3 section 6.3 O-1 or the Agents.md section 12 exception; per the Q-1 answer, only once a per-model-row version replaces the global flag). Then re-read this case's premise against that shape, set disabled=false, and rewrite the now-inverted premises of WS9-S05-COMPACT-RESUME and COMP3-STORM-VLQ-VLG in the same item with a written reason each (r3 section 6.3: the two directions never merge).",
   "bead": "apex-576",
   "suite": "compaction",
   "tier": "slim",
@@ -17,7 +20,7 @@
     {
       "op": "turn",
       "prompt": "Think step by step: why does a hash table degrade toward a linked list as the load factor climbs past 1? Show the collision math, then the answer.",
-      "timeout_s": 300
+      "timeout_s": 900
     },
     {
       "op": "compact",
@@ -26,9 +29,10 @@
     {
       "op": "turn",
       "prompt": "Reply with exactly: MGW-COMPACTV2-OK",
-      "timeout_s": 300
+      "timeout_s": 900
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 600,
   "est_calls": 6,
   "assert": {
@@ -106,6 +110,10 @@
         "kind": "grep",
         "id": "compact_item",
         "file": "resp-*.jsonl",
+        "where": {
+          "path": "/v1/responses",
+          "headers.x-codex-beta-features": "remote_compaction_v2"
+        },
         "any": true,
         "grep": "compaction",
         "label": "COMPACTION ITEM: a response stream carried a compaction output item (item.type=compaction) — the v2 contract's terminal payload (response.output_item.done + response.completed consumed by CodexRemoteCompactionV2Collector). Turn streams never carry it, so a hit identifies the compact response."

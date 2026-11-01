@@ -1,8 +1,8 @@
 {
   "id": "RT-46C1",
-  "title": "WIREPRESENCE-1 46c live ingress check: one claude-sonnet-5 (messages wire) turn through the post-46c response DTO + stream accumulator. The 46c ingress change is parse-strictly-lenient (12 fields newly carry Missing/Null/Value; container/stop_details newly parsed; stop_details terminal replacement; usage overlays retain/replace by carrier state) — the live risk is BEHAVIORAL (accumulator projections on a real stream), not parse failure. Tolerant verdict (SDD 46c §7 / RT-CW2 discipline): PASS = the turn completes (no acp_error) AND the turn's wire capture shows message_start + message_delta + message_stop + usage. Any deviation is a FINDING recorded in the report (non-blocking; blocking only if the turn died).",
+  "title": "WIREPRESENCE-1 46c live ingress check: one claude-sonnet-5.5 (messages wire) turn through the post-46c response DTO + stream accumulator. The 46c ingress change is parse-strictly-lenient (12 fields newly carry Missing/Null/Value; container/stop_details newly parsed; stop_details terminal replacement; usage overlays retain/replace by carrier state) — the live risk is BEHAVIORAL (accumulator projections on a real stream), not parse failure. Tolerant verdict (SDD 46c §7 / RT-CW2 discipline): PASS = the turn completes (no acp_error) AND the turn's wire capture shows message_start + message_delta + message_stop + usage. Any deviation is a FINDING recorded in the report (non-blocking; blocking only if the turn died).",
   "driver": "acp",
-  "model": "claude-sonnet-5",
+  "model": "claude-sonnet-5.5",
  "steps": [
   {
    "op": "turn",
@@ -53,7 +53,7 @@
     },
     {
      "kind": "recon",
-     "label": "RT-46C1 VERDICT RECORD: newest-captured wire response status line, verbatim (machine-readable; recon reads the newest file by mtime). Disclosure: a parallel side call (grok-4.6 /v1/responses) may complete after the turn and therefore land newest — the turn response is the /v1/messages capture with message_start/message_stop frames. recon op — always records, never fails.",
+     "label": "RT-46C1 VERDICT RECORD: newest-captured wire response status line, verbatim (machine-readable; recon reads the newest file by mtime). Disclosure: a parallel side call (historical: observed as grok-4.6 /v1/responses on the retired row) may complete after the turn and therefore land newest — the turn response is the /v1/messages capture with message_start/message_stop frames. recon op — always records, never fails.",
      "base": "wire",
      "file": "resp-*.jsonl",
      "nth": 0,

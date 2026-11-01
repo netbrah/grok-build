@@ -6,13 +6,14 @@
   "suite": "compaction",
   "tier": "full",
   "driver": "acp",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "wire": "responses",
   "wirecap": true,
   "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
   "est_calls": 5,
   "watchdog_s": 300,
   "timeouts": {
+    "turn_s": 900,
     "acp_init_s": 240
   },
   "steps": [
@@ -59,7 +60,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "which": "last",
         "status_in": [
@@ -74,7 +75,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "min": 3,
         "max": 10,

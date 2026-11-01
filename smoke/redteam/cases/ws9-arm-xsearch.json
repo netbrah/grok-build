@@ -1,17 +1,17 @@
 {
  "schema_version": 1,
  "id": "WS9-ARM-XSEARCH",
- "title": "WS9 live-arm 3 (addendum 3) — X-SEARCH deployment fact re-verification: grok-4.6 (vertex/responses via the llm-proxy) with the x_search hosted-tool entry FORCED ON, recon class (record-only, verdict RECON — the finding is the observed deployment state, per tasking). Gate (source-verified): builder.rs:1238-1242 — the x_search tools[] entry rides iff features.backend_tools (Feature::BackendTools: key 'backend_tools', path 'features.backend_tools', env GROK_BACKEND_SEARCH, default_enabled true — operator [features] leaves it unset = ON) AND the model row allows it (agent.rs:37: ANDed at request time with the per-model supports_backend_search). The operator row carries supports_backend_search=false (catalog redacts x_search as 'n'; the row is configured off BECAUSE the deployment rejects the entry — triage signatures.json row #15, PROPOSED, .76 live mint 2026-09-18T00:52Z: 2 turns, both 400 INVALID_ARGUMENT in ~3s, store=false). This case flips ONLY the model row (config_patch model/grok-4.6/supports_backend_search=true — launcher-side hermetic copy, never the operator config) so the entry rides and the deployment's verdict on it is observed live. Expected observed state (the .76 RCA, re-verified for the ship gate): the Vertex deployment deterministically rejects the hosted x_search tools entry — 400 INVALID_ARGUMENT, body class 'Expected the type field of a(n) tools array element to be function; found x_search' (#15 regex anchor: tools' array element to be 'function'). That 400 is a DEPLOYMENT FACT, not a harness defect and not a new failure class (catalog row #15 exists); the 400 is non-retryable (is_retryable=false) so the turn terminates — recorded, not failed (recon). If the deployment instead ACCEPTS (200 + the tools entry rides clean), that is the equally valid observed state: the donor-derived xsearch_replay fixtures (crates/codegen/xai-grok-sampling-types/src/conversation/fixtures/xsearch_replay/) become re-pinnable and #15's status flips to RETIRED-candidate for the coordinator.",
+ "title": "WS9 live-arm 3 (addendum 3) — X-SEARCH deployment fact re-verification: grok-4.7 (vertex/responses via the llm-proxy) with the x_search hosted-tool entry FORCED ON, recon class (record-only, verdict RECON — the finding is the observed deployment state, per tasking). Gate (source-verified): builder.rs:1238-1242 — the x_search tools[] entry rides iff features.backend_tools (Feature::BackendTools: key 'backend_tools', path 'features.backend_tools', env GROK_BACKEND_SEARCH, default_enabled true — operator [features] leaves it unset = ON) AND the model row allows it (agent.rs:37: ANDed at request time with the per-model supports_backend_search). The operator row carries supports_backend_search=false (catalog redacts x_search as 'n'; the row is configured off BECAUSE the deployment rejects the entry — triage signatures.json row #15, PROPOSED, .76 live mint 2026-09-18T00:52Z: 2 turns, both 400 INVALID_ARGUMENT in ~3s, store=false). This case flips ONLY the model row (config_patch model/grok-4.7/supports_backend_search=true — launcher-side hermetic copy, never the operator config) so the entry rides and the deployment's verdict on it is observed live. Expected observed state (the .76 RCA, re-verified for the ship gate): the Vertex deployment deterministically rejects the hosted x_search tools entry — 400 INVALID_ARGUMENT, body class 'Expected the type field of a(n) tools array element to be function; found x_search' (#15 regex anchor: tools' array element to be 'function'). That 400 is a DEPLOYMENT FACT, not a harness defect and not a new failure class (catalog row #15 exists); the 400 is non-retryable (is_retryable=false) so the turn terminates — recorded, not failed (recon). If the deployment instead ACCEPTS (200 + the tools entry rides clean), that is the equally valid observed state: the donor-derived xsearch_replay fixtures (crates/codegen/xai-grok-sampling-types/src/conversation/fixtures/xsearch_replay/) become re-pinnable and #15's status flips to RETIRED-candidate for the coordinator.",
  "bead": "apex-ayl.78",
  "suite": "recon",
  "tier": "full",
  "driver": "headless",
- "model": "grok-4.6",
+ "model": "grok-4.7",
  "wire": "responses",
  "output_format": "streaming-json",
  "recon": true,
  "config_patch": {
-  "model/grok-4.6/supports_backend_search": true
+  "model/grok-4.7/supports_backend_search": true
  },
  "watchdog_s": 300,
  "est_calls": 2,
@@ -23,7 +23,7 @@
   },
   {
    "op": "recon_note",
-   "note": "OBSERVED-STATE RECORD: the wire pins below record (1) whether the x_search tools[] entry actually rides (gate engaged = the anti-vacuous premise), (2) the response status of the first grok-4.6 request (400 = deployment fact per #15; 200 = the entry is now accepted — donor-fixture re-pin owed), (3) the 400 body class verbatim (the #15 regex anchor substring). Recon class: never fails; the row finding = the observed state, filed with the differential-scenarios report."
+   "note": "OBSERVED-STATE RECORD: the wire pins below record (1) whether the x_search tools[] entry actually rides (gate engaged = the anti-vacuous premise), (2) the response status of the first grok-4.7 request (400 = deployment fact per #15; 200 = the entry is now accepted — donor-fixture re-pin owed), (3) the 400 body class verbatim (the #15 regex anchor substring). Recon class: never fails; the row finding = the observed state, filed with the differential-scenarios report."
   }
  ],
  "assert": {
@@ -43,7 +43,7 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "grok-4.6"
+     "body.model": "grok-4.7"
     },
     "any": true,
     "grep": "\"type\": \"x_search\"",
@@ -56,13 +56,13 @@
     "where": {
      "method": "POST",
      "path": "/v1/responses",
-     "body.model": "grok-4.6"
+     "body.model": "grok-4.7"
     },
     "status_in": [
      400,
      200
     ],
-    "label": "DEPLOYMENT VERDICT: the first grok-4.6 request's response status — 400 = the x_search entry is rejected (deployment fact, #15); 200 = accepted (state change — re-pin owed). Both are valid observed states; the pin admits both so the row never mis-fires."
+    "label": "DEPLOYMENT VERDICT: the first grok-4.7 request's response status — 400 = the x_search entry is rejected (deployment fact, #15); 200 = accepted (state change — re-pin owed). Both are valid observed states; the pin admits both so the row never mis-fires."
    },
    {
     "kind": "recon",

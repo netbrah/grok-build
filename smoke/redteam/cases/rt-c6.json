@@ -1,9 +1,9 @@
 {
   "id": "RT-C6",
-  "title": "256k pinned window on 1M-capable model (claude-sonnet-5, messages wire): auto-compact at ~218k DESPITE 1M capability (config_patch pins the model-row context_window=256000: the case's own math — 222k seed vs the 85% threshold = ~217.6k -> window 256000, as in the 2026-09-14 green baseline at 86% usage. The catalog row drifted 256k->1M operator-intentionally and beats the [endpoints] default by documented resolver design, so the premise now rides the config tier — SWEEPFIX-VERIFY, F-COMP adjudication)",
-  "model": "claude-sonnet-5",
+  "title": "256k pinned window on a larger-window model (claude-sonnet-5.5, messages wire; the live row declares context_window 500000): auto-compact at ~218k DESPITE the larger native window (config_patch pins the model-row context_window=256000: the case's own math — 222k seed vs the 85% threshold = ~217.6k -> window 256000, as in the 2026-09-14 green baseline at 86% usage. The catalog row drifted 256k->1M operator-intentionally and beats the [endpoints] default by documented resolver design, so the premise now rides the config tier — SWEEPFIX-VERIFY, F-COMP adjudication)",
+  "model": "claude-sonnet-5.5",
   "config_patch": {
-    "model/claude-sonnet-5/context_window": 256000
+    "model/claude-sonnet-5.5/context_window": 256000
   },
   "seed": {
     "hist_tokens": 222000,
@@ -56,7 +56,7 @@
         "kind": "field",
         "file": "req-*.json",
         "path": "$.body.model",
-        "eq": "claude-sonnet-5",
+        "eq": "claude-sonnet-5.5",
         "where": {
           "method": "POST",
           "path": "/v1/messages"

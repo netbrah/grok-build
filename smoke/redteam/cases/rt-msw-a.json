@@ -3,15 +3,15 @@
   "id": "RT-MSW-A",
   "bead": "apex-ayl.126.7",
   "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
-  "title": "MODEL-SWITCH-SIGHT-1 SW-A (apex-ayl.126.7) — responses->messages IDLE switch with history: qwen3.8-27b (3 turns, reasoning on) -> ACP session/set_model claude-sonnet-5 (idle) -> 1 claude turn. CORRECTED expectation at d5f045b (first-hand; supersedes the SDD compact-EXPECTED premise): the claude-sonnet-5 catalog row is family-unset (no model_family in the live config; fill_from_catalog_inference deliberately never fills Anthropic rows) so is_family_switch is false and the family-switch compact gate never fires for qwen->claude — NO compaction; the XW-PROJECT-1 switch-time projection DOES fire (any model-id change, idle) at the Vertex boundary: foreign qwen reasoning items are T1 xw_-rekeyed + encrypted_content-stripped IN THE STORE (projection.rs), and the /messages build's R8 model-identity suppression (messages.rs: the reasoning's owning assistant model_id != the request slug) drops the foreign thinking blocks pre-send, so the first claude request = verbatim user+assistant TEXT ride-along with zero thinking blocks, zero xw_ ids, zero encrypted_content; the post-switch claude turn mints its OWN signed thinking (the switch-synced effort rides the thinking config). Pins: compaction artifacts absent; switch_projection_persisted telemetry present; store xw_ rekey + new claude signature present; first claude request text ride-along + all foreign-thinking absent + 200; claude response carries a thinking content block (signed thinking resumes); store=false on the qwen wire; no acp_error; exactly 4 turns.",
+  "title": "MODEL-SWITCH-SIGHT-1 SW-A (apex-ayl.126.7) — responses->messages IDLE switch with history: qwen3.8-flash-next (3 turns, reasoning on) -> ACP session/set_model claude-sonnet-5.5 (idle) -> 1 claude turn. CORRECTED expectation at d5f045b (first-hand; supersedes the SDD compact-EXPECTED premise): the claude-sonnet-5.5 catalog row is family-unset (no model_family in the live config; fill_from_catalog_inference deliberately never fills Anthropic rows) so is_family_switch is false and the family-switch compact gate never fires for qwen->claude — NO compaction; the XW-PROJECT-1 switch-time projection DOES fire (any model-id change, idle) at the Vertex boundary: foreign qwen reasoning items are T1 xw_-rekeyed + encrypted_content-stripped IN THE STORE (projection.rs), and the /messages build's R8 model-identity suppression (messages.rs: the reasoning's owning assistant model_id != the request slug) drops the foreign thinking blocks pre-send, so the first claude request = verbatim user+assistant TEXT ride-along with zero thinking blocks, zero xw_ ids, zero encrypted_content; the post-switch claude turn mints its OWN signed thinking (the switch-synced effort rides the thinking config). Pins: compaction artifacts absent; switch_projection_persisted telemetry present; store xw_ rekey + new claude signature present; first claude request text ride-along + all foreign-thinking absent + 200; claude response carries a thinking content block (signed thinking resumes); store=false on the qwen wire; no acp_error; exactly 4 turns.",
   "suite": "cross-wire",
   "tier": "slim",
   "driver": "acp",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "wire": "responses",
   "config_patch": {
-    "model/qwen3.8-27b/reasoning_effort": "medium",
-    "model/qwen3.8-27b/strict_responses_input": false
+    "model/qwen3.8-flash-next/reasoning_effort": "medium",
+    "model/qwen3.8-flash-next/strict_responses_input": false
   },
   "steps": [
     {
@@ -28,7 +28,7 @@
     },
     {
       "op": "switch",
-      "model": "claude-sonnet-5",
+      "model": "claude-sonnet-5.5",
       "via": "acp"
     },
     {
@@ -36,6 +36,7 @@
       "prompt": "Reply with exactly: RT-MSWA-C1"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 10,
   "assert": {
@@ -68,7 +69,7 @@
         "op": "count",
         "max": 0,
         "absent_ok": true,
-        "label": "NO COMPACT (corrected expectation): no compaction request artifact — the family-switch compact gate requires is_family_switch (model_switch.rs:155-174) and the claude-sonnet-5 row is family-unset, so the gate never fires for qwen->claude; a presence = a compact ran -> the ride-along pins below are vacuous and the catalog/gate changed -> investigate."
+        "label": "NO COMPACT (corrected expectation): no compaction request artifact — the family-switch compact gate requires is_family_switch (model_switch.rs:155-174) and the claude-sonnet-5.5 row is family-unset, so the gate never fires for qwen->claude; a presence = a compact ran -> the ride-along pins below are vacuous and the catalog/gate changed -> investigate."
       },
       {
         "id": "no_compact_checkpoint",
@@ -111,7 +112,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "\"type\": \"reasoning\"",
@@ -124,7 +125,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "\"store\": false",
@@ -137,7 +138,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "min": 1,
         "max": 2,
@@ -150,7 +151,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "last": 0,
         "grep": "RT-MSWA-Q1",
@@ -163,7 +164,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "last": 0,
         "grep": "RT-MSWA-Q3",
@@ -176,7 +177,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "last": 0,
         "grep": "\"type\": \"thinking\"",
@@ -190,7 +191,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "last": 0,
         "grep": "xw_",
@@ -204,7 +205,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "last": 0,
         "grep": "encrypted_content",
@@ -218,7 +219,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "which": "last",
         "status_in": [
@@ -233,7 +234,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "last": 0,
         "grep": "\\\\\"type\\\\\":\\s*\\\\\"thinking\\\\\"",

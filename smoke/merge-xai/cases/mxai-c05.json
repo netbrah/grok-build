@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "id": "MXAI-C05",
-  "title": "MERGE-XAI-SYNC C-05 (PIN M17, 6-level effort menu) — OURS' 6-tier menu {ultra, max, xhigh, high, medium, low} must survive the merge (upstream's 4-item test would have caught a regression the OTHER way — 06 §2). The EXACT 'exactly 6 items' menu assertion is the crate golden (xai-grok-pager acp/model_state.rs:396 assert_eq!(ids, [\"ultra\",\"max\",\"xhigh\",\"high\",\"medium\",\"low\"]) — it runs in the wave-3 full gate, step 6). PARTIAL DRIVER GAP (C-05): the smoke driver cannot count slash-menu items (no command-menu op; ACP available_commands carries TOOL lists, not the /effort command menu) — so this cell pins the LIVE WIRE FACE of the menu's top tier instead: cursor pinned to ultra (config_patch models/default_reasoning_effort=ultra) on gpt-5.6-sol; the sol request must carry WIRE effort 'max' (the provider remap ultra->max, provider.rs:138-145 — the 6-tier menu's top tier reached the wire AND remapped correctly). Verdict semantics: PASS = exit 0 + no terminal error + the wire carries '\"effort\": \"max\"' on the sol turn (our ultra tier is alive and remaps); a raw '\"effort\": \"ultra\"' on the wire = the remap regressed (the local tier leaked); a DIFFERENT effort value or a 0-hit = the cursor pin did not take (a scored FAIL to report-and-adjudicate — rig miss vs menu regression — the D-4a gate forbids harness-class premises without mcp_calls, so the class is coordinator-adjudicated, not a mechanical menu verdict either way). The 6-item count itself: coordinator cross-check against the model_state crate-test result from the full gate (named in the README cell table). This is the closest the unmodified driver gets to 'open /effort post-merge'.",
+  "title": "MERGE-XAI-SYNC C-05 (PIN M17, 6-level effort menu) — OURS' 6-tier menu {ultra, max, xhigh, high, medium, low} must survive the merge (upstream's 4-item test would have caught a regression the OTHER way — 06 §2). The EXACT 'exactly 6 items' menu assertion is the crate golden (xai-grok-pager acp/model_state.rs:396 assert_eq!(ids, [\"ultra\",\"max\",\"xhigh\",\"high\",\"medium\",\"low\"]) — it runs in the wave-3 full gate, step 6). PARTIAL DRIVER GAP (C-05): the smoke driver cannot count slash-menu items (no command-menu op; ACP available_commands carries TOOL lists, not the /effort command menu) — so this cell pins the LIVE WIRE FACE of the menu's top tier instead: cursor pinned to ultra (config_patch models/default_reasoning_effort=ultra) on gpt-6.1-sol; the sol request must carry WIRE effort 'max' (the provider remap ultra->max, provider.rs:138-145 — the 6-tier menu's top tier reached the wire AND remapped correctly). Verdict semantics: PASS = exit 0 + no terminal error + the wire carries '\"effort\": \"max\"' on the sol turn (our ultra tier is alive and remaps); a raw '\"effort\": \"ultra\"' on the wire = the remap regressed (the local tier leaked); a DIFFERENT effort value or a 0-hit = the cursor pin did not take (a scored FAIL to report-and-adjudicate — rig miss vs menu regression — the D-4a gate forbids harness-class premises without mcp_calls, so the class is coordinator-adjudicated, not a mechanical menu verdict either way). The 6-item count itself: coordinator cross-check against the model_state crate-test result from the full gate (named in the README cell table). This is the closest the unmodified driver gets to 'open /effort post-merge'.",
   "bead": "apex-l2d.4",
   "suite": "wire-shape",
   "tier": "full",
   "driver": "headless",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6.1-sol",
   "wire": "responses",
   "output_format": "streaming-json",
   "wirecap": true,
@@ -14,6 +14,7 @@
     "models/default_reasoning_effort": "ultra"
   },
   "est_calls": 2,
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "env": {
     "store": false
@@ -45,7 +46,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "nth": 0,
         "grep": "\"effort\": \"max\"",
@@ -58,7 +59,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
+          "body.model": "gpt-6.1-sol"
         },
         "all": true,
         "absent": true,

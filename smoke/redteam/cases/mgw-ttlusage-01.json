@@ -6,7 +6,7 @@
  "suite": "wire-shape",
  "tier": "slim",
  "driver": "headless",
- "model": "claude-sonnet-5",
+ "model": "claude-sonnet-5.5",
  "wirecap": true,
  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
  "steps": [

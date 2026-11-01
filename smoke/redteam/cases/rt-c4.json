@@ -1,9 +1,9 @@
 {
   "id": "RT-C4",
   "title": "Resume-after-compact: compact fires, kill, resume 2 turns \u2014 summary replayed, no re-compact storm",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "config_patch": {
-    "model/qwen3.8-27b/context_window": 12000
+    "model/qwen3.8-flash-next/context_window": 12000
   },
   "seed": {
     "hist_tokens": 11000
@@ -27,6 +27,7 @@
       "prompt": "Reply with exactly: RT-C4-POST-2"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 5,
   "assert": {
@@ -79,7 +80,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "$.body.model": "qwen3.8-27b"
+          "$.body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "This session is being continued from a previous conversation that ran out of context"
@@ -91,7 +92,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "$.body.model": "qwen3.8-27b"
+          "$.body.model": "qwen3.8-flash-next"
         },
         "nth": 0,
         "grep": "This session is being continued from a previous conversation that ran out of context"

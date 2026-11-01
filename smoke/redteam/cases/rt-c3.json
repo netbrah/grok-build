@@ -1,9 +1,9 @@
 {
   "id": "RT-C3",
   "title": "OVER-CAPACITY PIN: 1.7MB history vs 262144 window - deterministic in-stream error stops the retry storm (attempts==1, deterministic outcome, honest text, no crash)",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "config_patch": {
-    "model/qwen3.8-27b/context_window": 262144
+    "model/qwen3.8-flash-next/context_window": 262144
   },
   "seed": {
     "hist_tokens": 1000,
@@ -15,6 +15,7 @@
       "prompt": "Reply with exactly: RT-C3-OK"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 600,
   "est_calls": 4,
   "assert": {

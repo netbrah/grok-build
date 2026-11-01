@@ -6,7 +6,7 @@
   "suite": "salvage",
   "tier": "slim",
   "driver": "headless",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "wire": "responses",
   "wirecap": true,
   "env": {
@@ -24,7 +24,7 @@
     },
     {
       "op": "switch",
-      "model": "qwen3.8-27b",
+      "model": "qwen3.8-flash-next",
       "via": "resume"
     },
     {
@@ -36,6 +36,7 @@
       "note": "DEAD-SEAT WIRE+STORAGE CONSEQUENCES (recon-plan semantics): (1) HISTORY INTEGRITY is the scored claim — a post-kill request must replay the T1 nonce (the persisted history survived the mid-flight SIGKILL intact); (2) PARTIAL-LEAK is recorded twice, once per surface (wire: req recon 'lighthouses'; storage: chat_history.jsonl recon 'lighthouses') — wire-only leak = the partial turn persisted into context but not to disk (or vice versa); both = the partial essay is now permanent history; neither = clean discard (the donor architecture shape). The pair is the adjudication corpus, not a verdict. (3) SUBAGENT-SEAT VARIANT blocked-by apex-ayl.66 (COMMS-TRUST-FIX-1): fresh-context children refuse coordinator-authorized work, so a spawn+child-kill case would RED on the trust channel, not the wire — per doctrine DELTA-2 it is filed with blocked-by .66 and is NOT this case's verdict surface; the kill op here is the supported-op approximation of the dead seat (the seat that DIED is the session's own process — the main seat). (4) The kill is the EXPECTED terminal of step 1 (expect_kill default true — a kill does not FAIL the case); the honest-failure pins are T2 completion + exit 0 + history integrity."
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 4,
   "assert": {
@@ -56,7 +57,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "DEAD-SEAT-T1",
@@ -69,7 +70,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "min": 3,
         "max": 6,

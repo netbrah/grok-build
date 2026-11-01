@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "id": "WS9-S07-INT-CHILD",
-  "title": "WS9 row S07 (interrupt child) vs our llm-proxy — v2 multi-agent interrupt (RT-M11 lineage, interrupt_agent tool): ACP parent qwen3.8-27b (responses wire) spawns a same-model child worker (qwen3.8-27b — same wire+boundary, isolating the interrupt semantics from cross-wire projection) with a LONG five-stage task; the parent then calls interrupt_agent on the running child; the child must be REUSABLE after interruption (followup_task -> the child delivers WS9-S07-AFTER over the mailbox). The v2 arm is LIVE in the hermetic config (features.multi_agent_v2=true + row-level, live config at recon — no in-case arm patch; re-verify wire-intact at Phase-B launch per WAVE-S PG-3). Verdict semantics: PASS = the session survives the child interrupt end-to-end — no error terminal, the parent acknowledges (INTERRUPTED), and the interrupted child completed the follow-up (WS9-S07-AFTER in the parent's final text: the interrupt left the child reusable with its task identity intact — the interrupt_agent contract: 'interrupts the current turn without deleting history or task identity'). The tool-flow engaged pin (escaped-arguments marker) is a premise control: 0-hit => VACUOUS (the model never issued the spawn/interrupt tool calls — temperament, recorded). FAIL (S3 report-and-stop) = an unrecovered error terminal, a hung wait (watchdog), or a child that cannot be re-tasked after interruption (the AFTER report never arrives AND the tool flow was observed — the interrupt deleted the task identity). The exact interrupt call shape (task_name vs id targeting) is the recorded evidence for review (recon), not a scored pin — the model may target the task by name or id. No PROP gate (interrupt_agent is in-tree, v2 tool set).",
+  "title": "WS9 row S07 (interrupt child) vs our llm-proxy — v2 multi-agent interrupt (RT-M11 lineage, interrupt_agent tool): ACP parent qwen3.8-flash-next (responses wire) spawns a same-model child worker (qwen3.8-flash-next — same wire+boundary, isolating the interrupt semantics from cross-wire projection) with a LONG five-stage task; the parent then calls interrupt_agent on the running child; the child must be REUSABLE after interruption (followup_task -> the child delivers WS9-S07-AFTER over the mailbox). The v2 arm is LIVE in the hermetic config (features.multi_agent_v2=true + row-level, live config at recon — no in-case arm patch; re-verify wire-intact at Phase-B launch per WAVE-S PG-3). Verdict semantics: PASS = the session survives the child interrupt end-to-end — no error terminal, the parent acknowledges (INTERRUPTED), and the interrupted child completed the follow-up (WS9-S07-AFTER in the parent's final text: the interrupt left the child reusable with its task identity intact — the interrupt_agent contract: 'interrupts the current turn without deleting history or task identity'). The tool-flow engaged pin (escaped-arguments marker) is a premise control: 0-hit => VACUOUS (the model never issued the spawn/interrupt tool calls — temperament, recorded). FAIL (S3 report-and-stop) = an unrecovered error terminal, a hung wait (watchdog), or a child that cannot be re-tasked after interruption (the AFTER report never arrives AND the tool flow was observed — the interrupt deleted the task identity). The exact interrupt call shape (task_name vs id targeting) is the recorded evidence for review (recon), not a scored pin — the model may target the task by name or id. No PROP gate (interrupt_agent is in-tree, v2 tool set).",
   "bead": "apex-ayl.78",
   "suite": "tool-call",
   "tier": "full",
   "driver": "acp",
-  "model": "qwen3.8-27b",
+  "model": "qwen3.8-flash-next",
   "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
   "watchdog_s": 600,
   "est_calls": 8,
@@ -32,17 +32,17 @@
   "steps": [
     {
       "op": "turn",
-      "timeout_s": 300,
-      "prompt": "Use the spawn_agent tool to start a background agent named worker with model qwen3.8-27b. Give it this task: write a long essay about the history of lighthouses in five stages; after each stage use the send_message tool to report the stage number to the parent agent (root), and keep going until all five stages are reported; do not finish before all five stages are sent."
+      "timeout_s": 900,
+      "prompt": "Use the spawn_agent tool to start a background agent named worker with model qwen3.8-flash-next. Give it this task: write a long essay about the history of lighthouses in five stages; after each stage use the send_message tool to report the stage number to the parent agent (root), and keep going until all five stages are reported; do not finish before all five stages are sent."
     },
     {
       "op": "turn",
-      "timeout_s": 120,
+      "timeout_s": 900,
       "prompt": "The worker is running. Interrupt its current turn now: call the interrupt_agent tool targeting worker. Then reply with exactly: INTERRUPTED"
     },
     {
       "op": "turn",
-      "timeout_s": 300,
+      "timeout_s": 900,
       "prompt": "Now reuse the interrupted worker: use the followup_task tool to send worker the follow-up task: use the send_message tool to send the parent agent (root) a message containing exactly: WS9-S07-AFTER, and only then finish. Wait with wait_agent, then reply with exactly: WS9-S07-AFTER PARENT-OK"
     }
   ],
@@ -73,7 +73,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "any": true,
         "grep": "\"task_name\\\":\\\"worker\\\"",
@@ -85,7 +85,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "min": 3,
         "max": 9,

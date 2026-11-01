@@ -1,11 +1,11 @@
 {
   "id": "RT-CROSSWIRE1B",
-  "title": "CROSSWIRE-1 subcase (ii) messages->responses \u2014 the genuinely unproven seam: claude-sonnet-5 (messages wire, thinking blocks) -> ACP switch -> qwen3.8-27b (responses wire, strict_responses_input=false so NO preemptive REPLAY-1 projection) -> 1 turn. Foreign claude thinking is stored as sibling Reasoning items and must ride VERBATIM as reasoning INPUT items on the post-switch /v1/responses request (no preemptive strip on the responses side \u2014 pinned). Tolerant verdict (rt-xreplay1 discipline): 200 (upstream ACCEPTED the foreign reasoning) OR 400->reactive-strip+retry->200 (the reactive strip is the ONLY recovery on this wire). Both PASS; the fix claim is that a rejection is recovered (last request 200, turn completes), not that the upstream rejects. (Amended 2026-09-17 per .62 adjudication: M1/M2 are now thinking-eliciting stimuli (bat-and-ball, mislabeled-jars) so the claude row has a real chance to emit thinking; NEW premise pin think_premise (a thinking_delta event in any captured response \u2014 claude-sonnet-5 is the only messages-wire model in this case, so the unscoped resp grep is claude-scoped by construction: the qwen responses-wire stream carries no thinking_delta); scoring.vacuous_if \u2014 think_premise 0-hit = VACUOUS (class model): claude-no-thinking-through-this-proxy is recorded model/proxy temperament (B-ii doctrine), not a product defect. All pins carry ids.)",
+  "title": "CROSSWIRE-1 subcase (ii) messages->responses \u2014 the genuinely unproven seam: claude-sonnet-5.5 (messages wire, thinking blocks) -> ACP switch -> qwen3.8-flash-next (responses wire, strict_responses_input=false so NO preemptive REPLAY-1 projection) -> 1 turn. Foreign claude thinking is stored as sibling Reasoning items and must ride VERBATIM as reasoning INPUT items on the post-switch /v1/responses request (no preemptive strip on the responses side \u2014 pinned). Tolerant verdict (rt-xreplay1 discipline): 200 (upstream ACCEPTED the foreign reasoning) OR 400->reactive-strip+retry->200 (the reactive strip is the ONLY recovery on this wire). Both PASS; the fix claim is that a rejection is recovered (last request 200, turn completes), not that the upstream rejects. (Amended 2026-09-17 per .62 adjudication: M1/M2 are now thinking-eliciting stimuli (bat-and-ball, mislabeled-jars) so the claude row has a real chance to emit thinking; NEW premise pin think_premise (a thinking_delta event in any captured response \u2014 claude-sonnet-5.5 is the only messages-wire model in this case, so the unscoped resp grep is claude-scoped by construction: the qwen responses-wire stream carries no thinking_delta); scoring.vacuous_if \u2014 think_premise 0-hit = VACUOUS (class model): claude-no-thinking-through-this-proxy is recorded model/proxy temperament (B-ii doctrine), not a product defect. All pins carry ids.)",
   "driver": "acp",
-  "model": "claude-sonnet-5",
+  "model": "claude-sonnet-5.5",
   "config_patch": {
-    "model/qwen3.8-27b/strict_responses_input": false,
-    "model/qwen3.8-27b/reasoning_effort": "medium"
+    "model/qwen3.8-flash-next/strict_responses_input": false,
+    "model/qwen3.8-flash-next/reasoning_effort": "medium"
   },
   "steps": [
     {
@@ -18,7 +18,7 @@
     },
     {
       "op": "switch",
-      "model": "qwen3.8-27b",
+      "model": "qwen3.8-flash-next",
       "via": "acp"
     },
     {
@@ -26,6 +26,7 @@
       "prompt": "Reply with exactly: RT-CW1B-Q1"
     }
   ],
+  "timeouts": {"turn_s": 900},
   "watchdog_s": 300,
   "est_calls": 8,
   "assert": {
@@ -43,7 +44,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/messages",
-          "body.model": "claude-sonnet-5"
+          "body.model": "claude-sonnet-5.5"
         },
         "any": true,
         "grep": "\"type\": \"thinking\"",
@@ -56,7 +57,7 @@
         "file": "resp-*.jsonl",
         "any": true,
         "grep": "thinking_delta",
-        "label": "PREMISE (thinking-eliciting, anti-vacuous): claude emitted thinking through this proxy \u2014 a thinking_delta event in some captured response stream. claude-sonnet-5 is the only messages-wire model in this case, so an unscoped resp grep is claude-scoped by construction (the qwen responses-wire stream carries no thinking_delta). 0-hit = the ride premise is false -> VACUOUS (model class), see scoring.vacuous_if."
+        "label": "PREMISE (thinking-eliciting, anti-vacuous): claude emitted thinking through this proxy \u2014 a thinking_delta event in some captured response stream. claude-sonnet-5.5 is the only messages-wire model in this case, so an unscoped resp grep is claude-scoped by construction (the qwen responses-wire stream carries no thinking_delta). 0-hit = the ride premise is false -> VACUOUS (model class), see scoring.vacuous_if."
       },
       {
         "kind": "grep",
@@ -64,7 +65,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "grep": "\"type\": \"reasoning\"",
         "label": "VERBATIM RIDE (the unproven seam, no preemptive strip): at least one post-switch responses request (any:true over the qwen requests \u2014 fail-closed on an empty set; a static nth cannot express 'the first-of-N with N in {1,2}' and would break in the 1-request accepted branch) CARRIES a reasoning INPUT item \u2014 foreign claude thinking rode onto the responses wire. strict_responses_input=false keeps the REPLAY-1 projection OFF, so there is no preemptive strip on this wire; if no request carries a reasoning item, the premise (foreign thinking rides) is false and the probe is meaningless.",
@@ -77,7 +78,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "min": 1,
         "max": 2,
@@ -90,7 +91,7 @@
         "where": {
           "method": "POST",
           "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
+          "body.model": "qwen3.8-flash-next"
         },
         "which": "last",
         "status_in": [
