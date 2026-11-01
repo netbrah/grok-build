@@ -23,7 +23,8 @@ Extensions over the original (HT-1 spec §2):
   1. Capture: per request -> <capture_dir>/req-NNN.json (method, path, ts,
      headers-MASKED, full body) + <capture_dir>/resp-NNN.jsonl (status,
      response headers, then ONE NDJSON line per SSE frame as it streams —
-     frame fidelity, not a post-hoc parse). Dir 0700, files 0600.
+     frame fidelity, not a post-hoc parse). Optional --raw-sse writes the
+     upstream SSE entity bytes to resp-NNN.raw. Dir 0700, files 0600.
   2. Auth masking (non-negotiable): `Authorization` (and any header whose
      value == the ambient key) stored as
      {"masked": true, "sha256_12": "...", "len": N}. The raw key is NEVER
@@ -31,7 +32,8 @@ Extensions over the original (HT-1 spec §2):
   3. Method coverage: do_GET/do_DELETE/do_PUT pass-through + one-line log
      (the original 501s on GET).
   4. Threading: ThreadingHTTPServer (original is single-threaded).
-  5. CLI: --port N --upstream URL --capture DIR [--ambient-key KEY]
+  5. CLI: --port N --upstream URL --capture DIR [--raw-sse]
+     [--max-forwarded-posts N] [--ambient-key KEY]
      (defaults: 9098, the llm-proxy, no capture). The ambient key is
      taken from --ambient-key when non-empty, else the WIRETAP_AMBIENT_KEY
      env (set by the red-team runner), else CODEX_LLM_PROXY_KEY. It is
@@ -140,9 +142,11 @@ class FrameSplitter:
 class Capture:
     """Per-request capture writer. Thread-safe via a lock + counter."""
 
-    def __init__(self, capture_dir: str, ambient_key: str):
+    def __init__(self, capture_dir: str, ambient_key: str,
+                 raw_sse: bool = False):
         self.dir = capture_dir
         self.ambient_key = ambient_key
+        self.raw_sse = raw_sse
         self._lock = threading.Lock()
         self._counter = 0
         os.makedirs(capture_dir, mode=0o700, exist_ok=True)
@@ -191,10 +195,50 @@ class Capture:
         with open(path_, "a") as fh:
             fh.write(json.dumps({"frame_index": index, "frame": text}) + "\n")
 
+    def _raw_path(self, n: int) -> str:
+        return os.path.join(self.dir, "resp-%03d.raw" % n)
+
+    def begin_raw(self, n: int) -> int:
+        # O_EXCL avoids following a pre-existing symlink or reopening a file
+        # with broader permissions. The requested mode is private at creation.
+        return os.open(self._raw_path(n),
+                       os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+
+    def append_raw(self, fd: int, data: bytes) -> None:
+        pending = memoryview(data)
+        while pending:
+            written = os.write(fd, pending)
+            if written <= 0:
+                raise OSError("raw capture write made no progress")
+            pending = pending[written:]
+
+    def mark_raw_partial(self, n: int) -> None:
+        fd = os.open(self._raw_path(n) + ".partial",
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+
     def _atomic(self, path_: str, text: str) -> None:
         with open(path_, "w") as fh:
             fh.write(text + "\n")
         os.chmod(path_, 0o600)
+
+
+class ForwardedPostLimit:
+    """Shared admission counter for POST forwarding attempts."""
+
+    def __init__(self, maximum: int):
+        if maximum < 0:
+            raise ValueError("max forwarded POSTs must be nonnegative")
+        self.maximum = maximum
+        self.count = 0
+        self.lock = threading.Lock()
+
+    def reserve(self) -> bool:
+        with self.lock:
+            if self.count >= self.maximum:
+                return False
+            self.count += 1
+            return True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -204,6 +248,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     # Set by serve() before the server starts.
     capture: "Capture | None" = None
+    post_limit: "ForwardedPostLimit | None" = None
     ambient_key: str = ""
     upstream: str = ""
 
@@ -231,6 +276,13 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path
         body = self._read_body()
         self._stdout_line(method, path, body)
+
+        if (method == "POST" and self.post_limit is not None
+                and not self.post_limit.reserve()):
+            self.send_response(429)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
 
         n = 0
         req_path = None
@@ -262,22 +314,41 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header(k, v)
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                while True:
-                    chunk = r.read(65536)
-                    if not chunk:
-                        break
-                    self.wfile.write(b"%x\r\n" % len(chunk) + chunk + b"\r\n")
+                raw_fd = None
+                if (self.capture is not None and self.capture.raw_sse
+                        and r.headers.get_content_type() == "text/event-stream"):
+                    raw_fd = self.capture.begin_raw(n)
+                complete = False
+                try:
+                    while True:
+                        chunk = r.read1(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(b"%x\r\n" % len(chunk) + chunk + b"\r\n")
+                        if raw_fd is not None:
+                            self.capture.append_raw(raw_fd, chunk)
+                        if self.capture is not None and resp_path:
+                            for frame in splitter.feed(chunk):
+                                self.capture.append_frame(resp_path, frame,
+                                                          frame_index)
+                                frame_index += 1
+                    self.wfile.write(b"0\r\n\r\n")
                     if self.capture is not None and resp_path:
-                        for frame in splitter.feed(chunk):
+                        for frame in splitter.flush():
                             self.capture.append_frame(resp_path, frame,
                                                       frame_index)
                             frame_index += 1
-                self.wfile.write(b"0\r\n\r\n")
-                if self.capture is not None and resp_path:
-                    for frame in splitter.flush():
-                        self.capture.append_frame(resp_path, frame,
-                                                  frame_index)
-                        frame_index += 1
+                    complete = True
+                finally:
+                    if raw_fd is not None:
+                        try:
+                            os.close(raw_fd)
+                        except OSError:
+                            complete = False
+                            raise
+                        finally:
+                            if not complete:
+                                self.capture.mark_raw_partial(n)
         except urllib.error.HTTPError as e:
             data = e.read()
             if self.capture is not None:
@@ -339,10 +410,13 @@ def _free_port() -> int:
 
 
 def serve(port: int, upstream: str, capture_dir: str | None,
-          ambient_key: str) -> None:
+          ambient_key: str, raw_sse: bool = False,
+          max_forwarded_posts: int | None = None) -> None:
     Handler.upstream = upstream.rstrip("/")
     Handler.ambient_key = ambient_key
-    Handler.capture = (Capture(capture_dir, ambient_key)
+    Handler.post_limit = (ForwardedPostLimit(max_forwarded_posts)
+                          if max_forwarded_posts is not None else None)
+    Handler.capture = (Capture(capture_dir, ambient_key, raw_sse=raw_sse)
                        if capture_dir else None)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     httpd.daemon_threads = True
@@ -586,6 +660,12 @@ def main(argv=None) -> int:
                    default="https://llm-proxy-api.ai.eng.netapp.com")
     p.add_argument("--capture", default=None,
                    help="capture dir (per-request req/resp evidence)")
+    p.add_argument("--raw-sse", action="store_true",
+                   help="tee upstream SSE entity bytes to private resp-NNN.raw; "
+                        "requires --capture")
+    p.add_argument("--max-forwarded-posts", type=int, default=None,
+                   metavar="N", help="forward at most N POST attempts; "
+                                     "default unlimited")
     p.add_argument("--ambient-key", default=None,
                    help="override ambient key for masking (tests); "
                         "empty/omitted reads WIRETAP_AMBIENT_KEY, then "
@@ -594,6 +674,10 @@ def main(argv=None) -> int:
     a = p.parse_args(argv)
     if a.selftest:
         return _selftest()
+    if a.raw_sse and not a.capture:
+        p.error("--raw-sse requires --capture")
+    if a.max_forwarded_posts is not None and a.max_forwarded_posts < 0:
+        p.error("--max-forwarded-posts must be nonnegative")
     # HYG-1: the ambient key travels via env, never argv (ps-visible).
     # Precedence: explicit --ambient-key value (back-compat alias), then
     # WIRETAP_AMBIENT_KEY (set by the red-team runner), then the
@@ -602,7 +686,8 @@ def main(argv=None) -> int:
     ambient = (a.ambient_key
                or os.environ.get("WIRETAP_AMBIENT_KEY", "")
                or os.environ.get("CODEX_LLM_PROXY_KEY", ""))
-    serve(a.port, a.upstream, a.capture, ambient)
+    serve(a.port, a.upstream, a.capture, ambient, raw_sse=a.raw_sse,
+          max_forwarded_posts=a.max_forwarded_posts)
     return 0
 
 

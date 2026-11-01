@@ -45,6 +45,8 @@
   "wire": [
    {
     "kind": "recon",
+    "file": "req-*.json",
+    "field": "body.model",
     "label": "PROBE P2 EVIDENCE \u2014 read the captures: for each req-NNN.json (model=gpt-5.6-sol, path /v1/responses) record: (1) number of reasoning items with encrypted_content (rides leaving), (2) resp-NNN.jsonl status (200 vs 503 + VERBATIM message), (3) whether a retry request follows the 503 and WHAT CHANGED in it (whole reasoning items dropped = coarse .58 strip; field-only drop = surgical). The baseline table in the findings doc is filled from these."
    }
   ]

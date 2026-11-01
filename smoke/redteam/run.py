@@ -828,7 +828,8 @@ class AcpSession:
     def __init__(self, bin_path, home, cwd, model, log_path,
                  timeout_s=180, init_timeout_s=None,
                  set_model_timeout_s=None, extra_unset=None,
-                 load_first_sid=None):
+                 load_first_sid=None, env=None):
+        self.env = dict(env) if env is not None else None
         self.bin_path = bin_path
         self.home = home
         self.cwd = cwd
@@ -874,7 +875,7 @@ class AcpSession:
         self._utf8 = codecs.getincrementaldecoder("utf-8")()
 
     def start(self):
-        env = build_env(self.home, self.extra_unset)
+        env = self.env if self.env is not None else build_env(self.home, self.extra_unset)
         self.proc = subprocess.Popen(
             [self.bin_path, "agent", "stdio"], cwd=self.cwd, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -2174,6 +2175,13 @@ def _recon_file_val(spec, paths):
 def check_wire(spec, capture_dir):
     kind = spec.get("kind")
     base = capture_dir if capture_dir else os.devnull
+    if kind == "reasoning_replay":
+        import reasoning_replay
+        ok, detail, cite = reasoning_replay.evaluate(
+            spec, base, _resolve_glob, _wire_filter)
+        return AssertResult(spec, "wire.reasoning_replay", ok, detail,
+                            "wire: numeric request/completed-response lineage",
+                            cite=cite)
     if kind == "field":
         paths = _resolve_glob(spec.get("file", ""), base)
         paths = _wire_filter(paths, spec.get("where"))
@@ -2808,7 +2816,7 @@ CAPS = {"full_blocked_max_no_ruling": 3,
 # file; recon asserts are never scored. apex-2o6: the response-side
 # kinds (resp_body/resp_stream) cite their paired resp-NNN.jsonl.
 AUDITED_WIRE_KINDS = ("field", "grep", "resp_status", "size_lt",
-                      "resp_body", "resp_stream")
+                      "resp_body", "resp_stream", "reasoning_replay")
 
 
 def _req_n_from_name(path):
@@ -2864,7 +2872,12 @@ def audit_wire_evidence(case, results, wire_dir=None):
         spec = r.spec or {}
         if spec.get("kind") not in AUDITED_WIRE_KINDS:
             continue
-        if r.ok and not _cite_resolvable(r.cite, wire_dir):
+        resolved = _cite_resolvable(r.cite, wire_dir)
+        if spec.get("kind") == "reasoning_replay":
+            files = (r.cite or {}).get("files") or []
+            resolved = resolved and bool(files) and all(
+                _cite_resolvable({"file": path}, wire_dir) for path in files)
+        if r.ok and not resolved:
             out.append("NO-EVIDENCE: scored wire PASS %r (kind %s) "
                        "has no resolvable citation"
                        % (spec.get("id"), spec.get("kind")))
@@ -4318,7 +4331,7 @@ STEP_OPS = ("turn", "switch", "switch_model", "kill", "compact", "idle",
 NDJSON_OPS = ("count", "absent", "present", "eq", "ne", "text_contains",
               "tools_absent", "tools_present", "recon")
 WIRE_KINDS = ("field", "grep", "size_lt", "count", "resp_status", "recon",
-              "golden", "resp_body", "resp_stream")
+              "golden", "resp_body", "resp_stream", "reasoning_replay")
 # apex-2o6: the step ops that fire a LIVE model call — a proxy:none
 # (L1 key-free) case may carry none of these (validate_case_file
 # gate + _run_case_once runtime backstop).
@@ -4775,10 +4788,22 @@ def _validate_new_case(name, case, engine=None):
                 "%s: mcp_calls case needs exactly one harness-class "
                 "vacuous_if premise (got %d)" % (name, harness_count))
     elif harness_count:
-        errs.append(
-            "%s: harness-class premise without mcp_calls (plain tools "
-            "are always offered by the binary; no harness premise "
-            "exists)" % name)
+        # Non-MCP rig premises must bind to scored wire evidence.
+        scored_wire_ids = {
+            spec["id"] for spec in ab.get("wire") or []
+            if isinstance(spec, dict) and isinstance(spec.get("id"), str)
+            and spec.get("kind") in WIRE_KINDS
+            and spec.get("kind") != "recon" and spec.get("op") != "recon"}
+        for j, entry in enumerate(vif):
+            if not isinstance(entry, dict) or entry.get("class") != "harness":
+                continue
+            pin = entry.get("pin")
+            if not (isinstance(pin, str) and pin in scored_wire_ids
+                    and scoring.get("require_wire_evidence") is True):
+                errs.append(
+                    "%s: scoring.vacuous_if[%d] harness-class premise "
+                    "without mcp_calls must name a scored wire assert "
+                    "and require_wire_evidence=true" % (name, j))
     env = case.get("env") or {}
     pvs = env.get("provider_vars_unset")
     if pvs is not None:
@@ -4928,6 +4953,10 @@ def validate_case_file(path, engine=None):
                                     if b in spec):
                     errs.append("%s: count min/max must be ints" % ctx)
             elif block == "wire":
+                if kind == "reasoning_replay":
+                    import reasoning_replay
+                    errs.extend("%s: %s" % (ctx, error)
+                                for error in reasoning_replay.validate_spec(spec))
                 if kind == "field" and "path" not in spec:
                     errs.append("%s: field needs 'path'" % ctx)
                 if kind == "grep" \
@@ -5670,7 +5699,10 @@ def main(argv=None):
         if HERE not in sys.path:
             sys.path.insert(0, HERE)
         import test_run
-        suite = unittest.defaultTestLoader.loadTestsFromModule(test_run)
+        import test_reasoning_replay
+        suite = unittest.TestSuite(
+            unittest.defaultTestLoader.loadTestsFromModule(module)
+            for module in (test_run, test_reasoning_replay))
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         log("selftest: %s (%d run, %d failures, %d errors)"
             % ("PASS" if result.wasSuccessful() else "FAIL",

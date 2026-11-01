@@ -1,0 +1,254 @@
+{
+  "schema_version": 1,
+  "id": "RT-MSW-A",
+  "bead": "apex-ayl.126.7",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "title": "MODEL-SWITCH-SIGHT-1 SW-A (apex-ayl.126.7) — responses->messages IDLE switch with history: qwen3.8-27b (3 turns, reasoning on) -> ACP session/set_model claude-sonnet-5 (idle) -> 1 claude turn. CORRECTED expectation at d5f045b (first-hand; supersedes the SDD compact-EXPECTED premise): the claude-sonnet-5 catalog row is family-unset (no model_family in the live config; fill_from_catalog_inference deliberately never fills Anthropic rows) so is_family_switch is false and the family-switch compact gate never fires for qwen->claude — NO compaction; the XW-PROJECT-1 switch-time projection DOES fire (any model-id change, idle) at the Vertex boundary: foreign qwen reasoning items are T1 xw_-rekeyed + encrypted_content-stripped IN THE STORE (projection.rs), and the /messages build's R8 model-identity suppression (messages.rs: the reasoning's owning assistant model_id != the request slug) drops the foreign thinking blocks pre-send, so the first claude request = verbatim user+assistant TEXT ride-along with zero thinking blocks, zero xw_ ids, zero encrypted_content; the post-switch claude turn mints its OWN signed thinking (the switch-synced effort rides the thinking config). Pins: compaction artifacts absent; switch_projection_persisted telemetry present; store xw_ rekey + new claude signature present; first claude request text ride-along + all foreign-thinking absent + 200; claude response carries a thinking content block (signed thinking resumes); store=false on the qwen wire; no acp_error; exactly 4 turns.",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "wire": "responses",
+  "config_patch": {
+    "model/qwen3.8-27b/reasoning_effort": "medium",
+    "model/qwen3.8-27b/strict_responses_input": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-MSWA-Q1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-MSWA-Q2"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-MSWA-Q3"
+    },
+    {
+      "op": "switch",
+      "model": "claude-sonnet-5",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-MSWA-C1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 10,
+  "assert": {
+    "ndjson": [
+      {
+        "id": "no_acp_error",
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TERMINAL HEALTH: the idle cross-wire switch and the post-switch claude turn surface no ACP error."
+      },
+      {
+        "id": "switch_landed",
+        "op": "present",
+        "event": "acp_set_model",
+        "label": "SWITCH LANDED: the ACP session/set_model round-trip completed (the runner synthesizes acp_set_model on a successful response; a refusal would have surfaced acp_error + FAIL)."
+      },
+      {
+        "id": "four_turns",
+        "op": "count",
+        "event": "acp_end",
+        "min": 4,
+        "max": 4,
+        "label": "TURN CENSUS: exactly four completed turns (3 qwen + 1 claude) — no dropped turn, no retry-terminated extra turn."
+      }
+    ],
+    "artifact": [
+      {
+        "id": "no_compact_request",
+        "file": "compaction_requests/*.json",
+        "op": "count",
+        "max": 0,
+        "absent_ok": true,
+        "label": "NO COMPACT (corrected expectation): no compaction request artifact — the family-switch compact gate requires is_family_switch (model_switch.rs:155-174) and the claude-sonnet-5 row is family-unset, so the gate never fires for qwen->claude; a presence = a compact ran -> the ride-along pins below are vacuous and the catalog/gate changed -> investigate."
+      },
+      {
+        "id": "no_compact_checkpoint",
+        "file": "compaction_checkpoints/*.json",
+        "op": "count",
+        "max": 0,
+        "absent_ok": true,
+        "label": "NO COMPACT (checkpoint twin): no compaction checkpoint artifact for the same reason; a presence = the history was replaced by a summary."
+      },
+      {
+        "id": "proj_telemetry",
+        "file": "unified.jsonl",
+        "op": "grep",
+        "grep": "switch_projection_persisted",
+        "min_count": 1,
+        "label": "SWITCH-TIME PROJECTION RAN (XW-PROJECT-1): the shell emitted shell.turn.switch_projection_persisted for the idle model-id change — the cross-wire seam is projection-owned, not compact-owned (switch_projection.rs)."
+      },
+      {
+        "id": "store_xw_rekey",
+        "file": "chat_history.jsonl",
+        "op": "grep",
+        "grep": "\"id\":\"xw_",
+        "min_count": 1,
+        "label": "T1 STORE RE-KEY: the persisted history carries xw_-rekeyed reasoning ids — the Vertex-boundary switch projection re-keyed the foreign qwen reasoning items at switch time (projection.rs T1; the re-key is a STORE fact, it does not ride the /messages wire)."
+      },
+      {
+        "id": "store_claude_sig",
+        "file": "chat_history.jsonl",
+        "op": "grep",
+        "grep": "encrypted_content",
+        "min_count": 1,
+        "label": "OWN SIGNED THINKING MINTED: the post-switch claude turn persisted its OWN signed thinking (encrypted_content present in the store) — the thinking SURFACE continues by minting its own signatures, never by riding foreign ones."
+      }
+    ],
+    "wire": [
+      {
+        "id": "qwen_control",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\"type\": \"reasoning\"",
+        "label": "CONTROL (anti-vacuous pin): a pre-switch qwen request carried a reasoning INPUT item — real foreign reasoning existed to cross the switch. Without this the ride-along/suppression pins are vacuous."
+      },
+      {
+        "id": "qwen_store_false",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\"store\": false",
+        "label": "STORE=FALSE INVARIANT: the qwen responses wire ran store=false (the hermetic-home dogfood contract; reasoning items are NOT persisted upstream — the Azure 'items are not persisted when store is false' class)."
+      },
+      {
+        "id": "claude_count",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "min": 1,
+        "max": 2,
+        "label": "NO RETRY STORM: exactly one claude request expected (200 direct on the portable transcript); 2 = one tolerated reactive retry; >=3 = storm -> defect."
+      },
+      {
+        "id": "claude_ride_user",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "last": 0,
+        "grep": "RT-MSWA-Q1",
+        "label": "USER TEXT RIDE-ALONG: the post-switch claude request replays the pre-switch user prompt verbatim — the portable text transcript survives the cross-wire switch."
+      },
+      {
+        "id": "claude_ride_assist",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "last": 0,
+        "grep": "RT-MSWA-Q3",
+        "label": "ASSISTANT TEXT RIDE-ALONG: the pre-switch qwen assistant reply text rides verbatim into the claude request."
+      },
+      {
+        "id": "claude_no_thinking",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "last": 0,
+        "grep": "\"type\": \"thinking\"",
+        "absent": true,
+        "label": "R8 SUPPRESSION (the messages-side net): the first claude request carries NO foreign thinking block — R8 model-identity suppression (messages.rs: the owning qwen assistant's model_id != the claude request slug) drops the foreign reasoning pre-send; a presence = the signed-thinking invariant is exposed on the wire."
+      },
+      {
+        "id": "claude_no_xw",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "last": 0,
+        "grep": "xw_",
+        "absent": true,
+        "label": "NO XW_ RIDES ON /messages: the T1 xw_ re-key lives in the STORE only; the /messages wire has no reasoning-item site, so re-keyed ids must not leak onto the wire."
+      },
+      {
+        "id": "claude_no_enc",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "last": 0,
+        "grep": "encrypted_content",
+        "absent": true,
+        "label": "NO FOREIGN CIPHERTEXT: zero encrypted_content on the first claude request (the key substring covers both JSON spacing variants) — foreign signatures never ride."
+      },
+      {
+        "id": "claude_200",
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the final claude request reached 200 — the cross-wire contract holds on the portable transcript."
+      },
+      {
+        "id": "claude_resp_thinking",
+        "kind": "grep",
+        "file": "resp-*.jsonl",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "last": 0,
+        "grep": "\\\\\"type\\\\\":\\s*\\\\\"thinking\\\\\"",
+        "regex": true,
+        "label": "SIGNED THINKING RESUMES: the claude post-switch response stream carries a thinking CONTENT BLOCK (regex on the JSON-escaped SSE frame text; T21 hand-escape precedent) — the thinking surface continues on the claude side. The store-side twin is store_claude_sig."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "label": "SW-A VERDICT RECORD: last-captured wire response status line, verbatim (machine-readable). recon op — always records, never fails.",
+        "base": "wire",
+        "file": "resp-*.jsonl",
+        "nth": 0,
+        "grep": "\"status\":"
+      }
+    ]
+  }
+}

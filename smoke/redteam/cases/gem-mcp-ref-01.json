@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "id": "GEM-MCP-REF-01",
+  "title": "Gemini (gemini-3.8-flash-cyber, LiteLLM proxy, RESPONSES wire): MCP tool discovery whose result carries a JSON-Schema $ref. One headless turn: search_tool for the local refprobe MCP fixture (fixtures/refprobe_mcp.py), whose cluster_probe inputSchema uses $defs + \"$ref\": \"#/$defs/cluster_ref\" (same shape as the ontap-cluster server's ssh_execute), then use_tool on it. Reproduces the operator-reported Vertex 400 from SCS session 01a179e9-392e-7093-a395-21692e2e9399: 'The referenced name `#/$defs/cluster_ref` in function_response.response does not match to a display_name in the function_response.parts.' Hypothesis under test: the proxy maps the search_tool function_call_output (JSON text) into Gemini function_response.response, and Vertex reads any {\"$ref\": ...} there as a pointer to a function-response part. Pre-registered red: FAIL (the 400) is the expected evidence before GEM-REF-1; after it, PASS requires the fixture payload in the reply, the use_tool call, the result on the wire and no escaped $ref in any row request (read the verdict from report.md).",
+  "suite": "mcp-tool",
+  "tier": "slim",
+  "driver": "headless",
+  "model": "gemini-3.8-flash-cyber",
+  "wire": "responses",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "config_patch": {
+    "mcp_servers/refprobe/command": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/fixtures/refprobe_mcp.py"
+  },
+  "output_format": "streaming-json",
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "wirecap": true,
+  "expected_red": {
+    "id": "GEM-MCP-REF-400"
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Use the search_tool tool with the query 'cluster probe' to find the refprobe MCP tool, then use the use_tool tool to call refprobe__cluster_probe with arguments cluster 'vsim' and command 'version'. After the tool result is in hand, reply with exactly two lines: line 1: GEM-REF-DONE; line 2: the exact text the tool returned."
+    }
+  ],
+  "assert": {
+    "ndjson": [
+      {
+        "id": "done",
+        "op": "text_contains",
+        "value": "GEM-REF-DONE",
+        "label": "TURN DELIVERED: the reply carries the DONE nonce (the turn survived discovery and the tool call). The nonce is in the prompt, so it only shows the turn finished; payload proves the round trip."
+      },
+      {
+        "id": "payload",
+        "op": "text_contains",
+        "value": "probe ok: cluster=vsim command=version",
+        "label": "MCP ROUND-TRIP PAYLOAD: the reply quotes the fixture's result text, which is not in the prompt; it can only come from a real use_tool call to refprobe__cluster_probe after a successful discovery turn."
+      }
+    ],
+    "wire": [
+      {
+        "id": "disc_on_wire",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gemini-3.8-flash-cyber"
+        },
+        "any": true,
+        "grep": "Inline creds {host,username,password",
+        "label": "CONTROL (premise): the refprobe discovery result reached the row wire. The cluster_ref definition text survives expansion (inside $defs before the fix, inlined at properties.cluster after it), so this pin holds before and after. 0 hits = discovery not exercised (VACUOUS)."
+      },
+      {
+        "id": "no_ref_in_output",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gemini-3.8-flash-cyber"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\\\"$ref\\\"",
+        "label": "FIX PIN: no request to the row carries an escaped \\\"$ref\\\" key, i.e. no tool output embedded as a JSON string carries a schema reference (the form Vertex rejects). Tool declarations in tools[] are unescaped and are not matched. Fails before GEM-REF-1, must pass after."
+      },
+      {
+        "id": "result_on_wire",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gemini-3.8-flash-cyber"
+        },
+        "any": true,
+        "grep": "probe ok: cluster=vsim command=version",
+        "label": "ROUND TRIP ON THE WIRE (call proof): the fixture's result text was sent back to the row as a function_call_output, which only happens after a real use_tool call to refprobe__cluster_probe executed. (An escaped tool-name grep cannot prove the call: the discovery output already carries that name.)"
+      }
+    ]
+  },
+  "timeouts": {
+    "turn_s": 300,
+    "mcp_startup_s": 30
+  },
+  "retry": {
+    "on_status": [
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30,
+    "recheck_models": false
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "disc_on_wire",
+        "class": "model",
+        "note": "no request carried the refprobe discovery result: the model never ran search_tool for it, so the case says nothing about the $ref defect."
+      }
+    ]
+  },
+  "env": {
+    "store": false,
+    "home": "hermetic",
+    "launcher": "runner"
+  }
+}

@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "id": "RT-MSW-C",
+  "bead": "apex-ayl.126.7",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "title": "MODEL-SWITCH-SIGHT-1 SW-C (apex-ayl.126.7) — messages->responses IDLE switch: claude-sonnet-5 (2 turns, signed thinking minted on the second turn per the rt-46c1 first-request-no-thinking pattern) -> ACP session/set_model qwen3.8-27b (idle) -> 1 qwen turn. Corrected expectation at d5f045b (first-hand): NO compaction by TWO independent mechanisms concurring — (1) the claude-sonnet-5 row is family-unset (no model_family in the live config; fill_from_catalog_inference never fills Anthropic rows) so is_family_switch is false and the compact gate never fires for claude->qwen; (2) even if it were a family switch, the Responses target skips the preemptive compact (family_switch_compact_required(Responses)=false, apex-ayl.123). The XW-PROJECT-1 switch-time projection DOES fire (any model-id change, idle) at the VLLenient boundary: the foreign claude reasoning items are T1 xw_-rekeyed + encrypted_content-stripped + summary/content KEPT in the store (projection.rs T1), and the lenient qwen row rides the re-keyed store ids verbatim (the rt-xreplay1 lenient-row lesson: the lenient vLLM-shim row accepts xw_ ids — no Azure id-shape 400, no reactive strip needed). Pins: compaction artifacts absent; switch_projection_persisted telemetry present; store xw_ rekey present + zero encrypted_content (T1 strip, final store); first qwen request reasoning items present + xw_ ids present + zero encrypted_content + claude text ride-along + store=false + 200; the second claude request carried a thinking config (anti-vacuous: real signed reasoning pre-existed); no acp_error; exactly 3 turns.",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+  "wire": "messages",
+  "config_patch": {
+    "model/claude-sonnet-5/reasoning_effort": "medium",
+    "model/qwen3.8-27b/reasoning_effort": "medium",
+    "model/qwen3.8-27b/strict_responses_input": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-MSWC-C1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-MSWC-C2"
+    },
+    {
+      "op": "switch",
+      "model": "qwen3.8-27b",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-MSWC-Q1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 10,
+  "assert": {
+    "ndjson": [
+      {
+        "id": "no_acp_error",
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TERMINAL HEALTH: the idle cross-wire switch and the post-switch qwen turn surface no ACP error."
+      },
+      {
+        "id": "switch_landed",
+        "op": "present",
+        "event": "acp_set_model",
+        "label": "SWITCH LANDED: the ACP session/set_model round-trip completed."
+      },
+      {
+        "id": "three_turns",
+        "op": "count",
+        "event": "acp_end",
+        "min": 3,
+        "max": 3,
+        "label": "TURN CENSUS: exactly three completed turns (2 claude + 1 qwen)."
+      }
+    ],
+    "artifact": [
+      {
+        "id": "no_compact_request",
+        "file": "compaction_requests/*.json",
+        "op": "count",
+        "max": 0,
+        "absent_ok": true,
+        "label": "NO COMPACT (Responses-skip direction): no compaction request artifact — the claude row is family-unset so the gate never fires, and the Responses target would skip the preemptive compact anyway (apex-ayl.123); the seam is projection-owned. A presence = a compact ran -> the ride pins below are vacuous -> investigate."
+      },
+      {
+        "id": "no_compact_checkpoint",
+        "file": "compaction_checkpoints/*.json",
+        "op": "count",
+        "max": 0,
+        "absent_ok": true,
+        "label": "NO COMPACT (checkpoint twin): no compaction checkpoint artifact for the same reason."
+      },
+      {
+        "id": "proj_telemetry",
+        "file": "unified.jsonl",
+        "op": "grep",
+        "grep": "switch_projection_persisted",
+        "min_count": 1,
+        "label": "SWITCH-TIME PROJECTION RAN (XW-PROJECT-1): shell.turn.switch_projection_persisted emitted for the idle model-id change (VLLenient target)."
+      },
+      {
+        "id": "store_xw_rekey",
+        "file": "chat_history.jsonl",
+        "op": "grep",
+        "grep": "\"id\":\"xw_",
+        "min_count": 1,
+        "label": "T1 STORE RE-KEY: the persisted history carries xw_-rekeyed reasoning ids — the VLLenient-boundary projection re-keyed the foreign claude (signed) reasoning items at switch time."
+      },
+      {
+        "id": "store_no_enc",
+        "file": "chat_history.jsonl",
+        "op": "grep",
+        "grep": "encrypted_content",
+        "max_count": 0,
+        "label": "T1 CIPHERTEXT STRIP (store): zero encrypted_content in the FINAL store — the T1 strip removed the foreign claude signatures at switch time and the post-switch qwen reasoning mints no ciphertext (the key substring covers both JSON spacing variants). A presence = foreign ciphertext survived projection -> the signed-thinking invariant is broken."
+      }
+    ],
+    "wire": [
+      {
+        "id": "claude_control_thinkcfg",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "any": true,
+        "grep": "\"thinking\"",
+        "label": "CONTROL (anti-vacuous pin): a pre-switch claude request carried a thinking CONFIG (the second claude turn; the first request mints no thinking config per the rt-46c1 pattern) — real signed reasoning existed pre-switch to be (non-)replayed. Without this the T1 pins are vacuous."
+      },
+      {
+        "id": "claude_count",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "min": 2,
+        "max": 4,
+        "label": "PRE-SWITCH CENSUS: two claude turns expected (2 requests); the band tolerates one reactive retry per turn — a count above 4 = storm -> defect."
+      },
+      {
+        "id": "qwen_count",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 1,
+        "max": 2,
+        "label": "NO RETRY STORM: exactly one post-switch qwen request expected (the lenient row accepts the xw_ rides — 200 direct, zero reactive-strip involvement); 2 = one tolerated retry; >=3 = storm -> defect."
+      },
+      {
+        "id": "qwen_reasoning_rides",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "last": 0,
+        "grep": "\"type\": \"reasoning\"",
+        "label": "FOREIGN REASONING RIDES: the first qwen request carries reasoning INPUT items — the Responses-skip contract: the preemptive compact did NOT strip the foreign history; the ride is the seam the projection + send-time nets own (apex-ayl.123)."
+      },
+      {
+        "id": "qwen_xw_rides",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "last": 0,
+        "grep": "\"id\": \"xw_",
+        "label": "T1 RE-KEYED IDS RIDE: the first qwen request carries the switch-time xw_-rekeyed reasoning ids (the lenient row rides the re-keyed store ids verbatim — the documented lenient-row ride, not the strict-row 400 class)."
+      },
+      {
+        "id": "qwen_no_enc",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "last": 0,
+        "grep": "encrypted_content",
+        "absent": true,
+        "label": "ZERO FOREIGN CIPHERTEXT (wire): no encrypted_content on the first qwen request (byte-verified; the key substring covers both JSON spacing variants) — the T1 strip removed the claude signatures pre-ride; a presence = foreign ciphertext crossed the wire."
+      },
+      {
+        "id": "qwen_ride_text",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "last": 0,
+        "grep": "RT-MSWC-C2",
+        "label": "ASSISTANT TEXT RIDE-ALONG: the pre-switch claude assistant reply text rides verbatim into the first qwen request — the portable text transcript survives the cross-wire switch."
+      },
+      {
+        "id": "qwen_store_false",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "last": 0,
+        "grep": "\"store\": false",
+        "label": "STORE=FALSE INVARIANT: the post-switch qwen responses request ran store=false (the hermetic-home dogfood contract)."
+      },
+      {
+        "id": "qwen_200",
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the final qwen request reached 200 — the family-switch contract holds on the projected portable transcript (no reactive-strip involvement expected on the lenient row)."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "label": "SW-C VERDICT RECORD: last-captured wire response status line, verbatim (machine-readable). recon op — always records, never fails.",
+        "base": "wire",
+        "file": "resp-*.jsonl",
+        "nth": 0,
+        "grep": "\"status\":"
+      }
+    ]
+  }
+}
