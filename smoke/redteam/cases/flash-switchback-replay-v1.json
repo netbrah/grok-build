@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "FLASH-SWITCHBACK-REPLAY-V1",
+  "bead": "apex-ayl.175",
+  "title": "2026-10-13 v1: two Flash turns, two gpt-6-astra destination turns, then two returned Flash turns, using only idle ACP switches. Every segment must mint fresh completed reasoning and replay it on a later same-model request. Earlier proven Flash ciphertext may be present or absent on return; newly minted return-segment state must recur. Ownership here is exact model/session/capture lineage, not deployment-affinity authorization. Foreign ciphertext is rejected without banning legitimate destination-native ciphertext. Cross-boundary plaintext semantics and active-turn switching remain unverified. Offline validation is not a live pass.",
+  "suite": "cross-wire",
+  "tier": "full",
+  "driver": "acp",
+  "model": "qwen3.8-flash-next",
+  "wire": "responses",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "wirecap": true,
+  "disabled": true,
+  "reason": "Opt-in live arm, disabled until an explicit run manifest pins sealed binary/config/case hashes, request and returned model identities, route/deployment affinity, private captures, forwarded POST and output-token ceilings, and wall timeout. est_calls is only an estimate. No expected-red credit.",
+  "unblocks_at": "Explicit operator budget and identity/affinity pins; apex-ayl.169, apex-ayl.173, and apex-ayl.170 strict acceptance/integration with sealed-binary evidence. Response aliases unsupported unless identical to the pinned request model.",
+  "watchdog_s": 300,
+  "est_calls": 12,
+  "env": {"store": false},
+  "config_patch": {"models/default_reasoning_effort": "medium"},
+  "steps": [
+    {"op": "turn", "prompt": "Without tools, find the remainder of 7 to the power 13 modulo 97 by repeated squaring. Give a short calculation."},
+    {"op": "turn", "prompt": "Without tools, multiply the previous remainder by 19 and reduce modulo 97. Explain briefly."},
+    {"op": "switch", "model": "gpt-6-astra", "via": "acp"},
+    {"op": "turn", "prompt": "Without tools, independently work out the remainder of 11 to the power 9 modulo 101 using repeated squaring. Give a short calculation."},
+    {"op": "turn", "prompt": "Without tools, multiply that last remainder by 23 and reduce modulo 101. Give a short calculation."},
+    {"op": "switch", "model": "qwen3.8-flash-next", "via": "acp"},
+    {"op": "turn", "prompt": "Without tools, independently find the remainder of 5 to the power 11 modulo 89 using repeated squaring. Give a short calculation."},
+    {"op": "turn", "prompt": "Without tools, multiply that last remainder by 31 and reduce modulo 89. Give the result and finish with FLASH-SWITCHBACK-V1-DONE."}
+  ],
+  "assert": {
+    "ndjson": [
+      {"id": "no_acp_error", "op": "absent", "event": "acp_error"},
+      {"id": "six_turns", "op": "count", "event": "acp_end", "min": 6, "max": 6},
+      {"id": "two_switches", "op": "count", "event": "acp_set_model", "min": 2, "max": 2},
+      {"id": "done", "op": "text_contains", "value": "FLASH-SWITCHBACK-V1-DONE"}
+    ],
+    "wire": [
+      {
+        "id": "switchback_replay",
+        "kind": "reasoning_replay",
+        "file": "req-*.json",
+        "where": {"method": "POST", "path": "/v1/responses", "headers.x-grok-req-id": {"not_prefix": "xai-"}},
+        "replay": {
+          "version": 1,
+          "segments": [
+            {"model": "qwen3.8-flash-next", "min_requests": 2, "fields": ["encrypted_content", "summary", "content"], "require_content": true, "require_empty_summary": true},
+            {"model": "gpt-6-astra", "min_requests": 2},
+            {"model": "qwen3.8-flash-next", "min_requests": 2, "fields": ["encrypted_content", "summary", "content"], "require_content": true, "require_empty_summary": true}
+          ]
+        },
+        "label": "Six completed turns plus numeric paired source/next-request lineage on all three segments. Foreign source exclusion and new destination-owned recurrence are separate checks. No global no-cipher rule or invented resume operation."
+      }
+    ]
+  }
+}

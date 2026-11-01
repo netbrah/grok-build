@@ -334,11 +334,11 @@
     "scoring": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Scoring semantics block (the B-ii anti-vacuous rule). The runner evaluates premise (control) pins FIRST: a control pin that finds no expected artifact means the probe's premise did not hold. premise class model -> the row is VACUOUS (the probe is meaningless for this model; recorded with the 0-hit evidence, NOT PASS and NOT FAIL — this is the rt-xreplay2/B-ii behavior promoted from label to status). premise class harness -> the row is BLOCKED (the test rig failed: server never announced, binary missing; no model conclusion). A control pin that passes lets the scored pins decide PASS/FAIL. Both a control miss AND a scored fail -> FAIL (a real defect dominates a missing premise; the report lists both).",
+      "description": "Scoring semantics block (the B-ii anti-vacuous rule). The runner evaluates premise (control) pins FIRST: a control pin that finds no expected artifact means the probe's premise did not hold. premise class model -> the row is VACUOUS (the probe is meaningless for this model; recorded with the 0-hit evidence, NOT PASS and NOT FAIL — this is the rt-xreplay2/B-ii behavior promoted from label to status). premise class harness -> the row is BLOCKED (the test rig failed: server never announced, binary missing; no model conclusion). A control pin that passes lets the scored pins decide PASS/FAIL. A harness-class control miss dominates scored failures -> BLOCKED; otherwise a model-class control miss dominates scored failures -> VACUOUS. Scored pins decide PASS/FAIL only when all premises pass.",
       "properties": {
         "vacuous_if": {
           "type": "array",
-          "description": "Premise (control) pins: asserts whose 0-hit flips the row out of PASS/FAIL. Each names an assert id (an 'id' on a wire.grep/field/count or ndjson assert, or an mcp_calls/tool_calls entry id).",
+          "description": "Premise (control) pins: asserts whose 0-hit flips the row out of PASS/FAIL. Each names an assert id (an 'id' on a wire.grep/field/count or ndjson assert, or an mcp_calls/tool_calls entry id). MCP cases require exactly one harness-class premise. Without MCP, harness premises must each name a scored, non-recon assert.wire pin with a nonempty where and explicitly set scoring.require_wire_evidence=true; ndjson/artifact pins and call declarations do not qualify. Plain-tool call premises remain model-class.",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -425,6 +425,46 @@
     }
   },
   "definitions": {
+    "reasoning_replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "segments"],
+      "description": "Versioned Responses-only client replay contract. Numeric request/completed-response pairs are grouped into the exact ordered model segments. Each segment's first response must mint new nonempty reasoning ciphertext; subsequent requests retain all segment-native state by SHA equality. Foreign or unobserved ciphertext fails; prior proven destination-native ciphertext is permitted on return. Unknown protocols, aliases, ambiguous identities and incomplete captures fail closed. Include intent is distinct from item state; no backend or semantic-reuse inference is made.",
+      "properties": {
+        "version": {"type": "integer", "enum": [1]},
+        "require_tool_continuation": {
+          "type": "boolean",
+          "description": "Require a completed function/custom call followed by its call_id-matched output in the next same-model request, with reasoning lineage intact. This is not an extra user turn."
+        },
+        "segments": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["model", "min_requests"],
+            "properties": {
+              "model": {"type": "string", "pattern": "\\S"},
+              "min_requests": {"type": "integer", "minimum": 2},
+              "fields": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "enum": ["encrypted_content", "summary", "content"]},
+                "description": "Unique fields to preserve on native reasoning items. Must include encrypted_content (default and mandatory); optional summary/content use canonical field equality including missing vs present. No cross-boundary plaintext transformation is inferred."
+              },
+              "require_content": {
+                "type": "boolean",
+                "description": "Every minted ciphertext-bearing item must also carry nonempty reasoning_text content."
+              },
+              "require_empty_summary": {
+                "type": "boolean",
+                "description": "Every minted ciphertext-bearing item must carry summary:[] (not missing/null)."
+              }
+            }
+          }
+        }
+      }
+    },
     "mcp_call": {
       "type": "object",
       "additionalProperties": false,
@@ -792,12 +832,16 @@
             "recon",
             "golden",
             "resp_body",
-            "resp_stream"
+            "resp_stream",
+            "reasoning_replay"
           ]
         },
         "file": {
           "type": "string",
           "description": "Glob of capture files relative to <case>/wire/ (req-*.json for requests, resp-*.jsonl for responses)."
+        },
+        "replay": {
+          "$ref": "#/definitions/reasoning_replay"
         },
         "golden": {
           "type": "string",
@@ -988,6 +1032,17 @@
       "required": [
         "kind",
         "file"
+      ],
+      "anyOf": [
+        {
+          "properties": {
+            "kind": {"enum": ["field", "grep", "size_lt", "count", "resp_status", "recon", "golden", "resp_body", "resp_stream"]}
+          }
+        },
+        {
+          "properties": {"kind": {"enum": ["reasoning_replay"]}},
+          "required": ["replay"]
+        }
       ]
     }
   },

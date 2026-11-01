@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "id": "FLASH-NATIVE-REPLAY-V1",
+  "bead": "apex-ayl.175",
+  "title": "2026-10-13 v1: three native Flash headless turns, with a completed tool-call/result continuation on turn 1 and persisted-session resume on turns 2/3. Measure completed-response ciphertext to later input SHA equality, separately preserving summary/content fields and requiring the current empty-summary/content-bearing Flash shape. This proves client field recurrence, not server-side reasoning reuse or semantic correctness. Offline validation is not a live pass.",
+  "suite": "wire-shape",
+  "tier": "full",
+  "driver": "headless",
+  "model": "qwen3.8-flash-next",
+  "wire": "responses",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "disabled": true,
+  "reason": "Opt-in live arm, disabled until an explicit run manifest pins sealed binary/config/case hashes, request and returned model identities, route/deployment affinity, private captures, forwarded POST and output-token ceilings, and wall timeout. est_calls is only an estimate. No expected-red credit.",
+  "unblocks_at": "Explicit operator budget and identity/affinity pins; apex-ayl.169, apex-ayl.173, and apex-ayl.170 strict acceptance/integration with sealed-binary evidence. Response aliases unsupported unless identical to the pinned request model.",
+  "watchdog_s": 300,
+  "est_calls": 8,
+  "env": {"store": false},
+  "config_patch": {"models/default_reasoning_effort": "medium"},
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Calculate 17 times 19 by reasoning, then verify it by calling run_terminal_command once with command python3 -c 'print(17 * 19)'. This is write-free. Wait for the tool result, compare it to your calculation, and give the result. Do not use other tools or spawn agents."
+    },
+    {
+      "op": "turn",
+      "prompt": "Using the previous result, work out its remainder modulo 29 and explain the arithmetic briefly. Do not use tools."
+    },
+    {
+      "op": "turn",
+      "prompt": "Without tools, multiply that remainder by 13 and add 7. Give the result and finish with FLASH-NATIVE-V1-DONE."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {"id": "no_error", "op": "absent", "event": "error"},
+      {"id": "three_turns", "op": "count", "event": "end", "min": 3, "max": 3},
+      {"id": "done", "op": "text_contains", "value": "FLASH-NATIVE-V1-DONE"}
+    ],
+    "wire": [
+      {
+        "id": "native_replay",
+        "kind": "reasoning_replay",
+        "file": "req-*.json",
+        "where": {"method": "POST", "path": "/v1/responses", "headers.x-grok-req-id": {"not_prefix": "xai-"}},
+        "replay": {
+          "version": 1,
+          "require_tool_continuation": true,
+          "segments": [
+            {"model": "qwen3.8-flash-next", "min_requests": 4, "fields": ["encrypted_content", "summary", "content"], "require_content": true, "require_empty_summary": true}
+          ]
+        },
+        "label": "Require source completed reasoning, exact native replay including plaintext fields, and a call-id-paired post-tool request. Include intent alone and missing captures cannot pass. Three user turns are pinned separately from HTTP request count."
+      }
+    ]
+  }
+}

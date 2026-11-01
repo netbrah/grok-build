@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "id": "FLASH-ASTRA-TO-FLASH-REPLAY-V1",
+  "bead": "apex-ayl.175",
+  "title": "2026-10-13 v1: two gpt-6-astra turns, idle ACP switch to Flash, then two Flash turns. Require source response/next-request lineage, no replay of foreign Astra ciphertext at Flash, a newly minted first Flash response, and preservation of destination-native ciphertext plus summary/content in the second Flash request. A requested include option is not emitted or replayed state. Cross-boundary plaintext transformation and serving-side semantic reuse are unverified. This is not an active-turn switch test. Offline validation is not a live pass.",
+  "suite": "cross-wire",
+  "tier": "full",
+  "driver": "acp",
+  "model": "gpt-6-astra",
+  "wire": "responses",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "wirecap": true,
+  "disabled": true,
+  "reason": "Opt-in live arm, disabled until an explicit run manifest pins sealed binary/config/case hashes, request and returned model identities, route/deployment affinity, private captures, forwarded POST and output-token ceilings, and wall timeout. est_calls is only an estimate. No expected-red credit.",
+  "unblocks_at": "Explicit operator budget and identity/affinity pins; apex-ayl.169, apex-ayl.173, and apex-ayl.170 strict acceptance/integration with sealed-binary evidence. Response aliases unsupported unless identical to the pinned request model.",
+  "watchdog_s": 300,
+  "est_calls": 8,
+  "env": {"store": false},
+  "config_patch": {"models/default_reasoning_effort": "medium"},
+  "steps": [
+    {"op": "turn", "prompt": "Without tools, find the remainder of 13 to the power 7 modulo 103 by repeated squaring. Give a short calculation."},
+    {"op": "turn", "prompt": "Without tools, multiply the previous remainder by 17 and reduce modulo 103. Explain briefly."},
+    {"op": "switch", "model": "qwen3.8-flash-next", "via": "acp"},
+    {"op": "turn", "prompt": "Without tools, independently find the remainder of 5 to the power 11 modulo 89 by repeated squaring. Give a short calculation."},
+    {"op": "turn", "prompt": "Without tools, multiply that last remainder by 31 and reduce modulo 89. Give the result and finish with ASTRA-TO-FLASH-V1-DONE."}
+  ],
+  "assert": {
+    "ndjson": [
+      {"id": "no_acp_error", "op": "absent", "event": "acp_error"},
+      {"id": "four_turns", "op": "count", "event": "acp_end", "min": 4, "max": 4},
+      {"id": "one_switch", "op": "count", "event": "acp_set_model", "min": 1, "max": 1},
+      {"id": "done", "op": "text_contains", "value": "ASTRA-TO-FLASH-V1-DONE"}
+    ],
+    "wire": [
+      {
+        "id": "directional_replay",
+        "kind": "reasoning_replay",
+        "file": "req-*.json",
+        "where": {"method": "POST", "path": "/v1/responses", "headers.x-grok-req-id": {"not_prefix": "xai-"}},
+        "replay": {
+          "version": 1,
+          "segments": [
+            {"model": "gpt-6-astra", "min_requests": 2},
+            {"model": "qwen3.8-flash-next", "min_requests": 2, "fields": ["encrypted_content", "summary", "content"], "require_content": true, "require_empty_summary": true}
+          ]
+        },
+        "label": "The second destination request must retain the first destination response's native state. Foreign source exclusion is provenance-based and must not strip legitimate new Flash state."
+      }
+    ]
+  }
+}
