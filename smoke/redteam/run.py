@@ -1525,6 +1525,24 @@ class AcpSession:
         # UTF-8 char can straddle two _iter_lines calls, so the
         # decoder state must outlive any single one.
         self._utf8 = codecs.getincrementaldecoder("utf-8")()
+        # apex-bdfz BZ-4a: the line carry-over, session-scoped like the
+        # decoder (see _iter_lines): complete lines read from stdout but not
+        # yet yielded, in stdout order, and the text after the last newline.
+        from collections import deque
+        self._carry_lines = deque()
+        self._carry_partial = ""
+        # apex-bdfz BZ-2: the deferred inbox. A mid-turn reader that
+        # consumes stdout on a turn's behalf leaves here the turn's
+        # completion and its session/prompt JSON-RPC response (id == the
+        # prompt's tid), plus mid-turn request responses by id;
+        # prompt_collect drains the first two before it reads a byte.
+        self._inbox = {"responses": {}, "completion": None,
+                       "prompt_response": None}
+        # apex-bdfz BZ-3: the turn prompt_send started and prompt_collect has
+        # not yet collected, as its _TurnWaiter; mid-turn requests
+        # (interject, mid_turn_set_model) pump stdout on its behalf. None =
+        # no turn in flight, and then nothing is sent mid-turn.
+        self._inflight = None
 
     def start(self):
         env = (self.env if self.env is not None else
@@ -1611,11 +1629,24 @@ class AcpSession:
         a deadlock, verified in the hardening wave). Decoding is
         incremental UTF-8 (session-scoped decoder: a multi-byte char
         can straddle two calls).
+
+        apex-bdfz BZ-4a: the lines read but not yet yielded and the
+        partial tail are session-scoped too (self._carry_lines,
+        self._carry_partial), so a reader that stops early (call() on
+        its reply, a turn's terminal, a mid-turn reply) leaves the rest
+        of its read1 block to the next call, in stdout order. Carried
+        lines are yielded first, before any select and whatever the
+        deadline: they are already read. Each line is popped before it
+        is yielded: an abandoned generator is closed at its suspended
+        yield, so a pop after the yield would never run and the line a
+        reader stopped on would reach the next reader again.
         """
         end = time.time() + timeout
-        pending = None
         line_bytes = 0
         last_beat = 0.0
+        while self._carry_lines:
+            line = self._carry_lines.popleft()
+            yield line
         while time.time() < end:
             r, _, _ = self._select.select([self.proc.stdout], [], [],
                                           max(0.1, end - time.time()))
@@ -1637,7 +1668,7 @@ class AcpSession:
             text = self._utf8.decode(raw)
             if text:
                 self.log.write(text)
-            buf = (pending or "") + text
+            buf = self._carry_partial + text
             line_bytes += len(raw)
             while True:
                 nl = buf.find("\n")
@@ -1646,9 +1677,24 @@ class AcpSession:
                 line, buf = buf[:nl], buf[nl + 1:]
                 line = line.strip()
                 if line:
-                    yield line
-            pending = buf
-            line_bytes = len(buf)
+                    self._carry_lines.append(line)
+            self._carry_partial = buf
+            line_bytes = len(self._carry_partial)
+            while self._carry_lines:
+                line = self._carry_lines.popleft()
+                yield line
+
+    def _session_scoped(self, d):
+        """apex-bdfz BZ-3 (plan r3 section 2.2, review F-10): the
+        session-identity guard, owned by the reader. A notification whose
+        params.sessionId is neither absent nor this session's belongs to
+        another session; every reader of stdout drops it with this one
+        predicate, before _track_update and before any waiter sees it. A
+        JSON-RPC response carries no method and is always in scope."""
+        if d.get("method") is None:
+            return True
+        p = d.get("params") or {}
+        return p.get("sessionId") in (None, self.session_id)
 
     def _track_update(self, d):
         if d.get("method") != "session/update":
@@ -1673,6 +1719,202 @@ class AcpSession:
         tid = self._send(method, params)
         return self._read_until(tid, timeout or self.timeout_s)
 
+    class _TurnWaiter(object):
+        """The turn-completion matcher of _read_turn_completion as a
+        feedable object (apex-bdfz BZ-1), so every reader of stdout
+        applies the identical rules: apex-ayl.28 promptId correlation
+        with the consumed-guard, and the ACP-2 error grace.
+
+        feed(d) consumes one parsed JSON-RPC object and returns
+          "wait"  - not this turn's terminal: keep reading;
+          "grace" - a turn_completed error terminal, which carries no
+                    agentResult: the turn is over, but the matching
+                    trailing prompt_complete (the provider detail) is
+                    still read, up to wait()'s deadline;
+          "done"  - nothing further is needed: a normal terminal, a
+                    prompt_complete terminal (it already carries
+                    agentResult, error or not), the grace upgrade, or
+                    close() once the grace window ended.
+        The reader owns the session-identity guard and _track_update
+        and applies them before feed. completed_prompt_ids is the
+        session's consumed set; the completion's promptId joins it once
+        the waiter is done.
+        """
+
+        def __init__(self, expected_prompt_id=None, tid=None,
+                     completed_prompt_ids=None):
+            self.expected_prompt_id = expected_prompt_id
+            self.tid = tid
+            self.completed_prompt_ids = (
+                completed_prompt_ids if completed_prompt_ids is not None
+                else set())
+            self.completion = None
+            self.response = None
+            # Older-shell fallback tracking: whether this turn's expected
+            # promptId showed up in a queue row. On this binary it always
+            # does (queue rows reuse the prompt id); if a future binary
+            # ignored the client-chosen id, completions carry the binary's
+            # own id and the first unclaimed completion is adopted (the
+            # pre-fix behavior — the consumed-guard still protects it).
+            self.expected_seen = False
+            self.state = "wait"
+            self.grace_deadline = None
+
+        def _match(self, pid):
+            if pid and pid in self.completed_prompt_ids:
+                return False
+            if self.expected_prompt_id and pid:
+                if pid == self.expected_prompt_id:
+                    return True
+                if self.expected_seen:
+                    return False  # ours is known; this one is foreign
+                return True      # older-shell fallback (first unclaimed)
+            if self.expected_prompt_id and pid is None:
+                return True      # unmapped completion (older shell)
+            return True          # no expected id: first unclaimed
+
+        def feed(self, d):
+            if self.state == "done":
+                return "done"
+            if self.state == "grace":
+                return self._feed_grace(d)
+            if d.get("method") is None:
+                # JSON-RPC response (result or error): informational.
+                if isinstance(d.get("id"), int) and d["id"] == self.tid \
+                        and self.response is None:
+                    self.response = d
+                return "wait"
+            p = d.get("params") or {}
+            m = d.get("method")
+            if m == "_x.ai/queue/changed":
+                # apex-ayl.28: queue rows carry the prompt identity
+                # (entries[].id "reuses the prompt's unique prompt_id",
+                # runningPromptId = the designated correlation signal —
+                # xai-prompt-queue/src/types.rs). Seeing ours here is
+                # the confirmation that the binary adopted it.
+                if self.expected_prompt_id and not self.expected_seen:
+                    if p.get("runningPromptId") == self.expected_prompt_id \
+                            or any(e.get("id") == self.expected_prompt_id
+                                   for e in p.get("entries") or []):
+                        self.expected_seen = True
+                return "wait"
+            if m == "_x.ai/session/prompt_complete":
+                pid = p.get("promptId")
+                if not self._match(pid):
+                    log("ACP desync guard: ignoring prompt_complete "
+                        "pid=%s (expected %s) — late/foreign "
+                        "completion" % (pid, self.expected_prompt_id))
+                    return "wait"
+                self.completion = {"promptId": pid or self.expected_prompt_id,
+                                   "stopReason": p.get("stopReason"),
+                                   "agentResult": p.get("agentResult"),
+                                   "via": "prompt_complete"}
+                return self.close()
+            if m == "_x.ai/session_notification":
+                u = p.get("update") or {}
+                if u.get("sessionUpdate") != "turn_completed":
+                    return "wait"
+                pid = u.get("prompt_id")
+                if not self._match(pid):
+                    log("ACP desync guard: ignoring turn_completed "
+                        "pid=%s (expected %s) — late/foreign "
+                        "completion" % (pid, self.expected_prompt_id))
+                    return "wait"
+                self.completion = {"promptId": pid or self.expected_prompt_id,
+                                   "stopReason": u.get("stop_reason"),
+                                   "agentResult": None,
+                                   "via": "turn_completed"}
+                if u.get("stop_reason") == "error":
+                    # ACP-2: turn_completed carries no agentResult;
+                    # the provider error text lives in the
+                    # matching prompt_complete, which lands a few
+                    # lines later (wave-2 forensics: acp.log
+                    # turn_completed+3 lines). Keep reading briefly
+                    # for it so the synthesized acp_error carries
+                    # the detail. Match by promptId; when the turn
+                    # has no mapped promptId, take the first
+                    # prompt_complete for this session (recency).
+                    # Timeout fallback = the generic shape above.
+                    self.state = "grace"
+                    self.grace_deadline = time.time() + ACP_ERROR_GRACE_S
+                    return "grace"
+                return self.close()
+            return "wait"
+
+        def _feed_grace(self, d):
+            if d.get("method") != "_x.ai/session/prompt_complete":
+                return "grace"
+            gp = d.get("params") or {}
+            gpid = gp.get("promptId")
+            if not self._match(gpid):
+                return "grace"
+            self.completion = {"promptId": gpid
+                                   or self.completion["promptId"],
+                               "stopReason": self.completion["stopReason"],
+                               "agentResult": gp.get("agentResult"),
+                               "via": "prompt_complete"}
+            return self.close()
+
+        def wait(self, deadline=None):
+            """The absolute time the reader must keep reading to: the
+            caller's own deadline while the turn runs; the grace deadline
+            while the error detail is owed (not cut by the caller's
+            deadline, as the sequential second read never was); None once
+            nothing is outstanding."""
+            if self.state == "grace":
+                return self.grace_deadline
+            if self.state == "wait":
+                return deadline
+            return None
+
+        def close(self):
+            """Finish: the completion stands (the grace window may have
+            closed without its prompt_complete) and its promptId joins
+            the consumed set."""
+            if self.state != "done":
+                self.state = "done"
+                if self.completion is not None \
+                        and self.completion.get("promptId"):
+                    self.completed_prompt_ids.add(
+                        self.completion["promptId"])
+            return "done"
+
+        def pump(self, session, timeout):
+            """The sequential read of _read_turn_completion, unchanged:
+            one _iter_lines window of `timeout`; for every notification
+            the session-identity guard, then _track_update, then feed;
+            on "grace" the same second bounded read as before, a fresh
+            ACP_ERROR_GRACE_S window in which only a matching
+            prompt_complete for this session counts. Returns
+            (completion, response)."""
+            for line in session._iter_lines(timeout):
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if not session._session_scoped(d):
+                    continue
+                session._track_update(d)
+                state = self.feed(d)
+                if state == "grace":
+                    for gline in session._iter_lines(ACP_ERROR_GRACE_S):
+                        try:
+                            gd = json.loads(gline)
+                        except Exception:
+                            continue
+                        if gd.get("method") \
+                                != "_x.ai/session/prompt_complete":
+                            continue
+                        if not session._session_scoped(gd):
+                            continue
+                        if self.feed(gd) == "done":
+                            break
+                    break
+                if state == "done":
+                    break
+            self.close()
+            return self.completion, self.response
+
     def _read_turn_completion(self, tid, timeout, expected_prompt_id=None):
         """Wait for a prompt turn to end on the notification rail.
 
@@ -1692,144 +1934,58 @@ class AcpSession:
         (result or error, arriving before or after the notification)
         is captured informationally; its absence never fails the turn.
         Returns (completion, response); either may be None.
+
+        apex-bdfz BZ-1: the rules live in _TurnWaiter; this is its thin
+        sequential driver (keeps reading while feed answers "wait", and
+        to the grace deadline while it answers "grace").
         """
-        completion = None
-        response = None
-        # Older-shell fallback tracking: whether this turn's expected
-        # promptId showed up in a queue row. On this binary it always
-        # does (queue rows reuse the prompt id); if a future binary
-        # ignored the client-chosen id, completions carry the binary's
-        # own id and the first unclaimed completion is adopted (the
-        # pre-fix behavior — the consumed-guard still protects it).
-        expected_seen = [False]
+        waiter = self._TurnWaiter(
+            expected_prompt_id, tid=tid,
+            completed_prompt_ids=self._completed_prompt_ids)
+        return waiter.pump(self, timeout)
 
-        def _match(pid):
-            if pid and pid in self._completed_prompt_ids:
-                return False
-            if expected_prompt_id and pid:
-                if pid == expected_prompt_id:
-                    return True
-                if expected_seen[0]:
-                    return False  # ours is known; this one is foreign
-                return True      # older-shell fallback (first unclaimed)
-            if expected_prompt_id and pid is None:
-                return True      # unmapped completion (older shell)
-            return True          # no expected id: first unclaimed
+    def prompt_send(self, text):
+        """Send one prompt turn; return (tid, prompt_id) without reading.
 
-        for line in self._iter_lines(timeout):
-            try:
-                d = json.loads(line)
-            except Exception:
-                continue
-            if d.get("method") is None:
-                # JSON-RPC response (result or error): informational.
-                if isinstance(d.get("id"), int) and d["id"] == tid \
-                        and response is None:
-                    response = d
-                continue
-            p = d.get("params") or {}
-            if p.get("sessionId") not in (None, self.session_id):
-                continue
-            self._track_update(d)
-            m = d.get("method")
-            if m == "_x.ai/queue/changed":
-                # apex-ayl.28: queue rows carry the prompt identity
-                # (entries[].id "reuses the prompt's unique prompt_id",
-                # runningPromptId = the designated correlation signal —
-                # xai-prompt-queue/src/types.rs). Seeing ours here is
-                # the confirmation that the binary adopted it.
-                if expected_prompt_id and not expected_seen[0]:
-                    if p.get("runningPromptId") == expected_prompt_id \
-                            or any(e.get("id") == expected_prompt_id
-                                   for e in p.get("entries") or []):
-                        expected_seen[0] = True
-                continue
-            if m == "_x.ai/session/prompt_complete":
-                pid = p.get("promptId")
-                if not _match(pid):
-                    log("ACP desync guard: ignoring prompt_complete "
-                        "pid=%s (expected %s) — late/foreign "
-                        "completion" % (pid, expected_prompt_id))
-                    continue
-                completion = {"promptId": pid or expected_prompt_id,
-                              "stopReason": p.get("stopReason"),
-                              "agentResult": p.get("agentResult"),
-                              "via": "prompt_complete"}
-                break
-            elif m == "_x.ai/session_notification":
-                u = p.get("update") or {}
-                if u.get("sessionUpdate") != "turn_completed":
-                    continue
-                pid = u.get("prompt_id")
-                if not _match(pid):
-                    log("ACP desync guard: ignoring turn_completed "
-                        "pid=%s (expected %s) — late/foreign "
-                        "completion" % (pid, expected_prompt_id))
-                    continue
-                completion = {"promptId": pid or expected_prompt_id,
-                              "stopReason": u.get("stop_reason"),
-                              "agentResult": None,
-                              "via": "turn_completed"}
-                if u.get("stop_reason") == "error":
-                    # ACP-2: turn_completed carries no agentResult;
-                    # the provider error text lives in the
-                    # matching prompt_complete, which lands a few
-                    # lines later (wave-2 forensics: acp.log
-                    # turn_completed+3 lines). Keep reading briefly
-                    # for it so the synthesized acp_error carries
-                    # the detail. Match by promptId; when the turn
-                    # has no mapped promptId, take the first
-                    # prompt_complete for this session (recency).
-                    # Timeout fallback = the generic shape above.
-                    for gline in self._iter_lines(ACP_ERROR_GRACE_S):
-                        try:
-                            gd = json.loads(gline)
-                        except Exception:
-                            continue
-                        if gd.get("method") \
-                                != "_x.ai/session/prompt_complete":
-                            continue
-                        gp = gd.get("params") or {}
-                        if gp.get("sessionId") not in \
-                                (None, self.session_id):
-                            continue
-                        gpid = gp.get("promptId")
-                        if not _match(gpid):
-                            continue
-                        completion = {"promptId": gpid
-                                      or completion["promptId"],
-                                      "stopReason":
-                                          completion["stopReason"],
-                                      "agentResult":
-                                          gp.get("agentResult"),
-                                      "via": "prompt_complete"}
-                        break
-                break
-        if completion is not None and completion.get("promptId"):
-            self._completed_prompt_ids.add(completion["promptId"])
-        return completion, response
-
-    def prompt(self, text, timeout=None):
-        """Send one prompt turn and wait for ITS completion.
-
-        apex-ayl.28: the prompt identity is client-chosen — a uuid4
-        sent in params._meta.promptId, which the binary adopts as the
-        turn's promptId (acp_agent.rs:1121-1126: client value or a
-        binary-generated uuid fallback) and echoes in every
-        completion notification and the queue rows. The read loop
-        therefore consumes only this turn's completion; late
-        completions for previously finished turns (the live B-ii
-        desync) are dropped by the consumed-guard in
-        _read_turn_completion.
+        apex-bdfz BZ-2: the send half of prompt() — the client-chosen
+        uuid4 promptId in params._meta (apex-ayl.28) and the session/prompt
+        request, exactly as prompt() sends them. tid is the request's
+        JSON-RPC id; prompt_collect waits for the turn.
         """
-        t = timeout or self.timeout_s
         prompt_id = str(uuid.uuid4())
         tid = self._send("session/prompt",
                          {"sessionId": self.session_id,
                           "prompt": [{"type": "text", "text": text}],
                           "_meta": {"promptId": prompt_id}})
-        completion, response = self._read_turn_completion(
-            tid, t, expected_prompt_id=prompt_id)
+        self._inflight = self._TurnWaiter(
+            prompt_id, tid=tid,
+            completed_prompt_ids=self._completed_prompt_ids)
+        return tid, prompt_id
+
+    def prompt_collect(self, tid, prompt_id, timeout):
+        """Wait for the turn prompt_send started; return (resp, stop).
+
+        apex-bdfz BZ-2: the deferred inbox is drained before a single byte
+        is read. A mid-turn reader that consumed stdout on this turn's
+        behalf leaves there the turn's completion and its session/prompt
+        JSON-RPC response (id == tid); a deferred completion is returned
+        without reading. Otherwise _read_turn_completion reads for
+        `timeout` seconds (relative, as that reader takes them), and a
+        deferred response stays the first one seen. The tail is prompt()'s:
+        a JSON-RPC response is the canonical resp; else the
+        notification-only completion is synthesized; else the timeout
+        terminal, which names `timeout`.
+        """
+        self._inflight = None
+        completion = self._inbox["completion"]
+        response = self._inbox["prompt_response"]
+        self._inbox["completion"] = None
+        self._inbox["prompt_response"] = None
+        if completion is None:
+            completion, read_response = self._read_turn_completion(
+                tid, timeout, expected_prompt_id=prompt_id)
+            if response is None:
+                response = read_response
         if response is not None:
             # A JSON-RPC response (result or error) arrived: keep it as
             # the canonical resp so caller error surfaces (acp_error +
@@ -1857,7 +2013,27 @@ class AcpSession:
                                 "_via": completion["via"],
                                 "promptId": completion.get("promptId")}},
                     stop)
-        return {"error": {"message": "timeout after %ss" % t}}, None
+        return {"error": {"message": "timeout after %ss" % timeout}}, None
+
+    def prompt(self, text, timeout=None):
+        """Send one prompt turn and wait for ITS completion.
+
+        apex-ayl.28: the prompt identity is client-chosen — a uuid4
+        sent in params._meta.promptId, which the binary adopts as the
+        turn's promptId (acp_agent.rs:1121-1126: client value or a
+        binary-generated uuid fallback) and echoes in every
+        completion notification and the queue rows. The read loop
+        therefore consumes only this turn's completion; late
+        completions for previously finished turns (the live B-ii
+        desync) are dropped by the consumed-guard in
+        _read_turn_completion.
+
+        apex-bdfz BZ-2: prompt_send + prompt_collect, with the turn
+        budget t computed as before.
+        """
+        t = timeout or self.timeout_s
+        tid, prompt_id = self.prompt_send(text)
+        return self.prompt_collect(tid, prompt_id, t)
 
     def set_model(self, model):
         """Switch the session model; wait for the switch verdict.
@@ -1884,19 +2060,446 @@ class AcpSession:
                 if isinstance(d.get("id"), int) and d["id"] == tid:
                     return d  # result OR error response
                 continue
-            p = d.get("params") or {}
-            if p.get("sessionId") not in (None, self.session_id):
+            if not self._session_scoped(d):
                 continue
             self._track_update(d)
-            u = (p.get("update") or {}) if d.get("method") == \
-                "_x.ai/session_notification" else {}
-            if u.get("sessionUpdate") and \
-                    (u.get("error") or u.get("error_type")):
-                return {"error": {"message": "set_model failed via "
-                                              "notification",
-                                  "data": u}}
+            refusal = self._set_model_refusal(d)
+            if refusal is not None:
+                return refusal
         return {"error": {"message": "timeout after %ss waiting for "
                                      "set_model response" % t}}
+
+    @staticmethod
+    def _set_model_refusal(d):
+        """set_model's notification hedge: a session_notification carrying
+        error / error_type answers the switch as a refusal, in the
+        {"error": ...} shape the M-2 surface keys on. apex-bdfz BZ-3: shared
+        by set_model and mid_turn_set_model. None when d is no refusal."""
+        p = d.get("params") or {}
+        u = (p.get("update") or {}) if d.get("method") == \
+            "_x.ai/session_notification" else {}
+        if u.get("sessionUpdate") and \
+                (u.get("error") or u.get("error_type")):
+            return {"error": {"message": "set_model failed via "
+                                          "notification",
+                              "data": u}}
+        return None
+
+    def interject(self, text, interjection_id=None, timeout=None):
+        """Queue a mid-turn interjection into the turn prompt_send started.
+
+        apex-bdfz BZ-3 (plan r3 section 2.2 item 4): sends the x.ai/interject
+        ext request {sessionId, text, interjectionId?} and reads its reply
+        through the single-reader pump while the turn keeps running, so the
+        turn's updates keep reaching self.updates and its completion keeps
+        being matched. The wire method is _x.ai/interject: the agent's ACP
+        library decodes a client request whose method starts with "_" as the
+        ext method named without it, and answers an unprefixed one
+        method_not_found (agent-client-protocol 0.10.4,
+        AgentSide::decode_request). Returns (resp, witness): resp is the raw
+        JSON-RPC reply ({"status": "queued"}, or an error reply such as
+        "session not found", returned as is), the timeout shape when no reply
+        came within `timeout` (default self.timeout_s), or the not-sent shape
+        when no turn is in flight; witness records the exchange."""
+        params = {"sessionId": self.session_id, "text": text}
+        if interjection_id is not None:
+            params["interjectionId"] = interjection_id
+        t = timeout or self.timeout_s
+        reply, witness = self._mid_turn_request("_x.ai/interject", params, t)
+        if not witness["sent"]:
+            return ({"error": {"message": "no turn in flight: "
+                                          "x.ai/interject not sent"}},
+                    witness)
+        if reply is None:
+            return {"error": {"message": "timeout after %ss" % t}}, witness
+        return reply, witness
+
+    def mid_turn_set_model(self, model):
+        """Switch the session model while the turn prompt_send started runs.
+
+        apex-bdfz BZ-3 (plan r3 section 2.2 item 5): set_model's request,
+        set_model_timeout_s budget and verdict shapes (the JSON-RPC response,
+        result or error; the notification-carried refusal; the timeout
+        shape), read through the single-reader pump because the turn's lines
+        share the rail. Returns (resp, witness), as interject does."""
+        t = self.set_model_timeout_s
+        reply, witness = self._mid_turn_request(
+            "session/set_model",
+            {"sessionId": self.session_id, "modelId": model}, t,
+            verdict=self._set_model_refusal)
+        if not witness["sent"]:
+            return ({"error": {"message": "no turn in flight: "
+                                          "session/set_model not sent"}},
+                    witness)
+        self.model = model
+        if reply is None:
+            return ({"error": {"message": "timeout after %ss waiting for "
+                                          "set_model response" % t}},
+                    witness)
+        return reply, witness
+
+    def _mid_turn_request(self, method, params, timeout, verdict=None):
+        """Send one request into the in-flight turn and pump its reply.
+
+        apex-bdfz BZ-3 (plan r3 sections 2.1-2.3): nothing is sent unless a
+        turn is in flight (prompt_send recorded it and its completion has not
+        been matched). The request id is registered in the deferred inbox and
+        one _iter_lines window of `timeout` is read, each line through
+        _pump_line, until the reply arrives or `verdict(d)` names a
+        notification that answers the request. A turn whose error terminal
+        still owes its grace read is read to the grace deadline and its
+        waiter closed, so the inbox only ever receives a closed completion.
+        Returns (reply or None, witness)."""
+        waiter = self._inflight
+        witness = {"method": method, "id": None,
+                   "prompt_id": (waiter.expected_prompt_id
+                                 if waiter is not None else None),
+                   "sent": False, "sent_at": None, "reply_at": None}
+        if self.session_id is None or waiter is None \
+                or waiter.state != "wait":
+            return None, witness
+        rid = self._send(method, params)
+        self._inbox["responses"][rid] = None
+        witness.update(id=rid, sent=True, sent_at=time.time())
+        reply = None
+        for line in self._iter_lines(timeout):
+            d = self._pump_line(waiter, line)
+            if d is None:
+                continue
+            reply = self._inbox["responses"][rid]
+            if reply is None and verdict is not None \
+                    and d.get("method") is not None:
+                reply = verdict(d)
+            if reply is not None:
+                witness["reply_at"] = time.time()
+                break
+        if waiter.state == "grace":
+            for line in self._iter_lines(
+                    max(0.0, waiter.wait() - time.time())):
+                self._pump_line(waiter, line)
+                if waiter.state == "done":
+                    break
+            if waiter.state == "grace":
+                waiter.close()
+                self._inbox["completion"] = waiter.completion
+        self._inbox["responses"].pop(rid, None)
+        return reply, witness
+
+    def _pump_line(self, waiter, line):
+        """One stdout line on the mid-turn pump: parsed; dropped when foreign
+        (_session_scoped, in front of tracking and feeding); a JSON-RPC
+        response is routed into the deferred inbox (the turn's own
+        session/prompt response, the first one seen; a registered mid-turn
+        reply); then _track_update and the turn's _TurnWaiter, whose matched
+        completion is left in the inbox for prompt_collect. A grace window
+        that has run out closes the waiter as the sequential grace read
+        does. Returns the parsed object, or None when unparseable or
+        foreign."""
+        try:
+            d = json.loads(line)
+        except Exception:
+            return None
+        if not self._session_scoped(d):
+            return None
+        rid = d.get("id")
+        if d.get("method") is None and isinstance(rid, int):
+            if rid == waiter.tid:
+                if self._inbox["prompt_response"] is None:
+                    self._inbox["prompt_response"] = d
+            elif rid in self._inbox["responses"] \
+                    and self._inbox["responses"][rid] is None:
+                self._inbox["responses"][rid] = d
+        self._track_update(d)
+        if waiter.state == "grace" and time.time() >= waiter.wait():
+            waiter.close()
+            self._inbox["completion"] = waiter.completion
+        elif waiter.state != "done" and waiter.feed(d) == "done":
+            self._inbox["completion"] = waiter.completion
+        return d
+
+    @staticmethod
+    def _trigger_hit(arm, d, counters):
+        """Whether an armed interject trigger holds after the parsed stdout
+        line d (apex-bdfz BZ-4, plan r3 section 2.3).
+
+        arm is the armed record {"kind", "arg", ...}: after_tool_calls N holds
+        once N distinct calls are announced; after_tool NAME holds on the
+        tool_call line announcing NAME; after_s T holds once T seconds have
+        passed since counters["t_sent"], the parent prompt's send time.
+        counters is the turn's running state, shared by every arm and folded
+        here: only a session/update whose sessionUpdate is exactly "tool_call"
+        announces a call (tool_call_update is a status transition and
+        tool_call_delta_chunk an argument fragment), and counters
+        ["tool_call_ids"] keeps each toolCallId once, so a re-emitted Pending
+        line, or one line offered to several arms, never counts twice. A
+        call's name is _meta["x.ai/tool"]["name"] when stamped, else its
+        title (native tool_search calls carry no x.ai/tool); kind is never a
+        trigger. The clock is the module-level time, which the offline tests
+        patch; time.monotonic would be invisible to them."""
+        u = None
+        if isinstance(d, dict) and d.get("method") == "session/update":
+            u = (d.get("params") or {}).get("update") or {}
+            if u.get("sessionUpdate") != "tool_call":
+                u = None
+            elif u.get("toolCallId") not in counters["tool_call_ids"]:
+                counters["tool_call_ids"].append(u.get("toolCallId"))
+        kind, arg = arm["kind"], arm["arg"]
+        if kind == "after_tool_calls":
+            return len(counters["tool_call_ids"]) >= arg
+        if kind == "after_tool":
+            if u is None:
+                return False
+            tool = (u.get("_meta") or {}).get("x.ai/tool")
+            name = tool.get("name") if isinstance(tool, dict) else None
+            return (name if name is not None else u.get("title")) == arg
+        if kind == "after_s":
+            return time.time() - counters["t_sent"] >= arg
+        raise ValueError("unknown interject trigger: %r" % (kind,))
+
+    # apex-bdfz BZ-5 (plan r3 sections 2.4-2.5): the disarm reasons that are
+    # rig failures (D-4, D-6). harness_caused is derived from disarm_reason by
+    # this table, so a window closed by the turn's own terminal or budget
+    # (turn_completed, turn_error, turn_timeout) stays a model-path reading.
+    _HARNESS_DISARM_REASONS = ("ext_error", "no_inflight_turn", "session_died")
+
+    def _pump_mid_turn(self, arms, waiter, deadline, step=0, t_sent=None):
+        """Read stdout while the turn prompt_send started is in flight, firing
+        its interject arms (apex-bdfz BZ-5, plan r3 sections 2.3-2.5).
+
+        arms is the turn step's interject list; deadline the turn's absolute
+        deadline; step the step index in arm_id "step<si>.arm<ai>"; t_sent the
+        parent prompt's send time (default now: the pump starts right after
+        prompt_send, which never reads). Every line goes through _pump_line
+        (session guard, inbox routing, tracking, the turn's waiter). While the
+        turn runs, an armed arm fires on the first line its trigger holds on
+        (_trigger_hit): the request is sent at once and its reply matched by
+        JSON-RPC id within interject_timeout_s (default min(30, the turn's
+        remaining budget)), never beyond the turn's deadline. The pump reads
+        to the turn's terminal: the matched completion closes every un-fired
+        arm and nothing more is sent (D-1; D-2 for an error terminal, whose
+        grace read the pump performs); owed replies are still awaited; the
+        turn's deadline closes un-fired arms (D-5); end of file disarms every
+        unsettled arm (D-6); with no turn in flight nothing is sent (D-4).
+
+        Returns one record per arm, in arm order: status fired | missed |
+        mismatched_tool | send_timeout | disarmed (the section 2.4
+        precedence), disarm_reason, harness_caused, the runner cause, fired_at
+        and the reply. mid_turn is never taken from the reply: a fired arm is
+        mid-turn only on evidence that its request went out while the turn
+        ran: the turn_completed is stamped (_meta.agentTimestampMs, the
+        agent's epoch milliseconds) after the send, a queue row running this
+        prompt is read after the send, or the x.ai/session/interjection
+        broadcast of its interjection (its interjectionId, else its text)
+        lands before the turn's completion. A line counts as read after the
+        send unless it was already read when the request went out (the
+        carry-over still held it)."""
+        t_sent = time.time() if t_sent is None else t_sent
+        pid = waiter.expected_prompt_id if waiter is not None else None
+        counters = {"tool_call_ids": [], "t_sent": t_sent}
+        updates0 = len(self.updates)
+        recs = []
+        for ai, spec in enumerate(arms):
+            at = dict(spec.get("at") or {})
+            kind = next(iter(at), None)
+            rec = {"arm_id": "step%d.arm%d" % (step, ai), "at": at,
+                   "kind": kind, "arg": at.get(kind),
+                   "send": spec.get("send", "interject"), "status": "armed",
+                   "fired": False, "disarm_reason": None,
+                   "harness_caused": False, "cause": None, "fired_at": None,
+                   "mid_turn": False, "mid_turn_evidence": [], "resp": None,
+                   "prompt_id": pid, "request_id": None, "sent_at": None,
+                   "reply_at": None, "_spec": spec}
+            if rec["send"] == "set_model":
+                rec["model"] = spec.get("model")
+            else:
+                rec["interject_text"] = spec.get("text")
+            recs.append(rec)
+        seen = {"lines": 0, "completion_line": None, "completion_ms": None}
+        owed = []
+
+        def settle(rec, status, reason=None):
+            harness = (status == "send_timeout"
+                       or reason in self._HARNESS_DISARM_REASONS)
+            rec.update(status=status, fired=status == "fired",
+                       disarm_reason=reason, harness_caused=harness)
+            if status == "send_timeout":
+                rec["cause"] = "interject-send-timeout: %s" % rec["arm_id"]
+            elif harness:
+                rec["cause"] = "interject-unavailable: %s.%s" % (
+                    rec["arm_id"], reason)
+
+        def close(rec, reason):
+            # An un-fired arm's window closed: a rig cause disarms it; the
+            # turn's terminal or budget leaves a model-path reading.
+            if reason in self._HARNESS_DISARM_REASONS:
+                settle(rec, "disarmed", reason)
+            elif rec["kind"] == "after_tool":
+                settle(rec, "mismatched_tool", reason)
+            else:
+                settle(rec, "missed", reason)
+
+        def unregister(rec):
+            owed.remove(rec)
+            self._inbox["responses"].pop(rec["request_id"], None)
+
+        def credit(rec, name):
+            if name not in rec["mid_turn_evidence"]:
+                rec["mid_turn_evidence"].append(name)
+
+        def fire(rec):
+            spec = rec["_spec"]
+            if rec["send"] == "set_model":
+                method = "session/set_model"
+                params = {"sessionId": self.session_id,
+                          "modelId": rec["model"]}
+            else:
+                method = "_x.ai/interject"
+                params = {"sessionId": self.session_id,
+                          "text": rec["interject_text"]}
+                if spec.get("interjection_id") is not None:
+                    params["interjectionId"] = spec["interjection_id"]
+            rid = self._send(method, params)
+            self._inbox["responses"][rid] = None
+            now = time.time()
+            budget = (spec.get("interject_timeout_s")
+                      or min(30.0, deadline - now))
+            rec.update(status="sent", request_id=rid, sent_at=now,
+                       fired_at={"elapsed_s": now - t_sent,
+                                 "n_tool_calls":
+                                     len(counters["tool_call_ids"]),
+                                 "n_updates": len(self.updates) - updates0},
+                       _reply_by=min(now + budget, deadline),
+                       _read_before=seen["lines"] + len(self._carry_lines)
+                       + (1 if self._carry_partial else 0))
+            if rec["send"] == "set_model":
+                self.model = rec["model"]
+            owed.append(rec)
+
+        def witness(d):
+            m = d.get("method")
+            p = d.get("params") or {}
+            after_send = [r for r in recs if r["request_id"] is not None
+                          and seen["lines"] > r["_read_before"]]
+            if m == "_x.ai/queue/changed" and pid \
+                    and p.get("runningPromptId") == pid:
+                for rec in after_send:
+                    credit(rec, "running_prompt_after_send")
+            elif m == "_x.ai/session/interjection" \
+                    and seen["completion_line"] is None:
+                for rec in after_send:
+                    iid = rec["_spec"].get("interjection_id")
+                    if rec["send"] == "interject" and (
+                            p.get("interjectionId") == iid if iid is not None
+                            else p.get("text") == rec["interject_text"]) \
+                            and "interjection_broadcast_before_completion" \
+                            not in rec["mid_turn_evidence"]:
+                        credit(rec, "interjection_broadcast_before_completion")
+                        break
+
+        def horizon():
+            # Read to the turn's terminal; then through its grace read and for
+            # every reply still owed; None once nothing is left to read for.
+            if waiter.state == "wait":
+                return deadline
+            ends = [rec["_reply_by"] for rec in owed]
+            if waiter.state == "grace":
+                ends.append(waiter.wait())
+            return max(ends) if ends else None
+
+        if self.session_id is None or waiter is None \
+                or waiter is not self._inflight or waiter.state != "wait":
+            for rec in recs:
+                close(rec, "no_inflight_turn")
+            return [{k: v for k, v in rec.items() if not k.startswith("_")}
+                    for rec in recs]
+        eof = False
+        while True:
+            window = horizon()
+            if window is None:
+                break
+            for line in self._iter_lines(max(0.0, window - time.time())):
+                seen["lines"] += 1
+                before = waiter.state
+                d = self._pump_line(waiter, line)
+                now = time.time()
+                if before == "wait" and waiter.state != "wait":
+                    seen["completion_line"] = seen["lines"]
+                    if d is not None and d.get("method") == \
+                            "_x.ai/session_notification":
+                        seen["completion_ms"] = ((d.get("params") or {})
+                                                 .get("_meta") or {}).get(
+                                                     "agentTimestampMs")
+                if d is not None:
+                    witness(d)
+                    if d.get("method") is None:
+                        for rec in list(owed):
+                            reply = self._inbox["responses"].get(
+                                rec["request_id"])
+                            if reply is not None:
+                                unregister(rec)
+                                rec.update(resp=reply, reply_at=now)
+                                if "error" in reply:
+                                    settle(rec, "disarmed", "ext_error")
+                                else:
+                                    settle(rec, "fired")
+                for rec in list(owed):
+                    if now >= rec["_reply_by"]:
+                        unregister(rec)
+                        settle(rec, "send_timeout")
+                if waiter.state != "wait":
+                    # D-1 / D-2: the turn is over; nothing more is sent.
+                    reason = ("turn_error" if (waiter.completion or {}).get(
+                        "stopReason") == "error" else "turn_completed")
+                    for rec in recs:
+                        if rec["status"] == "armed":
+                            close(rec, reason)
+                elif d is not None:
+                    for rec in recs:
+                        if rec["status"] == "armed" \
+                                and self._trigger_hit(rec, d, counters):
+                            fire(rec)
+                if horizon() != window:
+                    break
+            else:
+                now = time.time()
+                if now < window:
+                    # _iter_lines ended before its deadline: end of file.
+                    eof = True
+                    break
+                for rec in list(owed):
+                    if now >= rec["_reply_by"]:
+                        unregister(rec)
+                        settle(rec, "send_timeout")
+                if waiter.state == "wait":
+                    # D-5: the turn's own budget ran out first.
+                    for rec in recs:
+                        if rec["status"] == "armed":
+                            close(rec, "turn_timeout")
+                    for rec in list(owed):
+                        unregister(rec)
+                        settle(rec, "send_timeout")
+                    break
+                if waiter.state == "grace" and now >= waiter.wait():
+                    waiter.close()
+                    self._inbox["completion"] = waiter.completion
+        if eof:
+            for rec in recs:
+                if rec["status"] == "armed":
+                    close(rec, "session_died")
+            for rec in list(owed):
+                unregister(rec)
+                settle(rec, "disarmed", "session_died")
+            if waiter.state == "grace":
+                waiter.close()
+                self._inbox["completion"] = waiter.completion
+        for rec in recs:
+            if rec["request_id"] is not None \
+                    and seen["completion_ms"] is not None \
+                    and seen["completion_ms"] > rec["sent_at"] * 1000:
+                credit(rec, "completion_after_send")
+            rec["mid_turn"] = rec["fired"] and bool(rec["mid_turn_evidence"])
+        return [{k: v for k, v in rec.items() if not k.startswith("_")}
+                for rec in recs]
 
     def available_commands(self):
         tools = []
@@ -2033,12 +2636,31 @@ def _val_eq(a, b):
 def check_ndjson(spec, events, fmt, ctx=None):
     op = spec.get("op")
     ev = spec.get("event")
+    # apex-bdfz BZ-7 (plan r3 section 2.5.2): count, eq and ne apply the
+    # optional where map before counting or selecting. Each entry is an
+    # equality filter on the event's own field (dot-path key, scalar value,
+    # compared as _wire_filter compares; an absent field never matches). The
+    # shape is enforced at validation by case.schema.json and run.py
+    # _validate_where.
+    where = spec.get("where") or {}
+
+    def selected(e):
+        if e.get("type") != ev:
+            return False
+        for k, v in where.items():
+            found, val = get_path(e, k)
+            if not found or not _val_eq(val, v):
+                return False
+        return True
+
+    shown = ev if not where else "%s where %s" % (
+        ev, json.dumps(where, sort_keys=True))
     if op == "count":
-        n = sum(1 for e in events if e.get("type") == ev)
+        n = sum(1 for e in events if selected(e))
         ok = n >= spec.get("min", 0) and n <= spec.get("max", 10 ** 9)
         return AssertResult(spec, "ndjson.count", ok,
-                            "%d events of type %s" % (n, ev),
-                            "ndjson: %d x type=%s" % (n, ev))
+                            "%d events of type %s" % (n, shown),
+                            "ndjson: %d x type=%s" % (n, shown))
     if op in ("absent", "present"):
         n = sum(1 for e in events if e.get("type") == ev)
         ok = (n == 0) if op == "absent" else (n >= 1)
@@ -2055,23 +2677,23 @@ def check_ndjson(spec, events, fmt, ctx=None):
         return AssertResult(spec, "ndjson.%s" % op, ok, detail,
                             "ndjson: %d x type=%s" % (n, ev))
     if op in ("eq", "ne"):
-        matches = [e for e in events if e.get("type") == ev]
+        matches = [e for e in events if selected(e)]
         which = spec.get("which", "first")
         m = matches[0] if which == "first" else matches[-1] if matches else None
         if m is None:
             ok = False if op == "eq" else True
             return AssertResult(spec, "ndjson.%s" % op, ok,
-                                "no event of type %s" % ev,
+                                "no event of type %s" % shown,
                                 "ndjson: none")
         found, val = get_path(m, spec.get("field"))
         want = spec.get("value")
         ok = _val_eq(val, want) if op == "eq" else not _val_eq(val, want)
         return AssertResult(spec,
                             "ndjson.%s" % op, ok,
-                            "type=%s %s=%r want %r" % (ev, spec.get("field"),
+                            "type=%s %s=%r want %r" % (shown, spec.get("field"),
                                                        val, want),
                             "ndjson line %s: type=%s %s=%r"
-                            % (m.get("_line"), ev, spec.get("field"), val),
+                            % (m.get("_line"), shown, spec.get("field"), val),
                             cite={"event_line": m.get("_line")})
     if op == "text_contains":
         text = ndjson_text(events, fmt)
@@ -3755,7 +4377,8 @@ def _retry_decision(case, capture_dir, model, attempt, max_attempts,
             % (last[0], on_status), None)
 
 
-def finalize_verdict(case, pre_status, results, wire_dir=None):
+def finalize_verdict(case, pre_status, results, wire_dir=None,
+                     interject_cause=None):
     """apex-ayl.22 D-3 — the verdict engine (semantics: C §(c)
     BINDING + SDD D-3). A premise pass over scoring.vacuous_if
     PRECEDES pin scoring:
@@ -3769,6 +4392,13 @@ def finalize_verdict(case, pre_status, results, wire_dir=None):
          all PASS -> PASS.
     recon asserts never affect the verdict. A 0-hit = the pin result
     is missing (not evaluated — fail-closed) or not ok.
+    apex-bdfz BZ-7 (plan r3 section 2.5.1 items 2-3, R-4): interject_cause is
+    the runner's named cause for an interject arm the rig never made work
+    (interject-send-timeout: <arm_id>; interject-unavailable:
+    <arm_id>.<disarm_reason>, no_record included). It is decided outside and
+    before `if wire_dir:`, since it needs no wire artifact and a crashed turn
+    may leave no wire/ directory, so it also precedes D-8 and the
+    no-scored-pins return.
     Returns (status, info)."""
     info = {"premises": [], "findings": [], "evidence_violations": [],
             "blocked_reason": None, "vacuous_reason": None,
@@ -3777,6 +4407,9 @@ def finalize_verdict(case, pre_status, results, wire_dir=None):
         return (pre_status if pre_status == "RECON" else pre_status), info
     if pre_status == "SKIP":
         return pre_status, info
+    if interject_cause:
+        info["blocked_reason"] = interject_cause
+        return "BLOCKED", info
     # REDTEAM-REFRESH T2 (r3 §4.2.2 rule 1, r3a A2): a request the route map
     # could not resolve never reached any origin, so nothing this case scored
     # is interpretable. An undecided pin route (r3b B1 rule 3) is the same
@@ -4277,13 +4910,35 @@ def _run_case_once(case, args, budget, run_dir, attempt, route_out=None):
             op = step.get("op")
             if op == "turn":
                 model = step.get("model", cur_model)
+                # apex-bdfz BZ-7 (plan r3 sections 2.5.1, 2.8): the turn's
+                # interject arms and the records the pump writes for them.
+                arms = step.get("interject")
+                interjects, pumped_s = [], None
                 if driver == "acp":
                     before = len(acp.updates)
-                    resp, stop = acp.prompt(step["prompt"],
-                                            timeout=step.get(
-                                                "timeout_s",
-                                                _effective_turn_timeout(
-                                                    case)))
+                    if arms:
+                        # The single-reader pump reads the turn to its
+                        # terminal and fires the arms; prompt_collect then
+                        # takes the turn from the inbox, inside the budget
+                        # prompt() would have had (timeout or self.timeout_s).
+                        turn_s = step.get("timeout_s",
+                                          _effective_turn_timeout(case)) \
+                            or acp.timeout_s
+                        tid, pid = acp.prompt_send(step["prompt"])
+                        t_sent = time.time()
+                        deadline = t_sent + turn_s
+                        interjects = acp._pump_mid_turn(
+                            arms, acp._inflight, deadline, step=si,
+                            t_sent=t_sent)
+                        pumped_s = time.time() - t_sent
+                        resp, stop = acp.prompt_collect(
+                            tid, pid, max(0.0, deadline - time.time()))
+                    else:
+                        resp, stop = acp.prompt(step["prompt"],
+                                                timeout=step.get(
+                                                    "timeout_s",
+                                                    _effective_turn_timeout(
+                                                        case)))
                     chunks = []
                     for u in acp.updates[before:]:
                         if u.get("sessionUpdate") == \
@@ -4297,15 +4952,77 @@ def _run_case_once(case, args, budget, run_dir, attempt, route_out=None):
                     # labels silently off-by-one).
                     prompt_id = (resp.get("result") or
                                  resp.get("error") or {}).get("promptId")
+                    if prompt_id is None:
+                        # apex-bdfz BZ-R7 F-4(a): the session/prompt response
+                        # the pump kept (it read past the turn's terminal)
+                        # carries the id in result._meta only.
+                        prompt_id = ((resp.get("result") or {}).get("_meta")
+                                     or {}).get("promptId")
                     rec = {"op": "acp_turn", "step": si, "model": model,
                            "stop": stop,
                            "error": resp.get("error"),
                            "prompt_id": prompt_id,
                            "text": "".join(chunks)[:200]}
+                    if arms:
+                        rec["interjects"] = interjects
                     ctx.turns.append(rec)
                     for c in chunks:
                         ctx.events.append({"type": "acp_message",
                                            "data": c, "_line": 0})
+                    # One acp_interject pseudo-event per arm record. The text
+                    # rides under interject_text, never as data and never as
+                    # an acp_message: ndjson_text reads data off acp_message
+                    # only, so the runner can never satisfy a nonce pin by
+                    # quoting its own injection. tool_calls_seen and
+                    # elapsed_s are taken at the fire, or at the end of the
+                    # pumped read for an arm that never fired.
+                    if interjects:
+                        calls = len({u.get("toolCallId")
+                                     for u in acp.updates[before:]
+                                     if u.get("sessionUpdate") == "tool_call"})
+                        for arm_rec in interjects:
+                            fa = arm_rec.get("fired_at") or {}
+                            arm_ev = {"type": "acp_interject",
+                                      "arm_id": arm_rec["arm_id"],
+                                      "fired": arm_rec["fired"],
+                                      "mid_turn": arm_rec["mid_turn"],
+                                      "status": arm_rec["status"],
+                                      "disarm_reason":
+                                          arm_rec["disarm_reason"],
+                                      "harness_caused":
+                                          arm_rec["harness_caused"],
+                                      "tool_calls_seen":
+                                          fa.get("n_tool_calls", calls),
+                                      "elapsed_s":
+                                          fa.get("elapsed_s", pumped_s),
+                                      "_line": 0}
+                            for k in ("model", "interject_text"):
+                                if k in arm_rec:
+                                    arm_ev[k] = arm_rec[k]
+                            ctx.events.append(arm_ev)
+                            # apex-bdfz BZ-R7 F-1: a set_model arm that fired
+                            # lands the switch as the switch step does
+                            # (acp_set_model; later steps default to the
+                            # target, while this turn completes on the model it
+                            # was sent with). A JSON-RPC error on its own
+                            # request is the product refusing the switch:
+                            # acp_error + FAIL, as the switch step reports it,
+                            # and no rig cause below (interject arms keep
+                            # section 2.4 D-6).
+                            if arm_rec.get("send") != "set_model":
+                                continue
+                            if arm_rec["status"] == "fired":
+                                ctx.events.append(
+                                    {"type": "acp_set_model",
+                                     "model": arm_rec["model"], "_line": 0})
+                                cur_model = arm_rec["model"]
+                            elif arm_rec["disarm_reason"] == "ext_error":
+                                err = (arm_rec.get("resp") or {}).get("error")
+                                ctx.events.append({"type": "acp_error",
+                                                   "error": err,
+                                                   "model": arm_rec["model"]})
+                                mark("FAIL", "acp mid-turn set_model error: %s"
+                                     % str(err)[:120])
                     if "error" in resp:
                         ctx.events.append({"type": "acp_error",
                                            "error": resp["error"],
@@ -4368,6 +5085,36 @@ def _run_case_once(case, args, budget, run_dir, attempt, route_out=None):
                             mark("FAIL", "turn exit=%s" % tr.exit_code)
                             ctx.crashed = True
                     ctx.last_exit = tr.exit_code
+                if arms:
+                    # The runner's BLOCKED cause (plan r3 section 2.5.1 items
+                    # 2-3, erratum E-1): each written record's own cause,
+                    # unless its arm says require: false (that suppresses the
+                    # cause only), and interject-unavailable:
+                    # <arm_id>.no_record for a declared arm the turn left
+                    # without a record (the headless driver never arms one).
+                    # A set_model arm the product refused adds none: it was
+                    # reported as acp_error + FAIL above (BZ-R7 F-1).
+                    # Joined across the case's armed turns; _finish passes it
+                    # to finalize_verdict.
+                    written = {r.get("arm_id"): r for r in interjects}
+                    causes = []
+                    for ai, arm_spec in enumerate(arms):
+                        aid = "step%d.arm%d" % (si, ai)
+                        arm_rec = written.get(aid)
+                        if arm_rec is None:
+                            causes.append(
+                                "interject-unavailable: %s.no_record" % aid)
+                        elif arm_rec.get("cause") and not (
+                                isinstance(arm_spec, dict)
+                                and arm_spec.get("require") is False) \
+                                and not (arm_rec.get("send") == "set_model"
+                                         and arm_rec.get("disarm_reason")
+                                         == "ext_error"):
+                            causes.append(arm_rec["cause"])
+                    if causes:
+                        prior = getattr(ctx, "interject_cause", None)
+                        ctx.interject_cause = "; ".join(
+                            ([prior] if prior else []) + causes)
                 snapshot_history(ctx, "turn%d" % si, home, case_cwd)
             elif op == "kill":
                 model = step.get("model", cur_model)
@@ -4726,8 +5473,11 @@ def _finish(case, run_dir, ctx, results, status, started, wt, home, args,
     wire_dir = os.path.join(run_dir, "wire")
     if not os.path.isdir(wire_dir):
         wire_dir = None
-    status, vinfo = finalize_verdict(case, status, results,
-                                     wire_dir=wire_dir)
+    # apex-bdfz BZ-7 (plan r3 section 2.5.1 item 2): the dispatcher's joined
+    # interject cause reaches the verdict engine here, on every path.
+    status, vinfo = finalize_verdict(
+        case, status, results, wire_dir=wire_dir,
+        interject_cause=getattr(ctx, "interject_cause", None))
     ctx.verdict = vinfo
     budget.add(ctx.model_calls)
     exp_red = case.get("expected_red") or {}
@@ -5285,6 +6035,24 @@ def write_report(out: str, rows, env_meta, args, sweep_hits, sweep_details):
             if t.get("text"):
                 bits.append("text=%r" % t["text"][:80])
             md.append("- " + " ".join(bits))
+            if "interjects" in t:
+                # apex-bdfz BZ-R7 F-2 (plan r3 section 2.8): one line per
+                # armed turn naming each arm's send and status, so the arms of
+                # a VACUOUS or BLOCKED row read here too; report.json keeps
+                # the whole records.
+                arms = []
+                for a in t["interjects"]:
+                    send = a.get("send")
+                    if send == "set_model":
+                        send = "set_model %s" % a.get("model")
+                    status = a.get("status")
+                    if a.get("disarm_reason"):
+                        status = "%s(%s)" % (status, a["disarm_reason"])
+                    arms.append("%s %s %s%s" % (
+                        a.get("arm_id"), send, status,
+                        " mid_turn" if a.get("mid_turn") else ""))
+                md.append("  - interject arms: %s"
+                          % ("; ".join(arms) or "none recorded"))
         for s in r.get("snapshots", []):
             md.append("- snapshot %s: lines=%s bytes=%s" % (
                 s.get("op"), s.get("chat_history_lines", "-"),
@@ -5378,7 +6146,13 @@ LIVE_MODEL_OPS = ("turn", "switch", "switch_model", "kill", "compact",
 ARTIFACT_OPS = ("count", "grep", "recon")
 
 
-def _validate_where(ctx, where, errs):
+def _validate_where(ctx, where, errs, ndjson_op=None):
+    # apex-bdfz BZ-R7 F-5(a): check_ndjson applies an ndjson where on count, eq
+    # and ne only, so on any other ndjson op it is refused rather than silently
+    # ignored. Wire and artifact asserts pass no op.
+    if ndjson_op is not None and ndjson_op not in ("count", "eq", "ne"):
+        errs.append("%s: where filters only ndjson ops count, eq and ne "
+                    "(op %r would ignore it)" % (ctx, ndjson_op))
     if not isinstance(where, dict):
         errs.append("%s: 'where' must be an object" % ctx)
         return
@@ -5438,6 +6212,61 @@ def _validate_step(ctx, st, errs):
     if op in ("turn", "compact") and "timeout_s" in st \
             and not isinstance(st["timeout_s"], (int, float)):
         errs.append("%s: timeout_s must be a number" % ctx)
+    # apex-bdfz BZ-6 (plan r3 section 2.7, R-7): the step-local half of the
+    # interject mirror; the driver and echo rules need the whole case and
+    # live in _validate_new_case. The schema subset has no oneOf, so
+    # "exactly one trigger key" is enforced here, not by the schema.
+    if "interject" in st:
+        if op != "turn":
+            errs.append("%s: interject is only legal on op turn (got %r)"
+                        % (ctx, op))
+        if "kill_after_s" in st or "expect_kill" in st:
+            errs.append("%s: interject cannot ride a step carrying "
+                        "kill_after_s or expect_kill" % ctx)
+        arms = st["interject"]
+        if not (isinstance(arms, list) and arms):
+            errs.append("%s: interject must be a non-empty list of arms"
+                        % ctx)
+            arms = []
+        for j, arm in enumerate(arms):
+            actx = "%s interject[%d]" % (ctx, j)
+            if not isinstance(arm, dict):
+                errs.append("%s: arm must be an object" % actx)
+                continue
+            at = arm.get("at")
+            if not (isinstance(at, dict) and len(at) == 1 and set(at)
+                    <= {"after_tool_calls", "after_tool", "after_s"}):
+                errs.append("%s: at needs exactly one trigger key "
+                            "(after_tool_calls | after_tool | after_s), "
+                            "got %r" % (actx, sorted(at)
+                                        if isinstance(at, dict) else at))
+            send = arm.get("send", "interject")
+            # apex-bdfz BZ-R7 F-6: the step-local half of the schema's send
+            # enum, so a legacy-form case (which never reaches the schema gate)
+            # cannot carry a send the pump would send as x.ai/interject.
+            if send not in ("interject", "set_model"):
+                errs.append("%s: send must be interject or set_model (got "
+                            "%r)" % (actx, send))
+            text = arm.get("text")
+            if send == "interject" and not (
+                    isinstance(text, str) and text and "model" not in arm):
+                errs.append("%s: send interject needs a non-empty string "
+                            "'text' and no 'model'" % actx)
+            if send == "set_model" and not (
+                    isinstance(arm.get("model"), str) and "text" not in arm):
+                errs.append("%s: send set_model needs a string 'model' "
+                            "and no 'text'" % actx)
+            if isinstance(text, str):
+                if text == st.get("prompt"):
+                    errs.append("%s: text is a copy of the step prompt (a "
+                                "copy is not an interjection)" % actx)
+                # surrogatepass: a lone surrogate from a JSON escape counts
+                # instead of raising.
+                size = len(text.encode("utf-8", "surrogatepass"))
+                if size > 4096:
+                    errs.append("%s: text is %d bytes, over the 4096-byte "
+                                "bound (the product truncates a long "
+                                "interjection silently)" % (actx, size))
 
 
 # apex-ayl.22 D-1/D-2 — draft-07 dual-path engine + NEW-case gate.
@@ -5728,7 +6557,10 @@ def _validate_new_case(name, case, engine=None):
         declared-call id; exactly one harness-class premise when
         mcp_calls is declared (D-4a);
       - env.provider_vars_unset is a superset of the runner L1 set
-        (D-7; a subset declaration is rejected).
+        (D-7; a subset declaration is rejected);
+      - an interject block needs driver acp, and each send:interject text
+        carries a scored text_contains nonce and asks for it back
+        verbatim (apex-bdfz BZ-6, the echo rule F-3).
     """
     errs = []
     schema = _load_schema()
@@ -5855,6 +6687,36 @@ def _validate_new_case(name, case, engine=None):
                 errs.append(
                     "%s: env.provider_vars_unset must be a superset of "
                     "the runner L1 set; missing %s" % (name, missing))
+    # apex-bdfz BZ-6 (plan r3 section 2.7, R-7): the case-level half of the
+    # interject mirror. The text_contains pin reads only model-authored
+    # chunks, so a nonce the model was never asked to repeat is never
+    # produced (F-3); the check is greppable: the nonce as a substring plus
+    # the word "verbatim".
+    nd = ab.get("ndjson")
+    nonces = [spec.get("value") for spec in (nd if isinstance(nd, list)
+                                             else [])
+              if isinstance(spec, dict) and spec.get("op") == "text_contains"
+              and isinstance(spec.get("value"), str) and spec.get("value")]
+    steps = case.get("steps")
+    for i, st in enumerate(steps if isinstance(steps, list) else []):
+        if not (isinstance(st, dict) and "interject" in st):
+            continue
+        if case.get("driver", "headless") != "acp":
+            errs.append("%s steps[%d]: interject needs driver acp (headless "
+                        "is one process per turn)" % (name, i))
+        arms = st["interject"]
+        for j, arm in enumerate(arms if isinstance(arms, list) else []):
+            if not isinstance(arm, dict) \
+                    or arm.get("send", "interject") != "interject":
+                continue
+            text = arm.get("text")
+            if not (isinstance(text, str)
+                    and any(n in text for n in nonces)
+                    and re.search(r"\bverbatim\b", text, re.I)):
+                errs.append(
+                    "%s steps[%d].interject[%d]: echo rule (F-3): the text "
+                    "must carry a nonce the case scores with text_contains "
+                    "and ask for it back verbatim" % (name, i, j))
     # apex-ayl.22 D-4c (T-S3): the prompt<->declaration drift check
     # (last turn prompt must carry the declared names/args/done line).
     _validate_drift(name, case, errs)
@@ -6102,7 +6964,8 @@ def validate_case_file(path, engine=None):
                         errs.append("%s: artifact ne_null must be true"
                                     % ctx)
             if "where" in spec:
-                _validate_where(ctx, spec["where"], errs)
+                _validate_where(ctx, spec["where"], errs,
+                                ndjson_op=kind if block == "ndjson" else None)
     # apex-ayl.22 D-2: NEW (schema_version) files take the full gate;
     # legacy files stop here (back-compat, no new failures).
     if case.get("schema_version") is not None:

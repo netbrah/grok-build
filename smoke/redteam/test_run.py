@@ -260,7 +260,10 @@ class ScriptedBinary(object):
     def __init__(self, stdout, clock, run_s=0.35, reg_s=0.05,
                  pc_gap_s=0.15, drain_tail_s=0.0,
                  turn_stops=None, turn_agent_result=None,
-                 init_bps=0, init_line=None):
+                 init_bps=0, init_line=None,
+                 inter_ack_s=0.1, turn_chunks=None,
+                 inter_replies=None, inter_broadcast=False,
+                 tool_calls=None, prompt_error=None, prompt_error_s=0.1):
         self.stdout = stdout
         self.clock = clock
         self.run_s = run_s
@@ -277,6 +280,25 @@ class ScriptedBinary(object):
         self.t_end = []        # turn_completed time per turn
         self.t_pc = []         # prompt_complete time per turn
         self.early_step_fired = False
+        # apex-bdfz BZ-3: the x.ai/interject ack delay, each turn's
+        # agent_message_chunk script [(seconds after registration, text)],
+        # and every _x.ai/interject request received, as (t, request).
+        self.inter_ack_s = inter_ack_s
+        self.turn_chunks = turn_chunks or []
+        self.interjects = []
+        # apex-bdfz BZ-5: per-request x.ai/interject answers in request order
+        # ({"after": s, "reply": "queued" | "error" | "silent"}; default queued
+        # after inter_ack_s); the x.ai/session/interjection broadcast the
+        # product sends for every interject; Pending tool_call lines
+        # [{"at": s after registration, "toolCallId", "name", "rawInput",
+        # "turn": i}]; and an error turn's session/prompt JSON-RPC error,
+        # answered prompt_error_s after its prompt_complete (acp_agent.rs
+        # prompt(): prompt_complete is emitted before the Err branch returns).
+        self.inter_replies = inter_replies or []
+        self.inter_broadcast = inter_broadcast
+        self.tool_calls = tool_calls or []
+        self.prompt_error = prompt_error
+        self.prompt_error_s = prompt_error_s
 
     # -- wire helpers -------------------------------------------------------
 
@@ -330,8 +352,54 @@ class ScriptedBinary(object):
                           "update": {"sessionUpdate": "model_changed",
                                      "modelId": mid}})
             self._respond(t + 0.1, tid, {"modelId": mid})
+        elif method == "_x.ai/interject":
+            self._on_interject(d, tid, t)
         elif method == "session/close":
             self._respond(t + 0.1, tid, {})
+
+    def _on_interject(self, d, tid, t):
+        # The x.ai/interject ext request (extensions/interject.rs:35-56):
+        # queued into the session's running turn, answered
+        # {"status": "queued"}. Mid-turn when a sent prompt's turn has not
+        # yet delivered turn_completed (the early_step_fired detector).
+        if self._has_unended_prior(t):
+            self.early_step_fired = True
+        spec = (self.inter_replies[len(self.interjects)]
+                if len(self.interjects) < len(self.inter_replies) else {})
+        self.interjects.append((t, d))
+        params = d.get("params") or {}
+        if self.inter_broadcast:
+            # broadcast_interjection (interjection.rs): {sessionId, text,
+            # interjectionId?} to every attached client, on receipt.
+            echo = {"sessionId": self.session_id, "text": params.get("text")}
+            if params.get("interjectionId") is not None:
+                echo["interjectionId"] = params["interjectionId"]
+            self._notify(t + 0.05, "_x.ai/session/interjection", echo)
+        reply = spec.get("reply", "queued")
+        after = spec.get("after", self.inter_ack_s)
+        if reply == "queued":
+            self._respond(t + after, tid, {"status": "queued"})
+        elif reply == "error":
+            # invalid_params with the session-not-found data
+            # (extensions/interject.rs:41-45).
+            self._respond(t + after, tid, error={
+                "code": -32602, "message": "Invalid params",
+                "data": "session not found: %s" % params.get("sessionId")})
+        elif reply != "silent":
+            raise ValueError("unknown interject reply: %r" % (reply,))
+
+    def _tool_call_params(self, tc, at):
+        # A Pending tool_call session/update as captured (BZ-4's
+        # _bz4_tool_call, plus the notification _meta): the title is the wire
+        # name and _meta["x.ai/tool"] is stamped.
+        return {"sessionId": self.session_id,
+                "update": {"sessionUpdate": "tool_call",
+                           "toolCallId": tc["toolCallId"],
+                           "title": tc["name"],
+                           "rawInput": tc.get("rawInput", {}),
+                           "_meta": {"x.ai/tool": _bz4_xai_tool(tc["name"])}},
+                "_meta": {"eventId": "replay-event-%s" % tc["toolCallId"],
+                          "agentTimestampMs": int(round(at * 1000))}}
 
     def _has_unended_prior(self, t, excluding_current_send=False):
         # A step fired while a previously sent prompt's turn has not yet
@@ -372,17 +440,36 @@ class ScriptedBinary(object):
                       "runningPromptId": pid,
                       "runningText": text,
                       "runningKind": "prompt"})
+        for off, chunk in (self.turn_chunks[i]
+                           if i < len(self.turn_chunks) else []):
+            self._notify(t_reg + off, "session/update",
+                         {"sessionId": self.session_id,
+                          "update": {"sessionUpdate": "agent_message_chunk",
+                                     "content": {"type": "text",
+                                                 "text": chunk}}})
+        for tc in self.tool_calls:
+            if tc.get("turn", 0) == i:
+                self._notify(t_reg + tc["at"], "session/update",
+                             self._tool_call_params(tc, t_reg + tc["at"]))
         self._notify(t_end, "_x.ai/session_notification",
                      {"sessionId": self.session_id,
                       "update": {"sessionUpdate": "turn_completed",
                                  "prompt_id": pid,
                                  "stop_reason": stop,
-                                 "elapsed_ms": 42}})
+                                 "elapsed_ms": 42},
+                      # build_notification_meta (updates.rs): the agent's
+                      # emit time in epoch milliseconds.
+                      "_meta": {"eventId": "replay-event-%03d" % (i + 1),
+                                "agentTimestampMs": int(round(t_end * 1000))}})
         self._notify(t_pc, "_x.ai/session/prompt_complete",
                      {"sessionId": self.session_id,
                       "promptId": pid,
                       "stopReason": stop,
                       "agentResult": self.turn_agent_result})
+        if stop == "error" and self.prompt_error is not None:
+            self._respond(t_pc + self.prompt_error_s, tid,
+                          error=self.prompt_error)
+            return
         # JSON-RPC response after the turn (B-ii line 37), carrying the
         # prompt id in _meta (build_prompt_response_meta, :1453).
         self._respond(t_end, tid,
@@ -692,6 +779,1574 @@ class InitBudgetTest(ReplayBase):
                 "read(1)-per-byte pattern)" % calls)
         finally:
             sess.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# apex-bdfz BZ-1 — the turn-completion matcher as a feedable object
+# ---------------------------------------------------------------------------
+
+_BZ1_SID = "01a0replay-0000-4000-8000-replay00000001"
+_BZ1_DETAIL = ("API error (status 400 Bad Request): litellm.BadRequestError: "
+               "bz1 provider detail")
+
+
+def _bz1_turn_completed(pid, stop="end_turn"):
+    """turn_completed in ScriptedBinary's wire shape."""
+    return {"jsonrpc": "2.0", "method": "_x.ai/session_notification",
+            "params": {"sessionId": _BZ1_SID,
+                       "update": {"sessionUpdate": "turn_completed",
+                                  "prompt_id": pid, "stop_reason": stop,
+                                  "elapsed_ms": 42}}}
+
+
+def _bz1_prompt_complete(pid, stop="end_turn", agent_result=None):
+    """prompt_complete in ScriptedBinary's wire shape."""
+    return {"jsonrpc": "2.0", "method": "_x.ai/session/prompt_complete",
+            "params": {"sessionId": _BZ1_SID, "promptId": pid,
+                       "stopReason": stop, "agentResult": agent_result}}
+
+
+def _bz1_queue_changed(running_pid):
+    """queue/changed in ScriptedBinary's wire shape."""
+    return {"jsonrpc": "2.0", "method": "_x.ai/queue/changed",
+            "params": {"sessionId": _BZ1_SID, "entries": [],
+                       "runningPromptId": running_pid,
+                       "runningText": "M", "runningKind": "prompt"}}
+
+
+class MidTurnWaiterTest(ReplayBase):
+    """apex-bdfz BZ-1 (plan r3 section 2.2 item 1, section 3 F-16, review
+    R-5): AcpSession._TurnWaiter.feed applies _read_turn_completion's rules
+    one parsed line at a time and answers "wait" / "grace" / "done". "grace"
+    is owed only by a turn_completed error terminal, which carries no
+    agentResult; a prompt_complete terminal already carries it and is "done"
+    at once. The sequential prompt() path keeps its reads and its surfaced
+    error."""
+
+    def _fake_time(self, now=100.0):
+        clock = FakeClock()
+        clock.now = now
+        return clock, FakeTime(clock)
+
+    def _drive_one_prompt(self, binary_kwargs):
+        """One prompt() turn on the real AcpSession against ScriptedBinary.
+        The process globals are swapped for this call only, so two calls in
+        one test cannot leak a fake into the next."""
+        sess = self._make_replay(binary_kwargs)
+        saved = (subprocess.Popen, sys.modules.get("select"), run.time)
+        subprocess.Popen = lambda *a, **k: sess._fake_proc
+        sys.modules["select"] = sess._fake_select
+        run.time = sess._fake_time
+        try:
+            sess.start()
+            b = sess._binary
+            before = b.stdout.read_calls
+            resp, stop = sess.prompt("M1")
+            return {"resp": resp, "stop": stop,
+                    "reads": b.stdout.read_calls - before,
+                    "returned_at": b.clock.now, "pid": b.turn_pids[0]}
+        finally:
+            subprocess.Popen, sys.modules["select"], run.time = saved
+            sess.cleanup()
+
+    def test_feed_matches_expected_prompt_id_only(self):
+        """The live B-ii sequence (apex-ayl.28): a late turn_completed for an
+        already-consumed prompt, the queue row naming ours, then ours. feed
+        answers wait / wait / done, and only the late line trips the desync
+        guard, with its log line verbatim."""
+        consumed = {"pid-0"}
+        waiter = run.AcpSession._TurnWaiter(
+            "pid-1", completed_prompt_ids=consumed)
+        logged = []
+        saved = run.log
+        run.log = logged.append
+        try:
+            states = [waiter.feed(_bz1_turn_completed("pid-0"))]
+            first = list(logged)
+            states.append(waiter.feed(_bz1_queue_changed("pid-1")))
+            states.append(waiter.feed(_bz1_turn_completed("pid-1")))
+        finally:
+            run.log = saved
+        self.assertEqual(states, ["wait", "wait", "done"])
+        self.assertEqual(
+            first,
+            ["ACP desync guard: ignoring turn_completed pid=pid-0 "
+             "(expected pid-1) — late/foreign completion"],
+            "the late completion must be rejected by the consumed-guard")
+        self.assertEqual(logged, first, "only the late line trips the guard")
+        self.assertEqual(waiter.completion,
+                         {"promptId": "pid-1", "stopReason": "end_turn",
+                          "agentResult": None, "via": "turn_completed"})
+        self.assertEqual(consumed, {"pid-0", "pid-1"},
+                         "ours joins the consumed set once the waiter is done")
+
+    def test_error_completion_asks_for_the_grace_read(self):
+        """F-5 / F-16: a turn_completed error terminal carries no agentResult,
+        so feed answers "grace": the turn is over and the reader keeps reading
+        up to wait()'s deadline, inside ACP_ERROR_GRACE_S of now; the matching
+        trailing prompt_complete upgrades the completion to the
+        prompt_complete shape carrying the provider detail, which prompt()
+        then surfaces verbatim."""
+        waiter = run.AcpSession._TurnWaiter("pid-1")
+        clock, fake = self._fake_time(100.0)
+        saved = run.time
+        run.time = fake
+        try:
+            state = waiter.feed(_bz1_turn_completed("pid-1", "error"))
+            deadline = waiter.wait(clock.now + 300.0)
+            clock.advance(1.0)
+            upgraded = waiter.feed(
+                _bz1_prompt_complete("pid-1", "error", _BZ1_DETAIL))
+            after = waiter.wait(clock.now + 300.0)
+        finally:
+            run.time = saved
+        with self.subTest(leg="waiter"):
+            self.assertEqual(state, "grace",
+                             "an error turn_completed must ask for the "
+                             "grace read, not end the read")
+            self.assertIsNotNone(deadline, "no grace deadline exposed")
+            self.assertGreater(deadline, 100.0)
+            self.assertLessEqual(deadline - 100.0, run.ACP_ERROR_GRACE_S)
+            self.assertEqual(upgraded, "done")
+            self.assertEqual(waiter.completion,
+                             {"promptId": "pid-1", "stopReason": "error",
+                              "agentResult": _BZ1_DETAIL,
+                              "via": "prompt_complete"})
+            self.assertIsNone(after)
+        seq = self._drive_one_prompt(
+            {"run_s": 10.0, "reg_s": 0.5, "pc_gap_s": 2.0,
+             "drain_tail_s": 0.0, "turn_stops": ["error"],
+             "turn_agent_result": _BZ1_DETAIL})
+        with self.subTest(leg="sequential surfaced error"):
+            err = seq["resp"].get("error") or {}
+            self.assertEqual(seq["stop"], "error")
+            self.assertEqual(err.get("message"), _BZ1_DETAIL,
+                             "no agentResult in the surfaced error: %r"
+                             % (err.get("message"),))
+            self.assertEqual(err.get("via"), "prompt_complete")
+            self.assertEqual(err.get("promptId"), seq["pid"])
+
+    def test_prompt_complete_error_never_asks_for_grace(self):
+        """R-5: a prompt_complete terminal already carries agentResult, error
+        or not, so feed answers "done" with no grace deadline outstanding,
+        and the sequential path takes no extra read and no ACP_ERROR_GRACE_S
+        stall on it: its reads equal those of the same turn ending
+        end_turn."""
+        waiter = run.AcpSession._TurnWaiter("pid-1")
+        clock, fake = self._fake_time(100.0)
+        saved = run.time
+        run.time = fake
+        try:
+            state = waiter.feed(
+                _bz1_prompt_complete("pid-1", "error", _BZ1_DETAIL))
+            outstanding = waiter.wait(clock.now + 300.0)
+        finally:
+            run.time = saved
+        with self.subTest(leg="waiter"):
+            self.assertIsNone(outstanding,
+                              "a grace deadline is outstanding after a "
+                              "prompt_complete terminal")
+            self.assertEqual(state, "done")
+            self.assertEqual(waiter.completion,
+                             {"promptId": "pid-1", "stopReason": "error",
+                              "agentResult": _BZ1_DETAIL,
+                              "via": "prompt_complete"})
+        # pc_gap_s < 0: prompt_complete is the terminal; turn_completed and
+        # the JSON-RPC response trail it by 0.5 s.
+        base = {"run_s": 5.0, "reg_s": 0.5, "pc_gap_s": -0.5,
+                "drain_tail_s": 0.0, "turn_agent_result": _BZ1_DETAIL}
+        err = self._drive_one_prompt(dict(base, turn_stops=["error"]))
+        ok = self._drive_one_prompt(dict(base, turn_stops=["end_turn"]))
+        with self.subTest(leg="sequential reads"):
+            self.assertEqual(err["reads"], ok["reads"],
+                             "one extra read is taken on the prompt_complete "
+                             "error terminal (%d reads vs %d)"
+                             % (err["reads"], ok["reads"]))
+            self.assertEqual(err["returned_at"], ok["returned_at"],
+                             "the reader stalled past the error terminal")
+            self.assertEqual((err["resp"].get("error") or {}).get("message"),
+                             _BZ1_DETAIL)
+            self.assertEqual(ok["stop"], "end_turn")
+
+    def test_normal_completion_is_done(self):
+        """The other end of the three-way contract: a non-terminal line and the
+        turn's JSON-RPC response are "wait" (keep reading to the caller's own
+        deadline; the response is kept, informational); a normal
+        turn_completed and a normal prompt_complete are each "done" at once
+        with nothing outstanding."""
+        waiter = run.AcpSession._TurnWaiter("pid-1", tid=7)
+        chunk = {"jsonrpc": "2.0", "method": "session/update",
+                 "params": {"sessionId": _BZ1_SID,
+                            "update": {"sessionUpdate": "agent_message_chunk",
+                                       "content": {"type": "text",
+                                                   "text": "hi"}}}}
+        reply = {"jsonrpc": "2.0", "id": 7,
+                 "result": {"stopReason": "end_turn"}}
+        self.assertEqual(waiter.feed(chunk), "wait")
+        self.assertEqual(waiter.feed(reply), "wait")
+        self.assertIs(waiter.response, reply)
+        self.assertEqual(waiter.wait(250.0), 250.0)
+        self.assertEqual(waiter.feed(_bz1_turn_completed("pid-1")), "done")
+        self.assertIsNone(waiter.wait(250.0))
+        self.assertEqual(waiter.completion,
+                         {"promptId": "pid-1", "stopReason": "end_turn",
+                          "agentResult": None, "via": "turn_completed"})
+        other = run.AcpSession._TurnWaiter("pid-2")
+        self.assertEqual(
+            other.feed(_bz1_prompt_complete("pid-2", "end_turn", "all done")),
+            "done")
+        self.assertIsNone(other.wait(250.0))
+        self.assertEqual(other.completion,
+                         {"promptId": "pid-2", "stopReason": "end_turn",
+                          "agentResult": "all done",
+                          "via": "prompt_complete"})
+
+
+# ---------------------------------------------------------------------------
+# apex-bdfz BZ-2 — prompt_send / prompt_collect and the deferred inbox
+# ---------------------------------------------------------------------------
+
+class _DeferredTurnBinary(ScriptedBinary):
+    """ScriptedBinary whose prompt turns were already read off stdout on the
+    session's behalf: a mid-turn reader consumed the turn's lines and left
+    the completion (and the prompt's JSON-RPC response) in AcpSession._inbox
+    (plan r3 section 2.2 item 3). session/prompt is accepted and recorded;
+    no line of the turn is scheduled, so nothing more arrives on stdout for
+    it and whatever prompt_collect still read would hang to its deadline."""
+
+    def __init__(self, *args, **kwargs):
+        super(_DeferredTurnBinary, self).__init__(*args, **kwargs)
+        self.prompt_tids = []
+        self.prompt_params = []
+
+    def _on_prompt(self, d, tid, t):
+        params = d.get("params") or {}
+        self.turn_pids.append((params.get("_meta") or {}).get("promptId"))
+        self.prompt_tids.append(tid)
+        self.prompt_params.append(params)
+
+
+class MidTurnSplitTest(ReplayBase):
+    """apex-bdfz BZ-2 (plan r3 section 2.2 items 2-3, review F-6): prompt()
+    is prompt_send (the session/prompt request; returns (tid, prompt_id)
+    without reading) plus prompt_collect, which drains AcpSession._inbox
+    before it reads a single byte. A deferred completion is returned with no
+    read and no wait (the F-1 race as a unit); a deferred session/prompt
+    JSON-RPC response wins over the synthesized notification shape, as a
+    read one does in prompt()."""
+
+    # prompt_collect's read budget in seconds, relative to the call (the
+    # plan's "deadline"; _read_turn_completion's convention).
+    BUDGET_S = 30.0
+
+    def _make_deferred(self):
+        clock = FakeClock()
+        stdout = FakeStdout(clock)
+        binary = _DeferredTurnBinary(stdout, clock)
+        tmp = tempfile.mkdtemp(prefix="rt-bz2-")
+        os.makedirs(os.path.join(tmp, "home"))
+        os.makedirs(os.path.join(tmp, "cwd"))
+        self._tmps.append(tmp)
+        sess = ReplaySession(binary, tmp)
+        sess._install_fakes()
+        self._patch(sess)
+        return sess
+
+    def test_collect_returns_deferred_completion_without_reading(self):
+        """The turn's completion was consumed by a mid-turn reader and left
+        in the inbox. prompt_collect returns it at once: stop "end_turn" and
+        the resp prompt() synthesizes for it, with no read of stdout and no
+        wait on the fake clock; the inbox is drained, so the completion can
+        never be handed to a later turn."""
+        sess = self._make_deferred()
+        try:
+            sess.start()
+            b = sess._binary
+            tid, pid = sess.prompt_send("M")
+            with self.subTest(leg="send"):
+                self.assertEqual(b.prompt_tids, [tid])
+                self.assertEqual(
+                    b.prompt_params,
+                    [{"sessionId": b.session_id,
+                      "prompt": [{"type": "text", "text": "M"}],
+                      "_meta": {"promptId": pid}}])
+            sess._inbox["completion"] = {"promptId": pid,
+                                         "stopReason": "end_turn",
+                                         "agentResult": None,
+                                         "via": "turn_completed"}
+            reads, now = b.stdout.read_calls, b.clock.now
+            resp, stop = sess.prompt_collect(tid, pid, self.BUDGET_S)
+            with self.subTest(leg="no wait"):
+                self.assertEqual(
+                    b.clock.now, now,
+                    "prompt_collect read to the fake deadline (%.1f fake s) "
+                    "instead of returning the deferred completion (the F-1 "
+                    "hang)" % (b.clock.now - now))
+            with self.subTest(leg="stop"):
+                self.assertEqual(stop, "end_turn")
+                self.assertEqual(resp, {"result": {"stopReason": "end_turn",
+                                                   "_via": "turn_completed",
+                                                   "promptId": pid}})
+            with self.subTest(leg="no read"):
+                self.assertEqual(
+                    b.stdout.read_calls, reads,
+                    "prompt_collect read stdout although the completion was "
+                    "deferred")
+            with self.subTest(leg="drained"):
+                self.assertEqual(sess._inbox, {"responses": {},
+                                               "completion": None,
+                                               "prompt_response": None})
+        finally:
+            sess.cleanup()
+
+    def test_pump_captured_prompt_response_wins(self):
+        """F-6: the mid-turn reader also captured the turn's session/prompt
+        JSON-RPC response (id == tid) into _inbox["prompt_response"].
+        prompt_collect returns that response object itself, with its own
+        stopReason, not the notification shape it would synthesize from the
+        completion: prompt()'s preference for a response, reached through the
+        inbox with no second read."""
+        sess = self._make_deferred()
+        try:
+            sess.start()
+            b = sess._binary
+            tid, pid = sess.prompt_send("M")
+            stored = {"jsonrpc": "2.0", "id": tid,
+                      "result": {"stopReason": "stop_sequence",
+                                 "_meta": {"sessionId": b.session_id,
+                                           "requestId": pid,
+                                           "promptId": pid}}}
+            sess._inbox["prompt_response"] = stored
+            sess._inbox["completion"] = {"promptId": pid,
+                                         "stopReason": "end_turn",
+                                         "agentResult": None,
+                                         "via": "turn_completed"}
+            reads, now = b.stdout.read_calls, b.clock.now
+            resp, stop = sess.prompt_collect(tid, pid, self.BUDGET_S)
+            got = (resp.get("result") or {}).get("stopReason")
+            with self.subTest(leg="response wins"):
+                self.assertEqual(
+                    got, "stop_sequence",
+                    "a synthesised stopReason %r where the captured "
+                    "session/prompt response carried a real one" % (got,))
+                self.assertIs(resp, stored)
+                self.assertEqual(stop, "stop_sequence")
+            with self.subTest(leg="no second read"):
+                self.assertEqual(b.stdout.read_calls, reads)
+                self.assertEqual(b.clock.now, now)
+            with self.subTest(leg="drained"):
+                self.assertEqual(sess._inbox, {"responses": {},
+                                               "completion": None,
+                                               "prompt_response": None})
+        finally:
+            sess.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# apex-bdfz BZ-3 — interject() / mid_turn_set_model() on the single-reader pump
+# ---------------------------------------------------------------------------
+
+_BZ3_FOREIGN_SID = "01a0foreign-0000-4000-8000-foreign000001"
+
+
+def _bz3_chunk(sid, text):
+    """An agent_message_chunk session/update line (the captured wire shape)."""
+    return json.dumps(
+        {"jsonrpc": "2.0", "method": "session/update",
+         "params": {"sessionId": sid,
+                    "update": {"sessionUpdate": "agent_message_chunk",
+                               "content": {"type": "text",
+                                           "text": text}}}}) + "\n"
+
+
+def _bz3_chunk_texts(updates):
+    return [(u.get("content") or {}).get("text") for u in updates
+            if u.get("sessionUpdate") == "agent_message_chunk"]
+
+
+class MidTurnSendTest(ReplayBase):
+    """apex-bdfz BZ-3 (plan r3 section 2.2 items 4-5, section 2.1, review
+    F-10): interject() sends the x.ai/interject ext request (wire method
+    _x.ai/interject) into the turn prompt_send started and reads its reply
+    through the single-reader pump while the turn keeps streaming; the
+    turn's updates keep reaching sess.updates and its one completion is
+    consumed by prompt_collect. Every reader drops a foreign session's line
+    with the one predicate _session_scoped, in front of tracking and
+    feeding."""
+
+    def test_interject_is_awaited_while_turn_continues(self):
+        """turn_completed at t=4; interject("HELLO") at t=0.5 is answered
+        {"status": "queued"} after inter_ack_s while the turn runs: the
+        request carries sessionId and text, the reply is returned, the chunks
+        streamed during and after the wait land in sess.updates, the fake
+        sees the request mid-turn, and prompt_collect consumes the turn's one
+        completion. With no turn in flight nothing is sent."""
+        # start() leaves the fake clock at 0.05: registration 0.1, end 4.0.
+        sess = self._make_replay(
+            {"reg_s": 0.05, "run_s": 3.9, "pc_gap_s": 0.15,
+             "inter_ack_s": 0.1,
+             "turn_chunks": [[(0.2, "C0"), (0.45, "C1"), (1.4, "C2"),
+                              (2.4, "C3"), (3.4, "C4")]]})
+        self._patch(sess)
+        try:
+            sess.start()
+            b = sess._binary
+            early, early_w = sess.interject("EARLY")
+            with self.subTest(leg="no turn in flight: nothing sent"):
+                self.assertIn("error", early)
+                self.assertFalse(early_w["sent"])
+                self.assertEqual(b.interjects, [])
+            tid, pid = sess.prompt_send("M")
+            self.assertAlmostEqual(b.t_end[0], 4.0)
+            b.clock.advance(0.5 - b.clock.now)
+            resp, witness = sess.interject("HELLO")
+            returned_at = b.clock.now
+            texts_at_return = _bz3_chunk_texts(sess.updates)
+            self.assertEqual(len(b.interjects), 1)
+            t_sent, req = b.interjects[0]
+            with self.subTest(leg="ext request on stdin"):
+                self.assertAlmostEqual(t_sent, 0.5)
+                self.assertEqual(req["method"], "_x.ai/interject")
+                self.assertEqual(req["params"],
+                                 {"sessionId": b.session_id, "text": "HELLO"})
+                self.assertIsInstance(req.get("id"), int)
+            with self.subTest(leg="reply returned"):
+                self.assertEqual(resp, {"jsonrpc": "2.0", "id": req["id"],
+                                        "result": {"status": "queued"}})
+                self.assertEqual(witness["id"], req["id"])
+                self.assertEqual(witness["prompt_id"], pid)
+                self.assertTrue(witness["sent"])
+                self.assertAlmostEqual(witness["sent_at"], 0.5)
+                self.assertAlmostEqual(witness["reply_at"], 0.6)
+            with self.subTest(leg="mid-turn"):
+                self.assertTrue(b.early_step_fired,
+                                "the interjection reached the fake after the "
+                                "turn ended, not inside it")
+                self.assertAlmostEqual(returned_at, 0.6)
+                self.assertLess(returned_at, b.t_end[0])
+            with self.subTest(leg="the pump tracked the turn while waiting"):
+                self.assertEqual(texts_at_return, ["C0", "C1"])
+            resp2, stop = sess.prompt_collect(tid, pid, 30.0)
+            with self.subTest(leg="chunks between t=0.5 and t=4 in updates"):
+                self.assertEqual(_bz3_chunk_texts(sess.updates),
+                                 ["C0", "C1", "C2", "C3", "C4"])
+            with self.subTest(leg="exactly one completion consumed"):
+                self.assertEqual(stop, "end_turn")
+                self.assertEqual(resp2["result"]["promptId"], pid)
+                self.assertEqual(sess._completed_prompt_ids, {pid})
+                self.assertEqual(sess._inbox, {"responses": {},
+                                               "completion": None,
+                                               "prompt_response": None})
+            late, late_w = sess.interject("LATE")
+            with self.subTest(leg="collected turn: nothing sent"):
+                self.assertIn("error", late)
+                self.assertFalse(late_w["sent"])
+                self.assertEqual(len(b.interjects), 1)
+        finally:
+            sess.cleanup()
+
+    def test_foreign_session_lines_are_dropped_before_tracking(self):
+        """A foreign session's agent_message_chunk read by the pump never
+        reaches sess.updates (so never acp_message or a text_contains pin),
+        nor does its prompt_complete reach the turn's waiter, while this
+        session's next line is tracked; the sequential reader drops it the
+        same way. _session_scoped is the one predicate both readers call, in
+        front of _track_update and feed: no reader carries its own copy of
+        the guard, and neither _track_update nor feed owns it."""
+        import inspect
+        scoped_src = inspect.getsource(run.AcpSession._session_scoped)
+        with self.subTest(leg="one predicate, owned by the reader"):
+            guard = re.compile(
+                r'\.get\("sessionId"\)\s+(?:not\s+)?in[\s\\]+\(None,')
+            self.assertEqual(
+                len(guard.findall(inspect.getsource(run.AcpSession))), 1,
+                "a reader carries its own copy of the session guard")
+            self.assertEqual(len(guard.findall(scoped_src)), 1)
+            for name, fn in (("_TurnWaiter.pump", run.AcpSession._TurnWaiter.pump),
+                             ("_pump_line", run.AcpSession._pump_line),
+                             ("set_model", run.AcpSession.set_model)):
+                self.assertIn("_session_scoped(", inspect.getsource(fn),
+                              "%s does not call _session_scoped" % name)
+            for name, fn in (("_track_update", run.AcpSession._track_update),
+                             ("_TurnWaiter.feed", run.AcpSession._TurnWaiter.feed)):
+                self.assertNotIn("_session_scoped", inspect.getsource(fn),
+                                 "%s owns the session guard; the reader must"
+                                 % name)
+            pump_src = inspect.getsource(run.AcpSession._pump_line)
+            at = pump_src.index("_session_scoped(")
+            self.assertLess(at, pump_src.index("_track_update("))
+            self.assertLess(at, pump_src.index(".feed("))
+        # Registration lands at 0.95, after the wait: the turn's waiter has
+        # not yet seen its queue row when the foreign lines arrive.
+        sess = self._make_replay({"reg_s": 0.9, "run_s": 3.05,
+                                  "pc_gap_s": 0.15, "inter_ack_s": 0.3})
+        self._patch(sess)
+        try:
+            sess.start()
+            b = sess._binary
+            tid, pid = sess.prompt_send("M")
+            b.stdout.schedule(0.6, _bz3_chunk(_BZ3_FOREIGN_SID,
+                                              "FOREIGN-CHUNK"))
+            b.stdout.schedule(0.65, json.dumps(
+                {"jsonrpc": "2.0", "method": "_x.ai/session/prompt_complete",
+                 "params": {"sessionId": _BZ3_FOREIGN_SID,
+                            "promptId": "foreign-pid-0001",
+                            "stopReason": "end_turn",
+                            "agentResult": None}}) + "\n")
+            b.stdout.schedule(0.7, _bz3_chunk(b.session_id, "OWN-CHUNK"))
+            b.stdout.schedule(2.0, _bz3_chunk(_BZ3_FOREIGN_SID,
+                                              "FOREIGN-LATE"))
+            b.clock.advance(0.5 - b.clock.now)
+            resp, _ = sess.interject("HELLO")
+            with self.subTest(leg="pump: foreign chunk never tracked"):
+                self.assertEqual(resp.get("result"), {"status": "queued"})
+                self.assertEqual(_bz3_chunk_texts(sess.updates), ["OWN-CHUNK"])
+                self.assertNotIn(_BZ3_FOREIGN_SID,
+                                 [u.get("_sessionId") for u in sess.updates])
+            resp2, stop = sess.prompt_collect(tid, pid, 30.0)
+            with self.subTest(leg="pump: foreign completion never fed"):
+                self.assertEqual(stop, "end_turn")
+                self.assertEqual(resp2["result"]["promptId"], pid,
+                                 "the turn adopted another session's "
+                                 "completion")
+                self.assertEqual(sess._completed_prompt_ids, {pid})
+            with self.subTest(leg="sequential reader drops it too"):
+                self.assertEqual(_bz3_chunk_texts(sess.updates), ["OWN-CHUNK"])
+        finally:
+            sess.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# apex-bdfz BZ-4 — the trigger matcher: N tool calls / named tool / T seconds
+# ---------------------------------------------------------------------------
+
+_BZ4_SID = "01a0replay-0000-4000-8000-replay00000004"
+# _meta["x.ai/tool"] (kind, label, read_only) per tool, as the pinned capture
+# corpus records them.
+_BZ4_TOOLS = {
+    "wait_agent": ("active_agent_message", "Send Subagent Message", True),
+    "run_terminal_command": ("execute", "Run Command", False),
+}
+_BZ4_A = "call_BZ4000000000000000000001"
+_BZ4_B = "call_BZ4000000000000000000002"
+_BZ4_EARLIER = "call_BZ4000000000000000000000"
+_BZ4_WAIT_IN = {"timeout_ms": 30000}
+_BZ4_CMD_IN = {"command": "sleep 5", "description": "wait"}
+
+
+def _bz4_line(update, method="session/update"):
+    return {"jsonrpc": "2.0", "method": method,
+            "params": {"sessionId": _BZ4_SID, "update": update}}
+
+
+def _bz4_xai_tool(name):
+    kind, label, read_only = _BZ4_TOOLS[name]
+    return {"version": 1, "name": name, "kind": kind,
+            "namespace": "grok_build", "label": label,
+            "read_only": read_only}
+
+
+def _bz4_tool_call(tcid, name, raw_input, title=None):
+    """A Pending tool_call as captured: on this first emission the title is
+    the wire name and _meta["x.ai/tool"] is stamped."""
+    return _bz4_line({"sessionUpdate": "tool_call", "toolCallId": tcid,
+                      "title": name if title is None else title,
+                      "rawInput": raw_input,
+                      "_meta": {"x.ai/tool": _bz4_xai_tool(name)}})
+
+
+def _bz4_updates(tcid, name, raw_input, display):
+    """One call's tool_call_update lines as captured: the display refresh,
+    in_progress, completed."""
+    return [
+        _bz4_line({"sessionUpdate": "tool_call_update", "toolCallId": tcid,
+                   "title": display, "kind": "other", "locations": [],
+                   "rawInput": raw_input,
+                   "_meta": {"x.ai/tool": _bz4_xai_tool(name)}}),
+        _bz4_line({"sessionUpdate": "tool_call_update", "toolCallId": tcid,
+                   "status": "in_progress", "rawOutput": {},
+                   "content": [{"type": "content",
+                                "content": {"type": "text",
+                                            "text": "running"}}]}),
+        _bz4_line({"sessionUpdate": "tool_call_update", "toolCallId": tcid,
+                   "status": "completed", "rawOutput": {}}),
+    ]
+
+
+def _bz4_delta_chunks(tcid, name, n):
+    """n tool_call_delta_chunk lines streaming one call's arguments ahead of
+    its Pending line, as captured: x.ai session notifications (not
+    session/update); the first names the call by its snake-case tool_call_id,
+    the rest are argument fragments that carry no call id at all."""
+    args = json.dumps(_BZ4_WAIT_IN)
+    out = [_bz4_line({"sessionUpdate": "tool_call_delta_chunk",
+                      "tool_index": 0, "tool_call_id": tcid, "name": name},
+                     method="_x.ai/session_notification")]
+    for i in range(n - 1):
+        out.append(_bz4_line({"sessionUpdate": "tool_call_delta_chunk",
+                              "tool_index": 0,
+                              "arguments_delta": args[i % len(args)]},
+                             method="_x.ai/session_notification"))
+    return out
+
+
+def _bz4_arm(arm_id, kind, arg):
+    return {"arm_id": arm_id, "kind": kind, "arg": arg, "status": "armed"}
+
+
+class MidTurnTriggerTest(unittest.TestCase):
+    """apex-bdfz BZ-4 (plan r3 section 2.3, section 3 F-3): the pure trigger
+    matcher AcpSession._trigger_hit(arm, d, counters), no process.
+    after_tool_calls N holds from the line announcing the Nth distinct
+    toolCallId (a session/update whose sessionUpdate is exactly tool_call);
+    after_tool NAME matches _meta["x.ai/tool"]["name"], else the title, never
+    kind; after_s T reads the module-level time the harness patches."""
+
+    @staticmethod
+    def _offer(hit, arms, lines, counters):
+        """The section 2.3 pump's trigger pass: each line is offered to every
+        un-fired arm, and an arm fires on the first line its trigger holds.
+        Returns [(arm_id, line index)] in firing order."""
+        fired, armed = [], list(arms)
+        for i, d in enumerate(lines):
+            for arm in list(armed):
+                if hit(arm, d, counters):
+                    fired.append((arm["arm_id"], i))
+                    armed.remove(arm)
+        return fired
+
+    def test_counts_distinct_tool_call_ids_only(self):
+        """F-3: after_tool_calls 2 fires once, on the second distinct call's
+        tool_call line. Six tool_call_update lines over the two calls, a
+        duplicated Pending line, a status update for a call announced before
+        the window and 40 tool_call_delta_chunk lines never advance the count:
+        an arm on 3 never fires over two distinct calls, and one line offered
+        to two arms is counted once."""
+        hit = run.AcpSession._trigger_hit
+        pa = _bz4_tool_call(_BZ4_A, "run_terminal_command", _BZ4_CMD_IN)
+        pb = _bz4_tool_call(_BZ4_B, "wait_agent", _BZ4_WAIT_IN)
+        ua = _bz4_updates(_BZ4_A, "run_terminal_command", _BZ4_CMD_IN,
+                          "Run Command: sleep 5")
+        ub = _bz4_updates(_BZ4_B, "wait_agent", _BZ4_WAIT_IN,
+                          "Waiting for agents")
+        earlier = _bz4_updates(_BZ4_EARLIER, "run_terminal_command",
+                               _BZ4_CMD_IN, "Run Command: sleep 5")[2]
+        legs = [
+            ("six updates over two calls and a duplicated Pending",
+             [pa, ua[0], ua[1], pa, ua[2], pb] + ub, 5),
+            ("Pending lines only", [pa, pb], 1),
+            ("a status update for a call announced before the window",
+             [pa, earlier, pb], 2),
+            ("40 delta chunks between two calls",
+             [pa] + _bz4_delta_chunks(_BZ4_B, "wait_agent", 40) + [pb], 41),
+        ]
+        for leg, lines, at in legs:
+            with self.subTest(leg=leg):
+                counters = {"t_sent": 0.0, "tool_call_ids": []}
+                fired = self._offer(
+                    hit, [_bz4_arm("step0.arm0", "after_tool_calls", 2),
+                          _bz4_arm("step0.arm1", "after_tool_calls", 3)],
+                    lines, counters)
+                self.assertEqual(fired, [("step0.arm0", at)],
+                                 "after_tool_calls fired on a line that does "
+                                 "not announce a new distinct call")
+                self.assertEqual(counters["tool_call_ids"], [_BZ4_A, _BZ4_B])
+        with self.subTest(leg="N=1: the Pending line, not an argument fragment"):
+            counters = {"t_sent": 0.0, "tool_call_ids": []}
+            lines = (_bz4_delta_chunks(_BZ4_A, "run_terminal_command", 40)
+                     + [pa] + ua)
+            fired = self._offer(
+                hit, [_bz4_arm("step0.arm0", "after_tool_calls", 1)],
+                lines, counters)
+            self.assertEqual(fired, [("step0.arm0", 40)])
+            self.assertEqual(counters["tool_call_ids"], [_BZ4_A])
+
+    def test_tool_name_prefers_x_ai_tool_meta_then_title(self):
+        """after_tool compares _meta["x.ai/tool"]["name"] when it is stamped,
+        else the title, exactly. A display title beside the stamped name never
+        matches; a native tool_search call (no x.ai/tool) matches only via its
+        title; a top-level kind alone matches nothing; and only the tool_call
+        line announces the tool, not its tool_call_update nor a
+        tool_call_delta_chunk naming it."""
+        hit = run.AcpSession._trigger_hit
+        display = _bz4_tool_call(_BZ4_A, "wait_agent", _BZ4_WAIT_IN,
+                                 title="Waiting\u2026")
+        search_title = "Search tools: background wait"
+        search = _bz4_line(
+            {"sessionUpdate": "tool_call", "toolCallId": _BZ4_B,
+             "title": search_title, "kind": "search",
+             "status": "in_progress",
+             "rawInput": {"query": "background wait", "limit": 5},
+             "_meta": {"tool_search": True}})
+        kind_only = _bz4_line({"sessionUpdate": "tool_call",
+                               "toolCallId": _BZ4_EARLIER, "kind": "search"})
+        update = _bz4_updates(_BZ4_A, "wait_agent", _BZ4_WAIT_IN,
+                              "Waiting for agents")[0]
+        chunk = _bz4_delta_chunks(_BZ4_A, "wait_agent", 1)[0]
+
+        def matches(name, d):
+            return hit(_bz4_arm("step0.arm0", "after_tool", name), d,
+                       {"t_sent": 0.0, "tool_call_ids": []})
+
+        with self.subTest(leg="the stamped name, not the display title"):
+            self.assertTrue(matches("wait_agent", display),
+                            "the display-title line did not match its "
+                            "x.ai/tool name")
+            self.assertFalse(matches("Waiting\u2026", display),
+                             "the display title matched although x.ai/tool "
+                             "names the tool")
+        with self.subTest(leg="tool_search: only via the title"):
+            self.assertTrue(matches(search_title, search))
+            for name in ("tool_search", "search", "search_tool"):
+                self.assertFalse(matches(name, search), name)
+        with self.subTest(leg="a top-level kind alone matches nothing"):
+            self.assertFalse(matches("search", kind_only))
+        with self.subTest(leg="only the tool_call line announces the tool"):
+            self.assertFalse(matches("wait_agent", update))
+            self.assertFalse(matches("wait_agent", chunk))
+
+    def test_after_s_uses_patched_time(self):
+        """after_s T holds from exactly T seconds after the parent prompt's
+        send time and not before, whatever the line, on the module-level time
+        the harness patches. The fake clock sits at a wall-clock epoch, the
+        domain of time.time(); time.monotonic would never see it move."""
+        hit = run.AcpSession._trigger_hit
+        clock = FakeClock()
+        clock.now = 1793491200.0   # 2026-11-01T00:00:00Z
+        lines = [json.loads(_bz3_chunk(_BZ4_SID, "still thinking")),
+                 _bz4_tool_call(_BZ4_A, "wait_agent", _BZ4_WAIT_IN),
+                 _bz1_queue_changed("pid-1")]
+        saved = run.time
+        run.time = FakeTime(clock)
+        try:
+            counters = {"t_sent": run.time.time(), "tool_call_ids": []}
+            arm = _bz4_arm("step0.arm0", "after_s", 2.0)
+            seen = []
+            for i, dt in enumerate((0.0, 1.5, 0.25, 0.25, 0.25)):
+                clock.advance(dt)
+                seen.append((clock.now - counters["t_sent"],
+                             hit(arm, lines[i % len(lines)], counters)))
+        finally:
+            run.time = saved
+        self.assertEqual(seen, [(0.0, False), (1.5, False), (1.75, False),
+                                (2.0, True), (2.25, True)],
+                         "after_s must hold at the 2.0 s boundary and not "
+                         "before, on the patched clock")
+
+
+# ---------------------------------------------------------------------------
+# apex-bdfz BZ-4a — session-scoped line carry-over between stdout readers
+# ---------------------------------------------------------------------------
+
+class LineCarryTest(ReplayBase):
+    """apex-bdfz BZ-4a (amendment A-1 r2 section 4): AcpSession keeps the
+    lines it read from stdout but did not yet yield, and the partial tail
+    after the last newline, across _iter_lines calls. A reader that stops
+    early (call() on its reply, the mid-turn pump on its reply, the turn
+    pump's grace read on the detail) leaves the rest of its read1 block to
+    the next reader, in stdout order, each line exactly once. A shared write
+    is scheduled on the fake's own stdout by an instance patch of the reply
+    the fake would send (A-1 r2 section 4 construction), so every reply is
+    still sent once."""
+
+    DETAIL = ("API error (status 400 Bad Request): litellm.BadRequestError: "
+              "bz4a provider detail")
+
+    @staticmethod
+    def _reply(rid, result):
+        """A JSON-RPC result line in ScriptedBinary._respond's wire shape."""
+        return json.dumps({"jsonrpc": "2.0", "id": rid,
+                           "result": result}) + "\n"
+
+    @staticmethod
+    def _commands_update(sid):
+        """An available_commands_update session/update line in the captured
+        wire shape (the first command of a pinned corpus line)."""
+        command = {"name": "compact",
+                   "description": "Compress conversation history to save "
+                                  "context window",
+                   "input": {"hint": "optional context about what to "
+                                     "preserve"}}
+        return json.dumps(
+            {"jsonrpc": "2.0", "method": "session/update",
+             "params": {"sessionId": sid,
+                        "update": {
+                            "sessionUpdate": "available_commands_update",
+                            "availableCommands": [command]}}}) + "\n"
+
+    def _make_session_new_writes(self, writes, binary_kwargs=None):
+        """A patched replay session whose fake answers session/new with
+        writes(tid, sid) -> [(delay, text)], each scheduled delay seconds
+        after the request, in place of its own reply."""
+        sess = self._make_replay(binary_kwargs)
+        b = sess._binary
+
+        def on_send(d, t):
+            if d.get("method") != "session/new":
+                return ScriptedBinary.on_send(b, d, t)
+            for delay, text in writes(d["id"], b.session_id):
+                b.stdout.schedule(t + delay, text)
+
+        b.on_send = on_send
+        self._patch(sess)
+        return sess
+
+    def test_mid_turn_reply_block_lines_reach_the_turn(self):
+        """R1: the _x.ai/interject reply and two of the turn's
+        agent_message_chunk lines arrive in one write. interject() returns on
+        the reply; the two chunks are left for the next reader, so
+        prompt_collect ends with both in sess.updates, in stdout order
+        between the chunk streamed before the wait and the one after it."""
+        # start() leaves the fake clock at 0.05: registration 0.1, C0 at 0.3,
+        # the reply's write at 0.6, C1 at 1.5, turn end 3.1.
+        sess = self._make_replay(
+            {"reg_s": 0.05, "run_s": 3.0, "pc_gap_s": 0.15,
+             "inter_ack_s": 0.1,
+             "turn_chunks": [[(0.2, "C0"), (1.4, "C1")]]})
+        b = sess._binary
+
+        def on_interject(d, tid, t):
+            if b._has_unended_prior(t):
+                b.early_step_fired = True
+            b.interjects.append((t, d))
+            b.stdout.schedule(t + b.inter_ack_s,
+                              self._reply(tid, {"status": "queued"})
+                              + _bz3_chunk(b.session_id, "S1")
+                              + _bz3_chunk(b.session_id, "S2"))
+
+        b._on_interject = on_interject
+        self._patch(sess)
+        try:
+            sess.start()
+            tid, pid = sess.prompt_send("M")
+            b.clock.advance(0.5 - b.clock.now)
+            resp, witness = sess.interject("HELLO")
+            with self.subTest(leg="interject returned on its reply"):
+                self.assertEqual(resp, {"jsonrpc": "2.0", "id": witness["id"],
+                                        "result": {"status": "queued"}})
+                self.assertAlmostEqual(witness["reply_at"], 0.6)
+                self.assertTrue(b.early_step_fired)
+            resp2, stop = sess.prompt_collect(tid, pid, 30.0)
+            with self.subTest(leg="the reply's block reached the turn"):
+                self.assertEqual(
+                    _bz3_chunk_texts(sess.updates), ["C0", "S1", "S2", "C1"],
+                    "the chunks that shared the interject reply's read1 "
+                    "block were dropped when interject() returned")
+            with self.subTest(leg="the turn's one completion"):
+                self.assertEqual(stop, "end_turn")
+                self.assertEqual(resp2["result"]["promptId"], pid)
+                self.assertEqual(sess._completed_prompt_ids, {pid})
+        finally:
+            sess.cleanup()
+
+    def test_grace_read_surfaces_detail_in_terminal_block(self):
+        """R2: an error turn_completed, its trailing prompt_complete detail
+        and the turn's JSON-RPC response arrive in one write (pc_gap_s 0).
+        The pump's grace read takes the detail from the lines its outer read
+        left, so the collected result carries it, with no ACP_ERROR_GRACE_S
+        stall. Exactly once: the next prompt() on the session is never handed
+        that prompt_complete again, so it logs no desync-guard line for the
+        first turn's promptId."""
+        sess = self._make_replay(
+            {"run_s": 10.0, "reg_s": 0.5, "pc_gap_s": 0.0,
+             "turn_stops": ["error", "end_turn"],
+             "turn_agent_result": self.DETAIL})
+        self._patch(sess)
+        logged = []
+        saved_log = run.log
+        run.log = logged.append
+        try:
+            sess.start()
+            b = sess._binary
+            r1, stop1 = sess.prompt("M1")
+            p1 = b.turn_pids[0]
+            with self.subTest(leg="the detail in the terminal's block"):
+                err = r1.get("error") or {}
+                self.assertEqual(stop1, "error")
+                self.assertEqual(
+                    err.get("message"), self.DETAIL,
+                    "the provider detail that shared the error terminal's "
+                    "read1 block was dropped (got %r)" % (err.get("message"),))
+                self.assertEqual(err.get("via"), "prompt_complete")
+                self.assertEqual(err.get("promptId"), p1)
+                self.assertAlmostEqual(
+                    sess.prompt_return_times[0], b.t_end[0],
+                    msg="the grace read waited out ACP_ERROR_GRACE_S for a "
+                        "detail it had already read")
+            r2, stop2 = sess.prompt("M2")
+            with self.subTest(leg="exactly once: the next turn"):
+                self.assertEqual(stop2, "end_turn")
+                self.assertEqual(r2["result"]["promptId"], b.turn_pids[1])
+                self.assertEqual(
+                    [line for line in logged
+                     if line.startswith("ACP desync guard: ignoring")
+                     and p1 in line], [],
+                    "the first turn's prompt_complete reached the next "
+                    "turn's reader a second time")
+        finally:
+            run.log = saved_log
+            sess.cleanup()
+
+    def test_call_leaves_following_update_for_next_reader(self):
+        """R3: the session/new reply that ends start()'s call() and an
+        available_commands_update arrive in one write. call() returns on the
+        reply; the update is left for the next reader, the first turn's pump,
+        so it reaches sess.updates (available_commands() names it) and the
+        turn still ends on its own promptId."""
+        sess = self._make_session_new_writes(
+            lambda tid, sid: [(0.05, self._reply(tid, {"sessionId": sid})
+                               + self._commands_update(sid))],
+            {"reg_s": 0.5, "run_s": 1.0, "pc_gap_s": 0.15})
+        try:
+            sess.start()
+            b = sess._binary
+            with self.subTest(leg="call() returned on its reply"):
+                self.assertEqual(sess.session_id, b.session_id)
+                self.assertEqual(sess.updates, [])
+            r, stop = sess.prompt("M")
+            with self.subTest(leg="the update reached the next reader"):
+                self.assertEqual(
+                    sess.available_commands(), ["compact"],
+                    "the session/update that shared call()'s reply block "
+                    "was dropped when call() returned")
+            with self.subTest(leg="the turn"):
+                self.assertEqual(stop, "end_turn")
+                self.assertEqual(r["result"]["promptId"], b.turn_pids[0])
+        finally:
+            sess.cleanup()
+
+    def test_partial_line_survives_reader_change(self):
+        """R4: an available_commands_update line split across two writes, the
+        first also carrying the session/new reply that ends start()'s call().
+        The fake's own reply is replaced and the halves are 20 ms apart, so
+        nothing else can arrive between them (A-1 approval N-2). The next
+        reader, set_model, completes the line from the carried partial and
+        tracks it."""
+        def writes(tid, sid):
+            line = self._commands_update(sid)
+            cut = len(line) // 2
+            return [(0.05, self._reply(tid, {"sessionId": sid}) + line[:cut]),
+                    (0.07, line[cut:])]
+
+        sess = self._make_session_new_writes(writes)
+        try:
+            sess.start()
+            with self.subTest(leg="call() returned on its reply"):
+                self.assertEqual(sess.session_id, sess._binary.session_id)
+                self.assertEqual(sess.updates, [])
+            resp = sess.set_model("replay-target")
+            with self.subTest(leg="the next reader completed the line"):
+                self.assertEqual(
+                    sess.available_commands(), ["compact"],
+                    "the partial line after call()'s reply was dropped, so "
+                    "its tail never parsed")
+            with self.subTest(leg="set_model's own answer"):
+                self.assertEqual(resp.get("result"),
+                                 {"modelId": "replay-target"})
+        finally:
+            sess.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# apex-bdfz BZ-5 — the mid-turn pump: arm, fire, await, collect, disarm
+# ---------------------------------------------------------------------------
+
+_BZ5_DETAIL = ("API error (status 503 Service Unavailable): "
+               "litellm.ServiceUnavailableError: bz5 provider detail")
+_BZ5_A = "call_BZ5000000000000000000001"
+_BZ5_B = "call_BZ5000000000000000000002"
+
+
+def _bz5_call(at, tcid=_BZ5_A, name="run_terminal_command"):
+    """A ScriptedBinary tool_calls entry: a Pending x.ai/tool-stamped call `at`
+    seconds after the turn's registration, with its captured raw input."""
+    return {"at": at, "toolCallId": tcid, "name": name,
+            "rawInput": (_BZ4_CMD_IN if name == "run_terminal_command"
+                         else _BZ4_WAIT_IN)}
+
+
+def _bz5_arm(at, text, **extra):
+    """One interject arm in the turn step's shape (plan r3 section 2.7)."""
+    arm = {"at": at, "send": "interject", "text": text}
+    arm.update(extra)
+    return arm
+
+
+def _bz5_compaction(sid, at_ms, kind):
+    """An auto-compaction update on the x.ai rail, in the captured shape (the
+    params and update key sets of the pinned corpus)."""
+    if kind == "started":
+        update = {"sessionUpdate": "auto_compact_started",
+                  "context_window": 200000, "percentage": 9,
+                  "reason": "Context window 9% full", "tokens_used": 18000}
+    else:
+        update = {"sessionUpdate": "auto_compact_completed",
+                  "elapsed_ms": 1800, "summary_preview": None,
+                  "tokens_after": 4000, "tokens_before": 18000}
+    return json.dumps(
+        {"jsonrpc": "2.0", "method": "_x.ai/session_notification",
+         "params": {"sessionId": sid, "update": update,
+                    "_meta": {"eventId": "replay-event-compact-%s" % kind,
+                              "agentTimestampMs": at_ms}}}) + "\n"
+
+
+class MidTurnPumpTest(ReplayBase):
+    """apex-bdfz BZ-5 (plan r3 sections 2.3-2.5; section 3 F-1, F-2, F-4, F-5,
+    F-8 to F-12, F-16): AcpSession._pump_mid_turn, the single reader while the
+    turn prompt_send started is in flight. An armed arm fires on the first line
+    its trigger holds on, and nothing is sent once the turn's completion is
+    matched (D-1, D-2); replies are matched by JSON-RPC id; the pump reads to
+    the turn's terminal, through an error terminal's grace read, so
+    prompt_collect then returns the turn without reading. Each arm ends fired |
+    missed | mismatched_tool | send_timeout | disarmed, with disarm_reason,
+    harness_caused and the runner cause on its record; mid_turn comes from the
+    turn's own evidence, never from the reply."""
+
+    TURN_S = 30.0
+
+    class _EofSelect(FakeSelectModule):
+        """The fake select plus a closed pipe: once eof() was called and every
+        scheduled byte was read, stdout selects readable and read1 returns b"",
+        as a pipe at end of file does."""
+
+        def select(self, rlist, wlist, eflist, timeout):
+            out = self._stdout
+            out.release_due()
+            if out._eof and not out._buf and not out._chunks:
+                return [rlist[0]], [], []
+            return FakeSelectModule.select(self, rlist, wlist, eflist,
+                                           timeout)
+
+    def _pumped_turn(self, binary_kwargs, arms, budget=None, before=None,
+                     after=None, binary_cls=ScriptedBinary, eof_select=False):
+        """One pumped turn on the real AcpSession: start(), prompt_send("M"),
+        before(sess, binary) to schedule extra lines, the pump with the turn's
+        deadline, prompt_collect with the budget left, then after(out) while
+        the fakes are still installed. The process globals are swapped for
+        this call only, so two calls in one test cannot leak a fake."""
+        tmp = tempfile.mkdtemp(prefix="rt-bz5-")
+        self._tmps.append(tmp)
+        os.makedirs(os.path.join(tmp, "home"))
+        os.makedirs(os.path.join(tmp, "cwd"))
+        clock = FakeClock()
+        stdout = FakeStdout(clock)
+        binary = binary_cls(stdout, clock, **(binary_kwargs or {}))
+        sess = ReplaySession(binary, tmp)
+        sess._install_fakes()
+        if eof_select:
+            sess._fake_select = self._EofSelect(clock, stdout)
+        saved = (subprocess.Popen, sys.modules.get("select"), run.time)
+        subprocess.Popen = lambda *a, **k: sess._fake_proc
+        sys.modules["select"] = sess._fake_select
+        run.time = sess._fake_time
+        try:
+            sess.start()
+            tid, pid = sess.prompt_send("M")
+            waiter = sess._inflight
+            if before is not None:
+                before(sess, binary)
+            budget = self.TURN_S if budget is None else budget
+            deadline = clock.now + budget
+            recs = sess._pump_mid_turn(arms, waiter, deadline)
+            pumped_at, reads = clock.now, stdout.read_calls
+            left = max(0.0, deadline - clock.now)
+            resp, stop = sess.prompt_collect(tid, pid, left)
+            out = {"sess": sess, "binary": binary, "tid": tid, "pid": pid,
+                   "waiter": waiter, "recs": recs, "resp": resp, "stop": stop,
+                   "left": left, "pumped_at": pumped_at,
+                   "collect_reads": stdout.read_calls - reads,
+                   "collect_waited": clock.now - pumped_at,
+                   "sent": [(t, r["method"],
+                             (r.get("params") or {}).get("text"))
+                            for t, r in binary.interjects],
+                   "texts": _bz3_chunk_texts(sess.updates),
+                   "inbox": dict(sess._inbox)}
+            if after is not None:
+                after(out)
+            return out
+        finally:
+            subprocess.Popen, sys.modules["select"], run.time = saved
+            sess.cleanup()
+
+    def test_race_completion_before_trigger_sends_nothing(self):
+        """F-1, completion first. In the read that ends the turn the matched
+        completion is fed before any line the trigger could fire on, so it
+        closes the arm first (D-1): missed, disarm_reason turn_completed, not
+        harness-caused, no runner cause, and no x.ai/interject is written.
+        Leg after_s: T elapses in a silent stretch whose first line is the
+        completion (after_s is judged per line). Leg after_tool_calls: the
+        trigger's tool_call trails the completion in the same read. D-4: once
+        the turn is collected the pump sends nothing and reads nothing."""
+        # start() leaves the clock at 0.05: registration 0.1, and every
+        # terminal line of the turn at 1.05 (pc_gap_s 0).
+        base = {"reg_s": 0.05, "run_s": 0.95, "pc_gap_s": 0.0}
+        expect = {"status": "missed", "fired": False,
+                  "disarm_reason": "turn_completed", "harness_caused": False,
+                  "cause": None, "mid_turn": False, "request_id": None}
+        late = {}
+
+        def no_turn_in_flight(out):
+            sess, b = out["sess"], out["binary"]
+            reads = b.stdout.read_calls
+            for key, waiter in (("collected", sess._inflight),
+                                ("stale waiter", out["waiter"])):
+                late[key] = sess._pump_mid_turn(
+                    [_bz5_arm({"after_s": 0.5}, "BZ5-LATE")], waiter,
+                    b.clock.now + self.TURN_S)
+            late["reads"] = b.stdout.read_calls - reads
+            late["sent"] = len(b.interjects)
+
+        def trigger_after_terminal(sess, b):
+            b._notify(b.t_end[0], "session/update",
+                      b._tool_call_params(_bz5_call(0.0), b.t_end[0]))
+
+        legs = {
+            "after_s": self._pumped_turn(
+                base, [_bz5_arm({"after_s": 0.5}, "BZ5-RACE")],
+                after=no_turn_in_flight),
+            "after_tool_calls": self._pumped_turn(
+                base, [_bz5_arm({"after_tool_calls": 1}, "BZ5-RACE")],
+                before=trigger_after_terminal),
+        }
+        for leg, out in legs.items():
+            with self.subTest(leg=leg):
+                self.assertEqual(out["sent"], [],
+                                 "an interjection was sent into a finished "
+                                 "turn")
+                rec = out["recs"][0]
+                self.assertEqual({k: rec[k] for k in expect}, expect)
+                self.assertEqual(rec["arm_id"], "step0.arm0")
+                self.assertEqual(out["stop"], "end_turn")
+                self.assertEqual(out["collect_reads"], 0)
+        with self.subTest(leg="D-4: no turn in flight"):
+            for key in ("collected", "stale waiter"):
+                rec = late[key][0]
+                self.assertEqual(
+                    {k: rec[k] for k in ("status", "disarm_reason",
+                                         "harness_caused", "cause")},
+                    {"status": "disarmed", "disarm_reason": "no_inflight_turn",
+                     "harness_caused": True,
+                     "cause": "interject-unavailable: step0.arm0."
+                              "no_inflight_turn"}, key)
+            self.assertEqual(late["reads"], 0)
+            self.assertEqual(late["sent"], 0)
+
+    def test_completion_arriving_during_await_is_not_lost(self):
+        """F-1, trigger first: the trigger line is fed before the completion,
+        so the request is written, and the completion that arrives while its
+        reply is owed is kept for prompt_collect, which returns the turn with
+        no further read and no wait. Leg same read: the completion shares the
+        trigger's read, so it was stamped (turn_completed agentTimestampMs) no
+        later than the send; the reply is queued, but mid_turn is false with
+        no witness, and the fake saw the request after the turn had ended.
+        Leg a later read: the completion is stamped 1 ms after the send, the
+        completion-after-send witness, so mid_turn is true."""
+        # Registration 0.1; turn_completed and the turn's response at 1.05;
+        # the reply 0.3 s after the send; prompt_complete at 1.55.
+        base = {"reg_s": 0.05, "run_s": 0.95, "pc_gap_s": 0.5,
+                "inter_ack_s": 0.3}
+        legs = {"same read": (0.95, False, [], False),
+                "a later read": (0.949, True, ["completion_after_send"], True)}
+        for leg, (at, mid, evidence, early) in legs.items():
+            out = self._pumped_turn(
+                dict(base, tool_calls=[_bz5_call(at)]),
+                [_bz5_arm({"after_tool_calls": 1}, "BZ5-AWAIT")])
+            rec, b = out["recs"][0], out["binary"]
+            with self.subTest(leg=leg, part="the request was written"):
+                self.assertEqual(len(out["sent"]), 1)
+                self.assertAlmostEqual(out["sent"][0][0], b.t_reg[0] + at)
+                self.assertEqual(rec["status"], "fired")
+                self.assertEqual(rec["resp"],
+                                 {"jsonrpc": "2.0", "id": rec["request_id"],
+                                  "result": {"status": "queued"}})
+            with self.subTest(leg=leg, part="the completion is not lost"):
+                self.assertEqual(out["collect_reads"], 0,
+                                 "prompt_collect read again for a completion "
+                                 "the pump had already read")
+                self.assertEqual(out["collect_waited"], 0.0)
+                self.assertEqual(out["stop"], "end_turn")
+                self.assertEqual(out["resp"]["result"]["_meta"]["promptId"],
+                                 out["pid"])
+                self.assertEqual(out["inbox"], {"responses": {},
+                                                "completion": None,
+                                                "prompt_response": None})
+            with self.subTest(leg=leg, part="the witness"):
+                self.assertEqual(rec["mid_turn"], mid)
+                self.assertEqual(rec["mid_turn_evidence"], evidence)
+                self.assertEqual(b.early_step_fired, early)
+
+    def test_two_interjections_in_order_with_out_of_order_replies(self):
+        """F-4 and D-3: after_tool_calls 1 fires on the tool call at 0.1 and
+        after_s 2 on the first line at or after 2 s (the chunk at 2.5: after_s
+        is judged per line, and fired_at records it). Both requests are
+        written in trigger order; their replies arrive in the other order and
+        each is matched to its own arm by JSON-RPC id. A third arm, armed
+        beyond the turn's end at 9, is closed by the completion: missed,
+        turn_completed, not harness-caused. Both fired arms are mid-turn: the
+        completion is stamped after each send, and the queue row at 1.5 that
+        still runs this prompt witnesses only the arm sent before it."""
+        # Registration and the tool call at 0.1; chunks at 1.1, 2.5, 5.1 and
+        # 8.1; turn_completed at 9.0. The first request is answered after
+        # 3.0 s, the second after 0.2 s. At 1.5 a prompt queues behind the
+        # running one (a queue row running this prompt, with one entry).
+        def queue_row(sess, b):
+            b._notify(1.5, "_x.ai/queue/changed",
+                      {"sessionId": b.session_id,
+                       "entries": [{"id": "replay-queued-0001",
+                                    "kind": "prompt", "position": 0,
+                                    "text": "NEXT", "version": 0}],
+                       "runningPromptId": sess._inflight.expected_prompt_id,
+                       "runningText": "M", "runningKind": "prompt"})
+
+        out = self._pumped_turn(
+            {"reg_s": 0.05, "run_s": 8.9, "pc_gap_s": 0.15,
+             "turn_chunks": [[(1.0, "C0"), (2.4, "C1"), (5.0, "C2"),
+                              (8.0, "C3")]],
+             "tool_calls": [_bz5_call(0.0)],
+             "inter_replies": [{"after": 3.0}, {"after": 0.2}]},
+            [_bz5_arm({"after_tool_calls": 1}, "BZ5-FIRST"),
+             _bz5_arm({"after_s": 2.0}, "BZ5-SECOND"),
+             _bz5_arm({"after_s": 20.0}, "BZ5-BEYOND")],
+            before=queue_row)
+        first, second, beyond = out["recs"]
+        with self.subTest(leg="both sends, in trigger order"):
+            self.assertEqual([(round(t, 6), m, x) for t, m, x in out["sent"]],
+                             [(0.1, "_x.ai/interject", "BZ5-FIRST"),
+                              (2.5, "_x.ai/interject", "BZ5-SECOND")])
+            self.assertEqual([first["request_id"], second["request_id"]],
+                             [r["id"] for _, r in out["binary"].interjects])
+        with self.subTest(leg="replies out of order, matched by id"):
+            self.assertLess(second["reply_at"], first["reply_at"])
+            for rec in (first, second):
+                self.assertEqual(rec["status"], "fired")
+                self.assertEqual(rec["resp"],
+                                 {"jsonrpc": "2.0", "id": rec["request_id"],
+                                  "result": {"status": "queued"}})
+        with self.subTest(leg="after_s judged per line, recorded"):
+            self.assertEqual(first["fired_at"]["n_tool_calls"], 1)
+            self.assertAlmostEqual(first["fired_at"]["elapsed_s"], 0.05)
+            self.assertAlmostEqual(second["fired_at"]["elapsed_s"], 2.45)
+        with self.subTest(leg="the arm beyond the turn"):
+            self.assertEqual(
+                {k: beyond[k] for k in ("status", "disarm_reason",
+                                        "harness_caused", "cause")},
+                {"status": "missed", "disarm_reason": "turn_completed",
+                 "harness_caused": False, "cause": None})
+        with self.subTest(leg="mid-turn, each with its own arm_id"):
+            self.assertEqual([r["arm_id"] for r in out["recs"]],
+                             ["step0.arm0", "step0.arm1", "step0.arm2"])
+            self.assertEqual([first["mid_turn"], second["mid_turn"]],
+                             [True, True])
+            self.assertEqual(sorted(first["mid_turn_evidence"]),
+                             ["completion_after_send",
+                              "running_prompt_after_send"])
+            self.assertEqual(second["mid_turn_evidence"],
+                             ["completion_after_send"])
+        with self.subTest(leg="the turn"):
+            self.assertEqual(out["stop"], "end_turn")
+            self.assertEqual(out["collect_reads"], 0)
+            self.assertEqual(out["texts"], ["C0", "C1", "C2", "C3"])
+
+    def test_tool_never_arrives_is_mismatched_not_missed(self):
+        """F-2: the model answers in prose and calls no tool. The after_tool
+        arm on get_command_or_subagent_output ends mismatched_tool and the
+        after_tool_calls arm missed: two different statuses, both closed by the
+        turn's completion (disarm_reason turn_completed), neither
+        harness-caused nor carrying a runner cause, so the verdict engine reads
+        a model-path miss (VACUOUS on the declared premise), never BLOCKED.
+        Nothing is sent."""
+        out = self._pumped_turn(
+            {"reg_s": 0.05, "run_s": 2.0, "pc_gap_s": 0.15,
+             "turn_chunks": [[(0.5, "prose one"), (1.5, "prose two")]]},
+            [_bz5_arm({"after_tool": "get_command_or_subagent_output"},
+                      "BZ5-TOOL"),
+             _bz5_arm({"after_tool_calls": 1}, "BZ5-CALLS")])
+        keys = ("status", "fired", "disarm_reason", "harness_caused", "cause",
+                "mid_turn")
+        self.assertEqual(
+            [{k: r[k] for k in keys} for r in out["recs"]],
+            [{"status": "mismatched_tool", "fired": False,
+              "disarm_reason": "turn_completed", "harness_caused": False,
+              "cause": None, "mid_turn": False},
+             {"status": "missed", "fired": False,
+              "disarm_reason": "turn_completed", "harness_caused": False,
+              "cause": None, "mid_turn": False}])
+        self.assertEqual(out["sent"], [])
+        self.assertEqual(out["stop"], "end_turn")
+        self.assertEqual(out["texts"], ["prose one", "prose two"])
+
+    def test_send_timeout_is_a_harness_cause(self):
+        """F-9: the request is written and never answered while the turn keeps
+        streaming. Past interject_timeout_s (arm-level) the arm lands as
+        send_timeout with the runner cause interject-send-timeout: step0.arm0
+        and its id is unregistered; the pump keeps reading the live turn
+        (every chunk after the timeout is still collected) and the turn
+        returns its own stop reason."""
+        # Tool call 0.3; chunks 1.1 to 7.1; turn_completed 8.0. The reply
+        # budget ends at 2.3 and is judged at the next line (3.1).
+        out = self._pumped_turn(
+            {"reg_s": 0.05, "run_s": 7.9, "pc_gap_s": 0.15,
+             "turn_chunks": [[(1.0 + i, "C%d" % i) for i in range(7)]],
+             "tool_calls": [_bz5_call(0.2)],
+             "inter_replies": [{"reply": "silent"}]},
+            [_bz5_arm({"after_tool_calls": 1}, "BZ5-SILENT",
+                      interject_timeout_s=2.0)])
+        rec = out["recs"][0]
+        with self.subTest(leg="send_timeout, a harness cause"):
+            self.assertEqual(
+                {k: rec[k] for k in ("status", "fired", "disarm_reason",
+                                     "harness_caused", "cause", "resp",
+                                     "reply_at", "mid_turn")},
+                {"status": "send_timeout", "fired": False,
+                 "disarm_reason": None, "harness_caused": True,
+                 "cause": "interject-send-timeout: step0.arm0", "resp": None,
+                 "reply_at": None, "mid_turn": False})
+            self.assertEqual(len(out["sent"]), 1)
+            self.assertNotIn(rec["request_id"], out["inbox"]["responses"])
+        with self.subTest(leg="the live turn is still read"):
+            self.assertEqual(out["texts"], ["C%d" % i for i in range(7)])
+            self.assertEqual(out["stop"], "end_turn")
+            self.assertEqual(out["collect_reads"], 0)
+
+    def test_ext_error_disarms_as_harness_caused(self):
+        """F-8: the request is answered with a JSON-RPC error (session not
+        found) while the turn continues. The arm is disarmed with
+        disarm_reason ext_error, harness-caused, with the runner cause
+        interject-unavailable: step0.arm0.ext_error and the error reply kept
+        on its record; the turn is still read to its own clean terminal, so an
+        ext-request error never reads as a turn error."""
+        out = self._pumped_turn(
+            {"reg_s": 0.05, "run_s": 3.9, "pc_gap_s": 0.15,
+             "turn_chunks": [[(1.0, "C0"), (2.0, "C1")]],
+             "tool_calls": [_bz5_call(0.2)],
+             "inter_replies": [{"reply": "error", "after": 0.2}]},
+            [_bz5_arm({"after_tool_calls": 1}, "BZ5-REFUSED")])
+        rec, b = out["recs"][0], out["binary"]
+        self.assertEqual(
+            {k: rec[k] for k in ("status", "fired", "disarm_reason",
+                                 "harness_caused", "cause", "resp")},
+            {"status": "disarmed", "fired": False,
+             "disarm_reason": "ext_error", "harness_caused": True,
+             "cause": "interject-unavailable: step0.arm0.ext_error",
+             "resp": {"jsonrpc": "2.0", "id": rec["request_id"],
+                      "error": {"code": -32602, "message": "Invalid params",
+                                "data": "session not found: %s"
+                                        % b.session_id}}})
+        self.assertEqual(out["stop"], "end_turn")
+        self.assertNotIn("error", out["resp"])
+        self.assertEqual(out["texts"], ["C0", "C1"])
+
+    def test_turn_timeout_disarms_arms(self):
+        """F-10 and D-5: the turn's 5 s budget runs out inside the pump's read
+        while both arms are armed. Each closes with disarm_reason turn_timeout,
+        not harness-caused (missed; mismatched_tool for the after_tool arm),
+        nothing is sent, and prompt_collect, handed the budget left, returns
+        the existing timeout terminal without reading."""
+        out = self._pumped_turn(
+            {"reg_s": 0.05, "run_s": 59.9, "pc_gap_s": 0.15,
+             "turn_chunks": [[(1.0, "C0"), (2.0, "C1")]]},
+            [_bz5_arm({"after_tool_calls": 1}, "BZ5-CALLS"),
+             _bz5_arm({"after_tool": "wait_agent"}, "BZ5-TOOL")],
+            budget=5.0)
+        keys = ("status", "disarm_reason", "harness_caused", "cause")
+        self.assertEqual(
+            [{k: r[k] for k in keys} for r in out["recs"]],
+            [{"status": "missed", "disarm_reason": "turn_timeout",
+              "harness_caused": False, "cause": None},
+             {"status": "mismatched_tool", "disarm_reason": "turn_timeout",
+              "harness_caused": False, "cause": None}])
+        self.assertEqual(out["sent"], [])
+        self.assertGreaterEqual(out["pumped_at"], 5.05)
+        self.assertEqual(out["left"], 0.0)
+        self.assertEqual((out["resp"], out["stop"]),
+                         ({"error": {"message": "timeout after %ss"
+                                                % out["left"]}}, None))
+        self.assertEqual(out["collect_reads"], 0)
+        self.assertEqual(out["texts"], ["C0", "C1"])
+
+    def test_error_completion_still_reads_the_grace_lines(self):
+        """F-16 on the pumped path, in the real binary's order (amendment A-1
+        r2 section 5): the error turn_completed at 1.1 carries no agentResult,
+        so the turn's waiter asks for its grace read; the interject reply,
+        interleaved at 1.5, is still routed to its arm; the pump reads on to
+        the matching prompt_complete at 1.9, whose provider detail upgrades
+        the completion and reaches acp.log, and stops there, before the
+        session/prompt JSON-RPC error sent at 2.0. prompt_collect, with no
+        read of its own, surfaces error.message == the detail. The second
+        arm's after_s holds from 1.35, inside the grace window, yet the error
+        terminal closed it first (D-2: missed, turn_error) and it is never
+        sent."""
+        error = {"code": -32603, "message": "Internal error",
+                 "data": {"message": _BZ5_DETAIL, "http_status": 503}}
+        out = self._pumped_turn(
+            {"reg_s": 0.05, "run_s": 1.0, "pc_gap_s": 0.8,
+             "turn_stops": ["error"], "turn_agent_result": _BZ5_DETAIL,
+             "tool_calls": [_bz5_call(0.2)], "inter_ack_s": 1.2,
+             "prompt_error": error, "prompt_error_s": 0.1},
+            [_bz5_arm({"after_tool_calls": 1}, "BZ5-GRACE"),
+             _bz5_arm({"after_s": 1.3}, "BZ5-NEVER")])
+        fired, closed = out["recs"]
+        with self.subTest(leg="the pump performed the grace read"):
+            self.assertEqual(out["stop"], "error")
+            self.assertEqual(out["resp"], {"error": {
+                "message": _BZ5_DETAIL, "via": "prompt_complete",
+                "promptId": out["pid"]}})
+            self.assertEqual(out["collect_reads"], 0)
+            with open(out["sess"].log_path, encoding="utf-8") as fh:
+                detail_lines = [json.loads(line) for line in fh
+                                if _BZ5_DETAIL in line
+                                and not line.startswith("SEND: ")]
+            self.assertEqual([d.get("method") for d in detail_lines],
+                             ["_x.ai/session/prompt_complete"])
+        with self.subTest(leg="the reply interleaved in the grace window"):
+            self.assertEqual(fired["status"], "fired")
+            self.assertEqual(fired["resp"]["result"], {"status": "queued"})
+            self.assertGreater(fired["reply_at"], out["binary"].t_end[0])
+            self.assertTrue(fired["mid_turn"])
+        with self.subTest(leg="no arm fires during the grace window"):
+            self.assertEqual([x for _, _, x in out["sent"]], ["BZ5-GRACE"])
+            self.assertEqual(
+                {k: closed[k] for k in ("status", "disarm_reason",
+                                        "harness_caused", "cause")},
+                {"status": "missed", "disarm_reason": "turn_error",
+                 "harness_caused": False, "cause": None})
+
+    def test_interject_during_compaction_sequence(self):
+        """F-5: auto-compaction updates inside the tool loop are never the
+        turn's terminal. Leg mid-turn: the arm fires on the tool call at 0.3,
+        compaction starts and completes, the reply at 1.1 is still routed to
+        the arm, the turn ends on its own turn_completed at 2.1, and the arm is
+        mid-turn on two witnesses (the interjection broadcast before the
+        completion; the completion stamped after the send). Leg
+        post-completion: the second tool call shares the turn's final read, so
+        its arm's request goes out with the completion already stamped and the
+        reply arrives after it: queued, yet mid_turn is false (a queued reply
+        is no witness); the arm still armed at the completion is closed and
+        nothing more is sent (D-1), which would otherwise start an
+        interject-fallback turn."""
+        def compaction(started_at, completed_at):
+            def schedule(sess, b):
+                for at, kind in ((started_at, "started"),
+                                 (completed_at, "completed")):
+                    b.stdout.schedule(at, _bz5_compaction(
+                        b.session_id, int(round(at * 1000)), kind))
+            return schedule
+
+        mid = self._pumped_turn(
+            {"reg_s": 0.05, "run_s": 2.0, "pc_gap_s": 0.15,
+             "tool_calls": [_bz5_call(0.2)], "inter_ack_s": 0.8,
+             "inter_broadcast": True},
+            [_bz5_arm({"after_tool_calls": 1}, "BZ5-COMPACT")],
+            before=compaction(0.5, 0.9))
+        rec = mid["recs"][0]
+        with self.subTest(leg="mid-turn"):
+            self.assertEqual(rec["status"], "fired")
+            self.assertEqual(rec["resp"]["result"], {"status": "queued"})
+            self.assertAlmostEqual(rec["reply_at"], 1.1)
+            self.assertTrue(rec["mid_turn"])
+            self.assertEqual(sorted(rec["mid_turn_evidence"]),
+                             ["completion_after_send",
+                              "interjection_broadcast_before_completion"])
+            self.assertEqual(mid["resp"], {"result": {
+                "stopReason": "end_turn", "_via": "turn_completed",
+                "promptId": mid["pid"]}})
+            self.assertGreaterEqual(mid["pumped_at"], mid["binary"].t_end[0])
+        post = self._pumped_turn(
+            {"reg_s": 0.05, "run_s": 0.9, "pc_gap_s": 0.15,
+             "tool_calls": [_bz5_call(0.2), _bz5_call(0.9, _BZ5_B)],
+             "inter_ack_s": 0.5, "inter_broadcast": True},
+            [_bz5_arm({"after_tool_calls": 2}, "BZ5-LAST-CALL"),
+             _bz5_arm({"after_s": 1.2}, "BZ5-AFTER-END")],
+            before=compaction(0.5, 0.8))
+        last, after_end = post["recs"]
+        with self.subTest(leg="post-completion"):
+            self.assertEqual(last["status"], "fired")
+            self.assertEqual(last["resp"]["result"], {"status": "queued"})
+            self.assertGreater(last["reply_at"], post["binary"].t_end[0])
+            self.assertFalse(last["mid_turn"],
+                             "a queued reply was taken as mid-turn proof")
+            self.assertEqual(last["mid_turn_evidence"], [])
+            self.assertFalse(post["binary"].early_step_fired)
+            self.assertEqual(
+                {k: after_end[k] for k in ("status", "disarm_reason",
+                                           "harness_caused")},
+                {"status": "missed", "disarm_reason": "turn_completed",
+                 "harness_caused": False})
+            self.assertEqual([x for _, _, x in post["sent"]],
+                             ["BZ5-LAST-CALL"])
+
+    def test_multibyte_split_across_reads(self):
+        """F-12: an agent_message_chunk whose UTF-8 text is split inside a
+        three-byte character across two reads, between the trigger and the
+        interject reply, is decoded intact by the one reader (its decoder and
+        its partial line outlive each read), and the reply after it is still
+        parsed and routed."""
+        text = "BZ5 na\u00efve caf\u00e9 \u2014 \u2713 \u65e5\u672c\u8a9e"
+        raw = {}
+
+        def split_chunk(sess, b):
+            line = json.dumps(
+                {"jsonrpc": "2.0", "method": "session/update",
+                 "params": {"sessionId": b.session_id,
+                            "update": {"sessionUpdate": "agent_message_chunk",
+                                       "content": {"type": "text",
+                                                   "text": text}}}},
+                ensure_ascii=False).encode("utf-8") + b"\n"
+            cut = line.index("\u2713".encode("utf-8")) + 1
+            raw["head"], raw["tail"] = line[:cut], line[cut:]
+            # FakeStdout.schedule takes text; these writes are raw bytes.
+            b.stdout._chunks.append((0.6, raw["head"]))
+            b.stdout._chunks.append((0.8, raw["tail"]))
+
+        out = self._pumped_turn(
+            {"reg_s": 0.05, "run_s": 2.9, "pc_gap_s": 0.15,
+             "tool_calls": [_bz5_call(0.2)], "inter_ack_s": 1.0},
+            [_bz5_arm({"after_tool_calls": 1}, "BZ5-UTF8")],
+            before=split_chunk)
+        with self.assertRaises(UnicodeDecodeError):
+            raw["head"].decode("utf-8")
+        self.assertEqual(out["texts"], [text])
+        rec = out["recs"][0]
+        self.assertEqual(rec["status"], "fired")
+        self.assertEqual(rec["resp"]["result"], {"status": "queued"})
+        self.assertAlmostEqual(rec["reply_at"], 1.3)
+        self.assertEqual(out["stop"], "end_turn")
+
+    def test_eof_mid_pump_is_clean(self):
+        """F-11 and D-6: the process exits mid-turn, its last line torn, while
+        the arm is still un-fired. The pump sees end of file when it happens,
+        with no traceback, and disarms the arm as session_died, harness-caused,
+        with the runner cause interject-unavailable: step0.arm0.session_died;
+        the torn line is dropped, never tracked; prompt_collect meets the same
+        end of file and returns the timeout terminal at once."""
+        def dying_turn(sess, b):
+            b._notify(0.1, "_x.ai/queue/changed",
+                      {"sessionId": b.session_id, "entries": [],
+                       "runningPromptId": sess._inflight.expected_prompt_id,
+                       "runningText": "M", "runningKind": "prompt"})
+            b.stdout.schedule(0.6, _bz3_chunk(b.session_id, "C0"))
+            b.stdout.schedule(1.0, _bz3_chunk(b.session_id, "TORN")[:-12])
+            b.stdout.eof()
+
+        out = self._pumped_turn(
+            {}, [_bz5_arm({"after_tool_calls": 1}, "BZ5-EOF")],
+            before=dying_turn, binary_cls=_DeferredTurnBinary,
+            eof_select=True)
+        rec = out["recs"][0]
+        self.assertEqual(
+            {k: rec[k] for k in ("status", "fired", "disarm_reason",
+                                 "harness_caused", "cause")},
+            {"status": "disarmed", "fired": False,
+             "disarm_reason": "session_died", "harness_caused": True,
+             "cause": "interject-unavailable: step0.arm0.session_died"})
+        self.assertEqual(out["pumped_at"], 1.0,
+                         "end of file was not seen when it happened")
+        self.assertEqual(out["texts"], ["C0"])
+        self.assertEqual(out["sent"], [])
+        self.assertEqual((out["resp"], out["stop"]),
+                         ({"error": {"message": "timeout after %ss"
+                                                % out["left"]}}, None))
+        self.assertEqual(out["collect_waited"], 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1026,6 +2681,1619 @@ class NewCaseGateTest(unittest.TestCase):
         c = _base_new_case()
         c["driver"] = "acp"
         violates(c, "cwd")
+
+
+# ---------------------------------------------------------------------------
+# apex-bdfz BZ-6 — the interject block: schema (hand subset) + mirrored rules
+# ---------------------------------------------------------------------------
+
+_BZ6_NONCE = "BZ6-INTERJECT-NONCE"
+_BZ6_TEXT = ("%s - the operator interjected this line mid-wait. Include the "
+             "nonce %s verbatim in your next reply, then finish the wait."
+             % (_BZ6_NONCE, _BZ6_NONCE))
+
+
+def _bz6_text_of_bytes(n):
+    """An echo-carrying interjection text of exactly n UTF-8 bytes, padded
+    with two-byte characters so that it holds fewer than n characters (the
+    section 2.7 bound counts bytes)."""
+    base = _BZ6_TEXT + " "
+    need = n - len(base.encode("utf-8"))
+    return base + "\u00e9" * (need // 2) + "x" * (need % 2)
+
+
+def _bz6_case(cwd):
+    """A schema_version=1 ACP case whose turn step carries three interject
+    arms: the three trigger keys, both send kinds and every optional arm key
+    (plan r3 section 2.7). It scores the nonce its interject texts echo (F-3)
+    and declares the model premise as the where-filtered count (section 2.5.1
+    item 5, erratum E-1)."""
+    c = _base_new_case()
+    c.update({
+        "id": "BZ6-INTERJECT",
+        "title": "BZ-6 interject contract fixture",
+        "bead": "apex-bdfz",
+        "driver": "acp",
+        "cwd": cwd,
+        "steps": [{
+            "op": "turn",
+            "prompt": "Start the worker in the background, then wait for it.",
+            "interject": [
+                {"at": {"after_tool": "get_command_or_subagent_output"},
+                 "send": "interject", "text": _BZ6_TEXT,
+                 "interjection_id": "bz6-arm0", "interject_timeout_s": 30,
+                 "require": True},
+                {"at": {"after_tool_calls": 2}, "text": _BZ6_TEXT},
+                {"at": {"after_s": 2.5}, "send": "set_model",
+                 "model": "m-test-2"},
+            ],
+        }],
+        "scoring": {"require_wire_evidence": True, "vacuous_if": [
+            {"pin": "interject_fired", "class": "model",
+             "note": "an arm never fired: the probe never happened"}]},
+    })
+    c["assert"]["ndjson"] = [
+        {"id": "nonce_echoed", "op": "text_contains", "value": _BZ6_NONCE},
+        {"id": "interject_fired", "op": "count", "event": "acp_interject",
+         "where": {"status": "fired"}, "min": 3, "max": 3},
+    ]
+    c["assert"]["wire"].append({
+        "id": "nonce_in_req", "kind": "grep", "file": "req-*.json",
+        "where": {"method": "POST", "body.model": "m-test"}, "any": True,
+        "grep": _BZ6_NONCE})
+    return c
+
+
+# Each broken variant -> the substrings one of its errors must carry on every
+# engine (its named reason). The first eleven are plan r3 section 4 BZ-6 RED
+# (b), in that order; the rest cover the remaining section 2.7 mirror rules,
+# both halves of the echo predicate, and section 2.6's send: resume.
+_BZ6_BROKEN = {
+    "two-trigger-keys": ("exactly one trigger key",),
+    "interject-without-text": ("send interject needs a non-empty string",),
+    "set-model-with-text": ("send set_model needs a string 'model'",),
+    "after-s-zero": ("after_s", "minimum"),
+    "interject-on-compact": ("only legal on op turn",),
+    "headless-driver": ("headless is one process per turn",),
+    "arm-additional-property": ("interject", "bogus"),
+    "interject-object": ("interject must be a non-empty list of arms",),
+    "interject-empty-list": ("interject must be a non-empty list of arms",),
+    "no-echo": ("echo rule (F-3)",),
+    "text-4097-bytes": ("4097 bytes", "4096-byte bound"),
+    "interject-with-model": ("send interject needs a non-empty string",),
+    "set-model-without-model": ("send set_model needs a string 'model'",),
+    "text-copies-prompt": ("copy of the step prompt",),
+    "kill-after-s": ("kill_after_s or expect_kill",),
+    "expect-kill": ("kill_after_s or expect_kill",),
+    "nonce-without-verbatim": ("echo rule (F-3)",),
+    "verbatim-without-nonce": ("echo rule (F-3)",),
+    "send-resume": ("send", "resume"),
+}
+
+
+def _bz6_broken_case(kind, cwd):
+    c = _bz6_case(cwd)
+    step = c["steps"][0]
+    arms = step["interject"]
+    if kind == "two-trigger-keys":
+        arms[0]["at"]["after_s"] = 2
+    elif kind == "interject-without-text":
+        del arms[0]["text"]
+    elif kind == "set-model-with-text":
+        arms[2]["text"] = _BZ6_TEXT
+    elif kind == "after-s-zero":
+        arms[2]["at"]["after_s"] = 0
+    elif kind == "interject-on-compact":
+        step["op"] = "compact"
+    elif kind == "headless-driver":
+        c["driver"] = "headless"
+    elif kind == "arm-additional-property":
+        arms[0]["bogus"] = 1
+    elif kind == "interject-object":
+        step["interject"] = arms[0]
+    elif kind == "interject-empty-list":
+        step["interject"] = []
+    elif kind == "no-echo":
+        arms[0]["text"] = "Also tell me about the weather in your reply."
+    elif kind == "text-4097-bytes":
+        arms[0]["text"] = _bz6_text_of_bytes(4097)
+    elif kind == "interject-with-model":
+        arms[0]["model"] = "m-test-2"
+    elif kind == "set-model-without-model":
+        del arms[2]["model"]
+    elif kind == "text-copies-prompt":
+        step["prompt"] = arms[0]["text"]
+    elif kind == "kill-after-s":
+        step["kill_after_s"] = 5
+    elif kind == "expect-kill":
+        step["expect_kill"] = False
+    elif kind == "nonce-without-verbatim":
+        arms[0]["text"] = "%s was interjected; mention it." % _BZ6_NONCE
+    elif kind == "verbatim-without-nonce":
+        arms[0]["text"] = "Repeat the word OK verbatim in your next reply."
+    elif kind == "send-resume":
+        arms[0]["send"] = "resume"
+    else:
+        raise ValueError(kind)
+    return c
+
+
+def _bz6_engines():
+    """The hand-rolled subset is binding (it is what runs when jsonschema is
+    absent); the jsonschema path joins whenever it is importable."""
+    return ["hand"] + (["jsonschema"] if _have_jsonschema() else [])
+
+
+class InterjectContractTest(unittest.TestCase):
+    """apex-bdfz BZ-6 (plan r3 sections 2.6, 2.7; section 3 F-15, F-17): the
+    turn step's interject block. case.schema.json declares it inside the
+    fail-closed hand-rolled subset; _validate_step mirrors the step-local
+    rules (exactly one trigger key, the 4096-byte text bound and the rest of
+    section 2.7's step-local list); _validate_new_case owns the driver rule
+    and the echo rule (R-7), because only it sees the whole case."""
+
+    maxDiff = None
+
+    def test_interject_block_valid_and_mirrored(self):
+        tmp = tempfile.mkdtemp(prefix="rt-bz6-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        good = _write_case(tmp, "bz6-good.json", _bz6_case(tmp))
+        c = _bz6_case(tmp)
+        c["steps"][0]["interject"][0]["text"] = _bz6_text_of_bytes(4096)
+        bound = _write_case(tmp, "bz6-text-4096-bytes.json", c)
+        broken = {}
+        for kind in _BZ6_BROKEN:
+            broken[kind] = _write_case(tmp, "bz6-%s.json" % kind,
+                                       _bz6_broken_case(kind, tmp))
+        for engine in _bz6_engines():
+            with self.subTest(part="a: well-formed arms", engine=engine):
+                self.assertEqual(
+                    run.validate_case_file(good, engine=engine), [])
+            with self.subTest(part="a: 4096-byte text", engine=engine):
+                self.assertEqual(
+                    run.validate_case_file(bound, engine=engine), [])
+            with self.subTest(part="b: broken variants", engine=engine):
+                unnamed = {}
+                for kind, needles in sorted(_BZ6_BROKEN.items()):
+                    errs = run.validate_case_file(broken[kind], engine=engine)
+                    if not any(all(n in e for n in needles) for e in errs):
+                        unnamed[kind] = errs
+                self.assertEqual(
+                    unnamed, {},
+                    "not rejected with the named reason on the %s engine"
+                    % engine)
+        with self.subTest(part="c: no new top-level op"):
+            with open(run.SCHEMA_PATH) as fh:
+                schema = json.load(fh)
+            self.assertEqual(
+                schema["definitions"]["step"]["properties"]["op"]["enum"],
+                list(run.STEP_OPS))
+            self.assertNotIn("interject", run.STEP_OPS)
+
+
+class InterjectDualValidatorTest(unittest.TestCase):
+    """apex-bdfz BZ-6 (plan r3 section 2.7 rule 0, review F-1): the two
+    draft-07 engines agree on interject-bearing cases before any such case
+    lands in the tree, and case.schema.json stays inside the keyword subset
+    the hand-rolled engine accepts."""
+
+    maxDiff = None
+
+    def test_interject_arm_agrees_on_both_paths(self):
+        if not _have_jsonschema():
+            self.skipTest("jsonschema not importable in this env")
+        tmp = tempfile.mkdtemp(prefix="rt-bz6d-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        c = _bz6_case(tmp)
+        c["steps"][0]["interject"][0]["text"] = _bz6_text_of_bytes(4096)
+        cases = {"good": _bz6_case(tmp), "text-4096-bytes": c}
+        cases.update((k, _bz6_broken_case(k, tmp)) for k in _BZ6_BROKEN)
+        verdicts, expected = {}, {}
+        for name, case in sorted(cases.items()):
+            p = _write_case(tmp, "bz6d-%s.json" % name, case)
+            verdicts[name] = (
+                not run.validate_case_file(p, engine="jsonschema"),
+                not run.validate_case_file(p, engine="hand"))
+            ok = name in ("good", "text-4096-bytes")
+            expected[name] = (ok, ok)
+        self.assertEqual(verdicts, expected,
+                         "(jsonschema pass, hand pass) per case")
+
+    def test_schema_keywords_in_hand_subset(self):
+        """Every keyword case.schema.json uses at any schema node is one the
+        hand-rolled engine accepts, so an out-of-subset keyword (oneOf,
+        minLength, ...) fails here instead of as a fail-closed refusal on the
+        first host without jsonschema."""
+        with open(run.SCHEMA_PATH) as fh:
+            schema = json.load(fh)
+        outside = []
+
+        def walk(node, path):
+            if not isinstance(node, dict):
+                return
+            for kw, sub in node.items():
+                if kw not in run._D7_HAND_KEYWORDS:
+                    outside.append("%s: %s" % (path, kw))
+                if kw in ("properties", "definitions"):
+                    for name, s in sub.items():
+                        walk(s, "%s/%s/%s" % (path, kw, name))
+                elif kw in ("items", "additionalProperties"):
+                    walk(sub, "%s/%s" % (path, kw))
+                elif kw == "anyOf":
+                    for i, s in enumerate(sub):
+                        walk(s, "%s/anyOf[%d]" % (path, i))
+
+        walk(schema, "#")
+        self.assertEqual(outside, [])
+
+
+# ---------------------------------------------------------------------------
+# apex-bdfz BZ-7 — the dispatcher: the acp_interject record, the runner's
+# BLOCKED cause, the ndjson where filter
+# ---------------------------------------------------------------------------
+
+_BZ7_NONCE = "BZ7-INTERJECT-NONCE"
+_BZ7_TEXT = ("%s - the operator interjected this line mid-turn. Include the "
+             "nonce %s verbatim in your next reply." % (_BZ7_NONCE, _BZ7_NONCE))
+_BZ7_NOTE = "the arm never fired inside the parent turn, so no probe happened"
+_BZ7_NO_RECORD = "interject-unavailable: step0.arm0.no_record"
+# ScriptedBinary turns (start() leaves the clock at 0.05; the prompt registers
+# at 0.1). FIRED: the tool call at 0.3 fires an after_tool_calls arm, its reply
+# comes at 0.6, a chunk at 1.1, and turn_completed at 2.1 is stamped after the
+# send; ECHO's chunk repeats the nonce. PROSE: two chunks and no tool call.
+# SILENT: the arm fires and is never answered while the turn streams to 4.1.
+# REFUSED: the reply is a JSON-RPC error at 0.5.
+_BZ7_FIRED = {"reg_s": 0.05, "run_s": 2.0, "pc_gap_s": 0.15,
+              "inter_ack_s": 0.3, "tool_calls": [_bz5_call(0.2)],
+              "turn_chunks": [[(1.0, "Done.")]]}
+_BZ7_ECHO = dict(_BZ7_FIRED,
+                 turn_chunks=[[(1.0, "Noted: %s." % _BZ7_NONCE)]])
+_BZ7_PROSE = {"reg_s": 0.05, "run_s": 2.0, "pc_gap_s": 0.15,
+              "turn_chunks": [[(0.5, "prose one"), (1.5, "prose two")]]}
+_BZ7_SILENT = {"reg_s": 0.05, "run_s": 4.0, "pc_gap_s": 0.15,
+               "tool_calls": [_bz5_call(0.2)],
+               "inter_replies": [{"reply": "silent"}],
+               "turn_chunks": [[(1.0 + i, "C%d" % i) for i in range(3)]]}
+_BZ7_REFUSED = {"reg_s": 0.05, "run_s": 3.0, "pc_gap_s": 0.15,
+                "tool_calls": [_bz5_call(0.2)],
+                "inter_replies": [{"reply": "error", "after": 0.2}],
+                "turn_chunks": [[(1.0, "C0")]]}
+
+
+def _bz7_arm(at, **extra):
+    """One interject arm (plan r3 section 2.7) carrying the echo text."""
+    return _bz5_arm(at, _BZ7_TEXT, **extra)
+
+
+def _bz7_case(cwd, arm, driver="acp"):
+    """A schema_version=1 case with one turn step armed with `arm`. The model
+    premise is declared as section 2.5.1 item 5 and erratum E-1 require:
+    interject_fired is a count on acp_interject where status is fired, min 1,
+    named in scoring.vacuous_if with class model (no harness-class entry). The
+    scored pins are the echoed nonce and the absence of acp_error. The runs
+    below have wirecap off, so no wire assert is scored and D-8 has nothing to
+    audit."""
+    c = _base_new_case()
+    c.update({
+        "id": "BZ7-DISPATCH",
+        "title": "BZ-7 dispatcher fixture",
+        "bead": "apex-bdfz",
+        "driver": driver,
+        "cwd": cwd,
+        "steps": [{"op": "turn",
+                   "prompt": "Run one command, then wait for the operator.",
+                   "interject": [arm]}],
+        "scoring": {"require_wire_evidence": True, "vacuous_if": [
+            {"pin": "interject_fired", "class": "model", "note": _BZ7_NOTE}]},
+    })
+    c["assert"]["ndjson"] = [
+        {"id": "interject_fired", "op": "count", "event": "acp_interject",
+         "where": {"status": "fired"}, "min": 1},
+        {"id": "nonce_echoed", "op": "text_contains", "value": _BZ7_NONCE},
+        {"id": "no_acp_error", "op": "absent", "event": "acp_error"},
+    ]
+    return c
+
+
+# apex-bdfz BZ-7 fix round 1 (ruling BZ-R7): the mid-turn switch in RT-MSW-B's
+# shape (plan r3 section 1.3), and the product refusing it.
+_BZ7_SWITCH_TARGET = "m-test-2"
+_BZ7_SWITCH_NOTE = ("the mid-turn switch was never sent: the pumped turn "
+                    "finished before the after_s window opened")
+# The long turn registers at 0.1 and streams chunks at 0.4, 0.8 and 1.6 to its
+# turn_completed at 2.1; an after_s 0.5 arm fires on the chunk at 0.8, so
+# session/set_model reaches the binary mid-turn and turn_completed is stamped
+# after the send. The second chunk list is the post-switch turn's.
+_BZ7_SWITCH = {"reg_s": 0.05, "run_s": 2.0, "pc_gap_s": 0.15,
+               "turn_chunks": [[(0.3, "1. One."), (0.7, "2. Two."),
+                                (1.5, "3. Three.")],
+                               [(0.5, "BZ7-SWITCH-C1")]]}
+
+
+def _bz7_switch_arm():
+    """RT-MSW-B's arm (plan r3 sections 1.3, 2.7): set_model on after_s."""
+    return {"at": {"after_s": 0.5}, "send": "set_model",
+            "model": _BZ7_SWITCH_TARGET}
+
+
+def _bz7_switch(case, declared=True):
+    """Rewrite a _bz7_case fixture in place into RT-MSW-B's shape (plan r3
+    section 1.3): the fixture's armed turn is the long turn and the post-switch
+    turn follows, scored by RT-MSW-B's existing pins (no_acp_error,
+    switch_landed, two_turns). declared adds what BZ-L2 adds: the model premise
+    interject_fired (erratum E-1's where-filtered count) in
+    scoring.vacuous_if, and interject_mid_turn. Without it the case carries no
+    scoring key, as rt-msw-b.json does today."""
+    arms = case["steps"][0]["interject"]
+    case.update({
+        "id": "BZ7-SWITCH",
+        "title": "BZ-7 mid-turn switch fixture (RT-MSW-B's shape)",
+        "steps": [
+            {"op": "turn",
+             "prompt": "Write a numbered list from 1 to 150, one sentence "
+                       "per number.",
+             "interject": arms},
+            {"op": "turn", "prompt": "Reply with exactly: BZ7-SWITCH-C1"}],
+    })
+    case["assert"]["ndjson"] = [
+        {"id": "no_acp_error", "op": "absent", "event": "acp_error"},
+        {"id": "switch_landed", "op": "present", "event": "acp_set_model"},
+        {"id": "two_turns", "op": "count", "event": "acp_end",
+         "min": 2, "max": 2},
+    ]
+    if declared:
+        case["scoring"] = {"vacuous_if": [
+            {"pin": "interject_fired", "class": "model",
+             "note": _BZ7_SWITCH_NOTE}]}
+        case["assert"]["ndjson"] += [
+            {"id": "interject_fired", "op": "count", "event": "acp_interject",
+             "where": {"status": "fired"}, "min": 1},
+            {"id": "interject_mid_turn", "op": "count",
+             "event": "acp_interject",
+             "where": {"status": "fired", "mid_turn": True}, "min": 1},
+        ]
+    else:
+        case.pop("scoring", None)
+    return case
+
+
+def _bz7_switch_refusal(model):
+    """The product's JSON-RPC error refusing a switch to `model` for an
+    incompatible agent (ModelSwitchIncompatibleAgentError.into_acp_error,
+    agent/config.rs: InvalidRequest, its message, its camelCase data)."""
+    return {"code": -32600,
+            "message": "Cannot switch to model '%s': it requires agent "
+                       "'replay-agent-2' but the active agent is "
+                       "'replay-agent'. Start a new session to use this "
+                       "model." % model,
+            "data": {"code": "MODEL_SWITCH_INCOMPATIBLE_AGENT",
+                     "activeAgentType": "replay-agent",
+                     "requiredAgentType": "replay-agent-2",
+                     "modelId": model, "suggestion": "start_new_session"}}
+
+
+class _BZ7RefusedSwitchBinary(ScriptedBinary):
+    """ScriptedBinary whose session/set_model is refused: no model_changed
+    update, and the JSON-RPC error of _bz7_switch_refusal 0.1 s after the
+    request (the base fake's answer delay)."""
+
+    def on_send(self, d, t):
+        if d.get("method") != "session/set_model":
+            return ScriptedBinary.on_send(self, d, t)
+        if self._has_unended_prior(t):
+            self.early_step_fired = True
+        self._respond(t + 0.1, d.get("id"), error=_bz7_switch_refusal(
+            (d.get("params") or {}).get("modelId")))
+
+
+class MidTurnDispatchTest(unittest.TestCase):
+    """apex-bdfz BZ-7 (plan r3 sections 2.5, 2.5.1, 2.5.2, 2.8; errata E-1,
+    E-2): the step dispatcher, _run_case_once, runs an interject-armed ACP turn
+    through the single-reader pump and records each arm twice: on the turn
+    record (turns[].interjects, report.json's machine surface) and as one
+    acp_interject pseudo-event. From the records it computes the runner's
+    BLOCKED cause (send_timeout, a harness-caused disarm, or a declared arm
+    left without a record) and passes it as finalize_verdict(...,
+    interject_cause=...), which returns BLOCKED before anything else decides.
+    check_ndjson's count, eq and ne apply a where map before counting or
+    selecting."""
+
+    maxDiff = None
+
+    def _dispatch(self, binary_kwargs, arm, mutate=None, wire=True,
+                  pump=None, driver="acp", binary_cls=ScriptedBinary):
+        """One case through the real _run_case_once with wirecap off. ACP: the
+        process is faked as MidTurnPumpTest does (Popen, select and run.time
+        swapped for this call only). Headless: the binary is a stub that exits
+        0 with no output; the headless driver is one process per turn, so it
+        never arms an interject arm. CaseCtx is recorded so ctx.events can be
+        read. wire=True gives the run a wire/ directory (a wiretap that
+        captured nothing); wire=False leaves none. pump, when given, stands in
+        for AcpSession._pump_mid_turn for this call only. binary_cls is the
+        scripted binary's class, for a reply the base fake never sends."""
+        tmp = tempfile.mkdtemp(prefix="rt-bz7-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        case = _bz7_case(tmp, arm, driver=driver)
+        if mutate is not None:
+            mutate(case)
+        live = _write_fake_live_home(tmp, "http://127.0.0.1:9")
+        stub = "grok-responses"
+        if driver == "headless":
+            stub = os.path.join(tmp, "stub-grok")
+            with open(stub, "w") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(stub, 0o755)
+        args = argparse.Namespace(out=os.path.join(tmp, "report"),
+                                  live_home=live, wirecap=False, budget=20,
+                                  ambient_key="", bin=stub, rows=None,
+                                  keep_home=False, campaign_id=None)
+        run_dir = os.path.join(tmp, "run")
+        os.makedirs(os.path.join(run_dir, "wire") if wire else run_dir)
+        made, binary = [], None
+
+        class _RecordedCtx(run.CaseCtx):
+            def __init__(self):
+                super(_RecordedCtx, self).__init__()
+                made.append(self)
+
+        saved = (subprocess.Popen, sys.modules.get("select"), run.time,
+                 run.CaseCtx, run.AcpSession._pump_mid_turn)
+        run.CaseCtx = _RecordedCtx
+        if driver == "acp":
+            clock = FakeClock()
+            stdout = FakeStdout(clock)
+            binary = binary_cls(stdout, clock, **binary_kwargs)
+            subprocess.Popen = lambda *a, **k: FakeProc(binary, clock, stdout)
+            sys.modules["select"] = FakeSelectModule(clock, stdout)
+            run.time = FakeTime(clock)
+        if pump is not None:
+            run.AcpSession._pump_mid_turn = pump
+        try:
+            row = run._run_case_once(case, args, run.Budget(args.budget),
+                                     run_dir, 1)
+        finally:
+            (subprocess.Popen, sys.modules["select"], run.time, run.CaseCtx,
+             run.AcpSession._pump_mid_turn) = saved
+        with open(os.path.join(run_dir, "verdict.json")) as fh:
+            verdict = json.load(fh)
+        return {"row": row, "ctx": made[0], "verdict": verdict,
+                "binary": binary, "case": case, "run_dir": run_dir}
+
+    def test_turn_step_with_interject_records_the_arm(self):
+        """The first test through the dispatcher's ACP turn branch with an
+        interject block. The arm (after_tool_calls 1) fires on the tool call at
+        0.3 while the turn runs; turn_completed at 2.1 is stamped after the
+        send. The turn record carries the arm record, with interject_text as a
+        key; ctx.events holds exactly one acp_interject event for the arm, the
+        text under interject_text and never as data; status and fired agree;
+        the turn has exactly one acp_end; and the case's own pins decide (the
+        model echoed the nonce: PASS)."""
+        out = self._dispatch(_BZ7_ECHO, _bz7_arm({"after_tool_calls": 1}))
+        ctx, b = out["ctx"], out["binary"]
+        rec = ctx.turns[-1]["interjects"][0]
+        events = [e for e in ctx.events if e.get("type") == "acp_interject"]
+        with self.subTest(leg="the arm record on the turn record"):
+            keys = ("arm_id", "send", "status", "fired", "disarm_reason",
+                    "harness_caused", "cause", "mid_turn",
+                    "mid_turn_evidence", "interject_text")
+            self.assertEqual(
+                {k: rec.get(k) for k in keys},
+                {"arm_id": "step0.arm0", "send": "interject",
+                 "status": "fired", "fired": True, "disarm_reason": None,
+                 "harness_caused": False, "cause": None, "mid_turn": True,
+                 "mid_turn_evidence": ["completion_after_send"],
+                 "interject_text": _BZ7_TEXT})
+            self.assertIn("interject_text", rec)
+            self.assertEqual(rec["prompt_id"], ctx.turns[-1]["prompt_id"])
+        with self.subTest(leg="one acp_interject event for the arm"):
+            self.assertEqual(
+                [{k: v for k, v in e.items() if k != "elapsed_s"}
+                 for e in events],
+                [{"type": "acp_interject", "arm_id": "step0.arm0",
+                  "fired": True, "mid_turn": True, "status": "fired",
+                  "disarm_reason": None, "harness_caused": False,
+                  "tool_calls_seen": 1, "interject_text": _BZ7_TEXT,
+                  "_line": 0}])
+            self.assertAlmostEqual(events[0]["elapsed_s"], 0.25)
+        with self.subTest(leg="status is authoritative and fired agrees"):
+            for r in ctx.turns[-1]["interjects"] + events:
+                self.assertEqual(r["fired"], r["status"] == "fired")
+        with self.subTest(leg="only the model's chunk is an acp_message"):
+            self.assertEqual(
+                [e["data"] for e in ctx.events
+                 if e.get("type") == "acp_message"],
+                ["Noted: %s." % _BZ7_NONCE])
+        with self.subTest(leg="exactly one acp_end"):
+            self.assertEqual(
+                [e["type"] for e in ctx.events
+                 if e.get("type") in ("acp_end", "acp_error")],
+                ["acp_end"])
+        with self.subTest(leg="the request reached the binary mid-turn"):
+            self.assertEqual(
+                [(round(t, 6), r["method"], r["params"]["text"])
+                 for t, r in b.interjects],
+                [(0.3, "_x.ai/interject", _BZ7_TEXT)])
+            self.assertTrue(b.early_step_fired)
+        with self.subTest(leg="the case's pins decide"):
+            self.assertIs(out["row"]["turns"], ctx.turns)
+            self.assertEqual(out["row"]["status"], "PASS")
+
+    def test_verdict_mapping_per_arm_status(self):
+        """Section 2.5's table end to end: one run through the dispatcher per
+        arm status, over a case that declares the model premise (erratum E-1:
+        a where-filtered count). fired: the case's pins decide (PASS with the
+        echo, FAIL without it). missed and mismatched_tool: VACUOUS, the failed
+        pins still in row["asserts"], the status readable from the turn record
+        and verdict.json's vacuous_reason naming the pin, not the status.
+        send_timeout and disarmed(ext_error): BLOCKED with the runner's named
+        cause in blocked_reason. (a) The same missed run with the declaration
+        removed scores FAIL. (b) The two BLOCKED rows on a run with no wire/
+        directory are still BLOCKED: the cause leg sits outside `if wire_dir:`.
+        E-1: a declared arm with no record (the pump returned none; the
+        headless driver never arms one) is BLOCKED with
+        interject-unavailable: step0.arm0.no_record. require false suppresses
+        the cause only: VACUOUS, with the record still written. Two armed
+        turns: each cause names its own step and arm, and they join in order.
+        No case declares a harness-class premise, and every declared case
+        validates."""
+        calls = _bz7_arm({"after_tool_calls": 1})
+        tool = _bz7_arm({"after_tool": "get_command_or_subagent_output"})
+        timed = _bz7_arm({"after_tool_calls": 1}, interject_timeout_s=1)
+        timeout_cause = "interject-send-timeout: step0.arm0"
+        ext_cause = "interject-unavailable: step0.arm0.ext_error"
+        table = [
+            ("fired, echoed", _BZ7_ECHO, calls, "fired", "PASS", None),
+            ("fired, not echoed", _BZ7_FIRED, calls, "fired", "FAIL", None),
+            ("missed", _BZ7_PROSE, calls, "missed", "VACUOUS", None),
+            ("mismatched_tool", _BZ7_PROSE, tool, "mismatched_tool",
+             "VACUOUS", None),
+            ("send_timeout", _BZ7_SILENT, timed, "send_timeout", "BLOCKED",
+             timeout_cause),
+            ("disarmed(ext_error)", _BZ7_REFUSED, calls, "disarmed",
+             "BLOCKED", ext_cause),
+        ]
+        declared = []
+        for leg, script, arm, arm_status, status, cause in table:
+            out = self._dispatch(script, arm)
+            declared.append(out["case"])
+            row, v = out["row"], out["verdict"]
+            with self.subTest(leg=leg):
+                self.assertEqual(
+                    (row["status"], row.get("blocked_reason"), v["status"],
+                     v["verdict"]["blocked_reason"]),
+                    (status, cause, status, cause))
+                self.assertEqual(row["turns"][0]["interjects"][0]["status"],
+                                 arm_status)
+            if status == "VACUOUS":
+                with self.subTest(leg=leg, part="VACUOUS record obligations"):
+                    self.assertEqual(
+                        sorted(a["spec"]["id"] for a in row["asserts"]
+                               if not a["ok"]),
+                        ["interject_fired", "nonce_echoed"])
+                    reason = v["verdict"]["vacuous_reason"]
+                    self.assertIn("interject_fired", reason)
+                    self.assertNotIn(arm_status, reason)
+        undeclared = self._dispatch(
+            _BZ7_PROSE, calls,
+            mutate=lambda c: c["scoring"].pop("vacuous_if"))
+        with self.subTest(leg="(a) the missed run, premise undeclared"):
+            row, v = undeclared["row"], undeclared["verdict"]
+            self.assertEqual(
+                (row["status"], row.get("blocked_reason"),
+                 v["verdict"]["vacuous_reason"], v["verdict"]["premises"]),
+                ("FAIL", None, None, []))
+            self.assertEqual(row["turns"][0]["interjects"][0]["status"],
+                             "missed")
+        for leg, script, arm, cause in (
+                ("send_timeout", _BZ7_SILENT, timed, timeout_cause),
+                ("disarmed(ext_error)", _BZ7_REFUSED, calls, ext_cause)):
+            out = self._dispatch(script, arm, wire=False)
+            with self.subTest(leg="(b) no wire/ directory: " + leg):
+                self.assertFalse(
+                    os.path.isdir(os.path.join(out["run_dir"], "wire")))
+                self.assertEqual(
+                    (out["row"]["status"], out["row"].get("blocked_reason")),
+                    ("BLOCKED", cause))
+        real_pump = run.AcpSession._pump_mid_turn
+
+        def pump_without_records(sess, arms, waiter, deadline, **kw):
+            # Fault injection: the real pump reads the turn and fires the arm,
+            # and its record never reaches the dispatcher.
+            real_pump(sess, arms, waiter, deadline, **kw)
+            return []
+
+        lost = self._dispatch(_BZ7_ECHO, calls, pump=pump_without_records)
+        headless = self._dispatch(None, calls, driver="headless")
+        for leg, out in (("E-1: the pump wrote no record", lost),
+                         ("E-1: the headless driver never arms", headless)):
+            with self.subTest(leg=leg):
+                self.assertEqual(
+                    (out["row"]["status"], out["row"].get("blocked_reason")),
+                    ("BLOCKED", _BZ7_NO_RECORD))
+                self.assertEqual(
+                    [e for e in out["ctx"].events
+                     if e.get("type") == "acp_interject"], [])
+        with self.subTest(leg="E-1: the lost record is not on the turn"):
+            self.assertEqual(lost["row"]["turns"][0]["interjects"], [])
+        tolerant = self._dispatch(
+            _BZ7_SILENT,
+            _bz7_arm({"after_tool_calls": 1}, interject_timeout_s=1,
+                     require=False))
+        declared.append(tolerant["case"])
+        with self.subTest(leg="require false: the cause only is suppressed"):
+            row = tolerant["row"]
+            self.assertEqual((row["status"], row.get("blocked_reason")),
+                             ("VACUOUS", None))
+            self.assertEqual(row["turns"][0]["interjects"][0]["status"],
+                             "send_timeout")
+            self.assertEqual(
+                [e["status"] for e in tolerant["ctx"].events
+                 if e.get("type") == "acp_interject"], ["send_timeout"])
+        # Two armed turns: step 0's arm times out; step 1's first arm is
+        # refused and its second (after_tool wait_agent) never matches. The
+        # causes carry their own step and arm index and join in that order;
+        # the mismatched arm adds none.
+        two_turns = self._dispatch(
+            {"reg_s": 0.05, "run_s": 4.0, "pc_gap_s": 0.15,
+             "tool_calls": [_bz5_call(0.2), dict(_bz5_call(0.2), turn=1)],
+             "inter_replies": [{"reply": "silent"},
+                               {"reply": "error", "after": 0.2}],
+             "turn_chunks": [[(1.0 + i, "C%d" % i) for i in range(3)],
+                             [(1.0, "D0")]]},
+            timed,
+            mutate=lambda c: c["steps"].append(
+                {"op": "turn", "prompt": "Now check on the worker.",
+                 "interject": [calls,
+                               _bz7_arm({"after_tool": "wait_agent"})]}))
+        declared.append(two_turns["case"])
+        with self.subTest(leg="two armed turns: causes joined in order"):
+            row = two_turns["row"]
+            self.assertEqual(
+                (row["status"], row.get("blocked_reason")),
+                ("BLOCKED", timeout_cause + "; interject-unavailable: "
+                 "step1.arm0.ext_error"))
+            self.assertEqual(
+                [[(r["arm_id"], r["status"]) for r in t["interjects"]]
+                 for t in row["turns"]],
+                [[("step0.arm0", "send_timeout")],
+                 [("step1.arm0", "disarmed"),
+                  ("step1.arm1", "mismatched_tool")]])
+            self.assertEqual(
+                [e["arm_id"] for e in two_turns["ctx"].events
+                 if e.get("type") == "acp_interject"],
+                ["step0.arm0", "step1.arm0", "step1.arm1"])
+        battery = declared + [undeclared["case"], lost["case"],
+                              headless["case"]]
+        with self.subTest(leg="no harness-class premise in the battery"):
+            self.assertEqual(
+                sorted({e.get("class") for c in battery
+                        for e in c["scoring"].get("vacuous_if", [])}),
+                ["model"])
+        with self.subTest(leg="every declared case validates"):
+            tmp = tempfile.mkdtemp(prefix="rt-bz7v-")
+            self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+            errs = {}
+            for i, c in enumerate(declared):
+                p = _write_case(tmp, "bz7-%d.json" % i, c)
+                for engine in _bz6_engines():
+                    found = run.validate_case_file(p, engine=engine)
+                    if found:
+                        errs[(i, engine)] = found
+            self.assertEqual(errs, {})
+
+    def test_where_filter_counts_per_status(self):
+        """Section 2.5.2: count, eq and ne take a where map of equality filters
+        on the event's own fields, applied before counting or selecting. Over
+        two fired arms and one disarmed arm, count where status is fired gives
+        2, so min 2 max 2 holds and min 3 does not (counting by type alone
+        gives 3); two keys must both match; eq and ne read the disarmed arm's
+        record; a where-less count is unchanged. The case-file half: a scalar
+        where validates on both engines, and a list value is refused by
+        both."""
+        tmp = tempfile.mkdtemp(prefix="rt-bz7w-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        good = _write_case(tmp, "bz7-where.json",
+                           _bz7_case(tmp, _bz7_arm({"after_tool_calls": 1})))
+        listed = _bz7_case(tmp, _bz7_arm({"after_tool_calls": 1}))
+        listed["assert"]["ndjson"][0]["where"] = {"status": ["fired"]}
+        bad = _write_case(tmp, "bz7-where-list.json", listed)
+        for engine in _bz6_engines():
+            with self.subTest(part="the where property", engine=engine):
+                self.assertEqual(run.validate_case_file(good, engine=engine),
+                                 [])
+                errs = run.validate_case_file(bad, engine=engine)
+                self.assertTrue(any("where" in e for e in errs), errs)
+        events = [
+            {"type": "acp_message", "data": "chunk", "_line": 0},
+            {"type": "acp_interject", "arm_id": "step0.arm0", "fired": True,
+             "mid_turn": True, "status": "fired", "disarm_reason": None,
+             "harness_caused": False, "_line": 0},
+            {"type": "acp_interject", "arm_id": "step0.arm1", "fired": True,
+             "mid_turn": True, "status": "fired", "disarm_reason": None,
+             "harness_caused": False, "_line": 0},
+            {"type": "acp_interject", "arm_id": "step0.arm2", "fired": False,
+             "mid_turn": False, "status": "disarmed",
+             "disarm_reason": "ext_error", "harness_caused": True,
+             "_line": 0},
+            {"type": "acp_end", "stopReason": "end_turn", "_line": 0},
+        ]
+
+        def holds(**spec):
+            spec["event"] = "acp_interject"
+            return run.check_ndjson(spec, events, "acp").ok
+
+        fired = {"status": "fired"}
+        legs = {
+            "count fired, min 2 max 2": (
+                holds(op="count", where=fired, min=2, max=2), True),
+            "count fired, min 3": (
+                holds(op="count", where=fired, min=3), False),
+            "count fired on step0.arm1": (
+                holds(op="count", where={"status": "fired",
+                                         "arm_id": "step0.arm1"},
+                      min=1, max=1), True),
+            "eq reads the disarmed record": (
+                holds(op="eq", where={"status": "disarmed"},
+                      field="disarm_reason", value="ext_error"), True),
+            "ne reads the disarmed record": (
+                holds(op="ne", where={"status": "disarmed"},
+                      field="harness_caused", value=False), True),
+            "count without where": (holds(op="count", min=3, max=3), True),
+        }
+        self.assertEqual({k: v[0] for k, v in legs.items()},
+                         {k: v[1] for k, v in legs.items()})
+
+    def test_miss_path_writes_no_fired_record(self):
+        """The miss path: the arm's trigger (one tool call) never holds before
+        the turn completes, so its one acp_interject record says fired False,
+        status missed, closed by turn_completed and not harness-caused; no
+        record says fired True, and nothing was sent."""
+        out = self._dispatch(_BZ7_PROSE, _bz7_arm({"after_tool_calls": 1}))
+        events = [e for e in out["ctx"].events
+                  if e.get("type") == "acp_interject"]
+        keys = ("arm_id", "fired", "status", "disarm_reason",
+                "harness_caused", "mid_turn", "interject_text")
+        self.assertEqual(
+            [{k: e.get(k) for k in keys} for e in events],
+            [{"arm_id": "step0.arm0", "fired": False, "status": "missed",
+              "disarm_reason": "turn_completed", "harness_caused": False,
+              "mid_turn": False, "interject_text": _BZ7_TEXT}])
+        self.assertEqual([e for e in events if e["fired"]], [])
+        self.assertEqual(out["binary"].interjects, [])
+
+    def test_mid_turn_set_model_lands_the_switch(self):
+        """BZ-R7 F-1, plan r3 section 3 F-13's early shape, in RT-MSW-B's case
+        shape: the after_s arm sends session/set_model at 0.8 while the long
+        turn runs to 2.1, and the reply carries no error. The armed turn branch
+        records the switch as the switch step does: one acp_set_model naming
+        the target, after the arm's acp_interject and before the turn's
+        acp_end. The in-flight turn completes on the model it was sent with
+        and the post-switch turn runs on the target. switch_landed is present,
+        the census is two acp_end, the fake saw the request before the turn
+        ended (early_step_fired), the arm fired with mid_turn true, and
+        RT-MSW-B's pins plus BZ-L2's declared premise hold (PASS). Both case
+        shapes validate on every engine."""
+        out = self._dispatch(_BZ7_SWITCH, _bz7_switch_arm(),
+                             mutate=_bz7_switch)
+        ctx, b, row = out["ctx"], out["binary"], out["row"]
+        rec = ctx.turns[0]["interjects"][0]
+        with self.subTest(leg="switch_landed present: one acp_set_model"):
+            self.assertEqual(
+                [e for e in ctx.events if e.get("type") == "acp_set_model"],
+                [{"type": "acp_set_model", "model": _BZ7_SWITCH_TARGET,
+                  "_line": 0}])
+            self.assertEqual(
+                [e["type"] for e in ctx.events if e.get("type") in (
+                    "acp_interject", "acp_set_model", "acp_end",
+                    "acp_error")],
+                ["acp_interject", "acp_set_model", "acp_end", "acp_end"])
+        with self.subTest(leg="two turns: the post-switch turn runs on the "
+                              "target"):
+            self.assertEqual([(t["step"], t["model"]) for t in ctx.turns],
+                             [(0, "m-test"), (1, _BZ7_SWITCH_TARGET)])
+            self.assertEqual(
+                [e["model"] for e in ctx.events
+                 if e.get("type") == "acp_end"],
+                ["m-test", _BZ7_SWITCH_TARGET])
+        with self.subTest(leg="early_step_fired: the request reached the "
+                              "binary mid-turn"):
+            self.assertTrue(b.early_step_fired)
+            self.assertLess(rec["sent_at"], b.t_end[0])
+        with self.subTest(leg="the arm fired with mid_turn true"):
+            keys = ("arm_id", "send", "model", "status", "fired",
+                    "disarm_reason", "harness_caused", "cause", "mid_turn",
+                    "mid_turn_evidence")
+            self.assertEqual(
+                {k: rec.get(k) for k in keys},
+                {"arm_id": "step0.arm0", "send": "set_model",
+                 "model": _BZ7_SWITCH_TARGET, "status": "fired",
+                 "fired": True, "disarm_reason": None,
+                 "harness_caused": False, "cause": None, "mid_turn": True,
+                 "mid_turn_evidence": ["completion_after_send"]})
+            self.assertAlmostEqual(rec["sent_at"], 0.8)
+        with self.subTest(leg="the pins of RT-MSW-B and the declared premise "
+                              "decide: PASS"):
+            self.assertEqual(
+                {a["spec"]["id"]: a["ok"] for a in row["asserts"]},
+                {"no_acp_error": True, "switch_landed": True,
+                 "two_turns": True, "interject_fired": True,
+                 "interject_mid_turn": True})
+            self.assertEqual((row["status"], row.get("blocked_reason"),
+                              out["verdict"]["status"]),
+                             ("PASS", None, "PASS"))
+        with self.subTest(leg="both case shapes validate"):
+            tmp = tempfile.mkdtemp(prefix="rt-bz7s-")
+            self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+            errs = {}
+            for name, declared in (("declared", True), ("undeclared", False)):
+                c = _bz7_switch(_bz7_case(tmp, _bz7_switch_arm()),
+                                declared=declared)
+                p = _write_case(tmp, "bz7-switch-%s.json" % name, c)
+                for engine in _bz6_engines():
+                    found = run.validate_case_file(p, engine=engine)
+                    if found:
+                        errs[(name, engine)] = found
+            self.assertEqual(errs, {})
+
+    def test_mid_turn_set_model_refusal_reads_fail(self):
+        """BZ-R7 F-1's refusal semantics: the product answers the set_model
+        arm's own request with a JSON-RPC error (an incompatible-agent
+        rejection). The arm record stays disarmed with ext_error; the armed
+        turn branch appends acp_error carrying that error and the target model,
+        and no acp_set_model; the model does not advance. On RT-MSW-B's case as
+        it stands (its three pins, no scoring key) the row reads FAIL, as its
+        switch_landed label says, with no interject cause in blocked_reason.
+        With no scored pin at all the runtime verdict is FAIL, as it is for a
+        refused switch step. An interject arm refused the same way keeps
+        section 2.4 D-6: BLOCKED, interject-unavailable: step0.arm0.ext_error."""
+        refusal = _bz7_switch_refusal(_BZ7_SWITCH_TARGET)
+        out = self._dispatch(
+            _BZ7_SWITCH, _bz7_switch_arm(),
+            mutate=lambda c: _bz7_switch(c, declared=False),
+            binary_cls=_BZ7RefusedSwitchBinary)
+        ctx, b, row = out["ctx"], out["binary"], out["row"]
+        rec = ctx.turns[0]["interjects"][0]
+        with self.subTest(leg="the arm record stays disarmed with ext_error"):
+            keys = ("arm_id", "send", "model", "status", "fired",
+                    "disarm_reason", "harness_caused", "cause", "mid_turn")
+            self.assertEqual(
+                {k: rec.get(k) for k in keys},
+                {"arm_id": "step0.arm0", "send": "set_model",
+                 "model": _BZ7_SWITCH_TARGET, "status": "disarmed",
+                 "fired": False, "disarm_reason": "ext_error",
+                 "harness_caused": True,
+                 "cause": "interject-unavailable: step0.arm0.ext_error",
+                 "mid_turn": False})
+            self.assertEqual(rec["resp"]["error"], refusal)
+            self.assertTrue(b.early_step_fired)
+        with self.subTest(leg="acp_error carries the refusal; no "
+                              "acp_set_model"):
+            self.assertEqual(
+                [e for e in ctx.events
+                 if e.get("type") in ("acp_set_model", "acp_error")],
+                [{"type": "acp_error", "error": refusal,
+                  "model": _BZ7_SWITCH_TARGET}])
+            self.assertEqual(
+                [e["type"] for e in ctx.events if e.get("type") in (
+                    "acp_interject", "acp_set_model", "acp_end",
+                    "acp_error")],
+                ["acp_interject", "acp_error", "acp_end", "acp_end"])
+        with self.subTest(leg="the model does not advance"):
+            self.assertEqual([(t["step"], t["model"]) for t in ctx.turns],
+                             [(0, "m-test"), (1, "m-test")])
+        with self.subTest(leg="the pins of RT-MSW-B read FAIL, not BLOCKED"):
+            self.assertEqual(
+                (row["status"], row.get("blocked_reason"),
+                 out["verdict"]["status"],
+                 out["verdict"]["verdict"]["blocked_reason"]),
+                ("FAIL", None, "FAIL", None))
+            self.assertEqual(
+                sorted(a["spec"]["id"] for a in row["asserts"]
+                       if not a["ok"]),
+                ["no_acp_error", "switch_landed"])
+
+        def no_pins(c):
+            _bz7_switch(c, declared=False)
+            c["assert"]["ndjson"] = []
+
+        bare = self._dispatch(_BZ7_SWITCH, _bz7_switch_arm(), mutate=no_pins,
+                              binary_cls=_BZ7RefusedSwitchBinary)
+        with self.subTest(leg="no scored pin: the runtime verdict is FAIL"):
+            self.assertEqual(bare["row"]["asserts"], [])
+            self.assertEqual(
+                (bare["row"]["status"], bare["row"].get("blocked_reason")),
+                ("FAIL", None))
+        interject = self._dispatch(_BZ7_REFUSED,
+                                   _bz7_arm({"after_tool_calls": 1}))
+        with self.subTest(leg="an interject arm keeps D-6: BLOCKED"):
+            self.assertEqual(
+                (interject["row"]["status"],
+                 interject["row"].get("blocked_reason")),
+                ("BLOCKED", "interject-unavailable: step0.arm0.ext_error"))
+            self.assertEqual(
+                [e for e in interject["ctx"].events
+                 if e.get("type") == "acp_error"], [])
+
+    def test_report_md_prints_one_arm_line_per_armed_turn(self):
+        """BZ-R7 F-2 (plan r3 section 2.8): write_report prints, under each
+        armed turn's line in report.md, one line naming every arm of that turn
+        with its send and status (the disarm reason in parentheses, mid_turn
+        when proved), so the arms of a VACUOUS or BLOCKED row read in report.md
+        and not only in report.json. A turn without an interject block gets no
+        arm line; an armed turn whose records were lost says so. The rows are
+        real dispatcher rows: a VACUOUS miss followed by an unarmed turn, a
+        BLOCKED case with two armed turns (three arms), and erratum E-1's
+        lost-record row. BZ-8 (ruling BZ-R8, fix review F-4) adds the two
+        fired shapes: the mid-turn switch of
+        test_mid_turn_set_model_lands_the_switch, whose line names the
+        set_model target and mid_turn, and a fired interject arm."""
+        calls = _bz7_arm({"after_tool_calls": 1})
+        timed = _bz7_arm({"after_tool_calls": 1}, interject_timeout_s=1)
+
+        def named(rid, more=None):
+            def mutate(c):
+                c["id"] = rid
+                if more is not None:
+                    more(c)
+            return mutate
+
+        vacuous = self._dispatch(_BZ7_PROSE, calls, mutate=named(
+            "BZ7-REPORT-VACUOUS", lambda c: c["steps"].append(
+                {"op": "turn", "prompt": "Anything else?"})))
+        two = self._dispatch(
+            {"reg_s": 0.05, "run_s": 4.0, "pc_gap_s": 0.15,
+             "tool_calls": [_bz5_call(0.2), dict(_bz5_call(0.2), turn=1)],
+             "inter_replies": [{"reply": "silent"},
+                               {"reply": "error", "after": 0.2}],
+             "turn_chunks": [[(1.0 + i, "C%d" % i) for i in range(3)],
+                             [(1.0, "D0")]]},
+            timed, mutate=named("BZ7-REPORT-TWO", lambda c: c["steps"].append(
+                {"op": "turn", "prompt": "Now check on the worker.",
+                 "interject": [calls,
+                               _bz7_arm({"after_tool": "wait_agent"})]})))
+        real_pump = run.AcpSession._pump_mid_turn
+
+        def pump_without_records(sess, arms, waiter, deadline, **kw):
+            # Fault injection (erratum E-1): the records never reach the
+            # dispatcher.
+            real_pump(sess, arms, waiter, deadline, **kw)
+            return []
+
+        lost = self._dispatch(_BZ7_ECHO, calls, pump=pump_without_records,
+                              mutate=named("BZ7-REPORT-LOST"))
+
+        def switched(c):
+            _bz7_switch(c)
+            c["id"] = "BZ7-REPORT-SWITCH"
+
+        switch = self._dispatch(_BZ7_SWITCH, _bz7_switch_arm(),
+                                mutate=switched)
+        fired = self._dispatch(_BZ7_ECHO, calls,
+                               mutate=named("BZ7-REPORT-FIRED"))
+        rows = [vacuous["row"], two["row"], lost["row"], switch["row"],
+                fired["row"]]
+        out_dir = tempfile.mkdtemp(prefix="rt-bz7r-")
+        self.addCleanup(lambda: shutil.rmtree(out_dir, ignore_errors=True))
+        env_meta = {"ts": "2026-11-01T00:00:00Z", "bin": "grok-responses",
+                    "bin_sha": "-", "git": "-", "key_sha": "-",
+                    "upstream": "http://127.0.0.1:9"}
+        args = argparse.Namespace(live_home="-", wirecap=False, budget=20,
+                                  ambient_key="")
+        run.write_report(out_dir, rows, env_meta, args, 0, [])
+        with open(os.path.join(out_dir, "report.md")) as fh:
+            md = fh.read()
+        sections, cur = {}, None
+        for line in md.splitlines():
+            if line.startswith("## "):
+                cur = sections.setdefault(line[3:].split(" ")[0], [])
+            elif cur is not None and line.startswith("- acp_turn("):
+                cur.append(line.split(" ")[1])
+            elif cur is not None and line.startswith("  - interject arms:"):
+                cur.append(line)
+        with self.subTest(leg="row statuses"):
+            self.assertEqual([r["status"] for r in rows],
+                             ["VACUOUS", "BLOCKED", "BLOCKED", "PASS", "PASS"])
+        with self.subTest(leg="one arm line per armed turn"):
+            self.assertEqual(sections, {
+                "BZ7-REPORT-VACUOUS": [
+                    "acp_turn(step=0)",
+                    "  - interject arms: step0.arm0 interject "
+                    "missed(turn_completed)",
+                    "acp_turn(step=1)"],
+                "BZ7-REPORT-TWO": [
+                    "acp_turn(step=0)",
+                    "  - interject arms: step0.arm0 interject send_timeout",
+                    "acp_turn(step=1)",
+                    "  - interject arms: step1.arm0 interject "
+                    "disarmed(ext_error); step1.arm1 interject "
+                    "mismatched_tool(turn_completed)"],
+                "BZ7-REPORT-LOST": [
+                    "acp_turn(step=0)",
+                    "  - interject arms: none recorded"],
+                "BZ7-REPORT-SWITCH": [
+                    "acp_turn(step=0)",
+                    "  - interject arms: step0.arm0 set_model m-test-2 fired "
+                    "mid_turn",
+                    "acp_turn(step=1)"],
+                "BZ7-REPORT-FIRED": [
+                    "acp_turn(step=0)",
+                    "  - interject arms: step0.arm0 interject fired "
+                    "mid_turn"]})
+
+    def test_prompt_id_read_from_the_kept_prompt_response(self):
+        """BZ-R7 F-4(a): when the pump reads past the turn's terminal (here the
+        arm's reply is owed until 2.6, after turn_completed and the
+        session/prompt response at 2.1), prompt_collect returns the kept
+        session/prompt response as it arrived, and that response carries the
+        prompt id only in result._meta.promptId. The turn record's prompt_id
+        (apex-ayl.28) reads it there: the id prompt_send chose, the one the
+        binary adopted and the arm record names."""
+        script = {"reg_s": 0.05, "run_s": 2.0, "pc_gap_s": 0.15,
+                  "inter_ack_s": 1.0, "tool_calls": [_bz5_call(1.5)],
+                  "turn_chunks": [[(1.0, "Noted: %s." % _BZ7_NONCE)]]}
+        out = self._dispatch(script, _bz7_arm({"after_tool_calls": 1}))
+        ctx, b = out["ctx"], out["binary"]
+        rec = ctx.turns[0]["interjects"][0]
+        with self.subTest(leg="the pump read past the terminal"):
+            self.assertEqual(rec["status"], "fired")
+            self.assertGreater(rec["reply_at"], b.t_end[0])
+        with self.subTest(leg="the turn record prompt_id is the turn prompt "
+                              "id"):
+            self.assertEqual((ctx.turns[0]["prompt_id"], rec["prompt_id"]),
+                             (b.turn_pids[0], b.turn_pids[0]))
+
+    def test_where_refused_on_other_ndjson_ops(self):
+        """BZ-R7 F-5(a): check_ndjson applies an ndjson where only on count, eq
+        and ne, so validation refuses a where on every other ndjson op instead
+        of letting it validate and be ignored (present acp_interject where
+        status fired would hold on a missed record). Every ndjson op is tried
+        on a legacy-form case (validate_case_file's in-tree contract); on a NEW
+        case both engines refuse present with a where, while its count + where
+        and its wire assert's where still validate."""
+        extra = {"count": {"min": 1}, "absent": {}, "present": {},
+                 "eq": {"field": "mid_turn", "value": True},
+                 "ne": {"field": "mid_turn", "value": False},
+                 "text_contains": {"value": _BZ7_NONCE},
+                 "tools_absent": {"names": ["x"]},
+                 "tools_present": {"names": ["x"]}, "recon": {}}
+        tmp = tempfile.mkdtemp(prefix="rt-bz7f-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+
+        def verdict(errs, op):
+            if errs == []:
+                return []
+            if len(errs) == 1 and all(n in errs[0] for n in (
+                    "where", "%r" % op, "count, eq and ne")):
+                return "refused"
+            return errs
+
+        with self.subTest(part="legacy: every ndjson op"):
+            self.assertEqual(sorted(extra), sorted(run.NDJSON_OPS))
+            got, want = {}, {}
+            for op, more in sorted(extra.items()):
+                spec = dict({"op": op, "event": "acp_interject",
+                             "where": {"status": "fired"}}, **more)
+                legacy = {"id": "BZ7-WHERE-%s" % op.upper(), "driver": "acp",
+                          "model": "m-test",
+                          "steps": [{"op": "turn", "prompt": "Reply."}],
+                          "assert": {"ndjson": [spec]}}
+                errs = run.validate_case_file(
+                    _write_case(tmp, "bz7-where-%s.json" % op, legacy))
+                got[op] = verdict(errs, op)
+                want[op] = [] if op in ("count", "eq", "ne") else "refused"
+            self.assertEqual(got, want)
+        good = _write_case(tmp, "bz7-where-new-good.json",
+                           _bz7_case(tmp, _bz7_arm({"after_tool_calls": 1})))
+        bad = _bz7_case(tmp, _bz7_arm({"after_tool_calls": 1}))
+        bad["assert"]["ndjson"].append(
+            {"id": "present_where", "op": "present", "event": "acp_interject",
+             "where": {"status": "fired"}})
+        bad = _write_case(tmp, "bz7-where-new-present.json", bad)
+        for engine in _bz6_engines():
+            with self.subTest(part="NEW case", engine=engine):
+                self.assertEqual(
+                    (run.validate_case_file(good, engine=engine),
+                     verdict(run.validate_case_file(bad, engine=engine),
+                             "present")),
+                    ([], "refused"))
+
+    def test_unknown_send_rejected_by_validate_step(self):
+        """BZ-R7 F-6: _validate_step rejects an arm whose send is neither
+        interject nor set_model, the step-local half of the schema's send enum.
+        A legacy-form case (no schema_version) never reaches the schema gate,
+        so without this rule send resume, a typo or null validated, and the
+        pump would have sent the arm as x.ai/interject. The two known sends
+        still validate, with send defaulting to interject."""
+        tmp = tempfile.mkdtemp(prefix="rt-bz7u-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        arms = {
+            "resume": {"at": {"after_s": 1}, "send": "resume",
+                       "model": _BZ7_SWITCH_TARGET},
+            "typo": {"at": {"after_s": 1}, "send": "set-model",
+                     "model": _BZ7_SWITCH_TARGET},
+            "null": {"at": {"after_s": 1}, "send": None,
+                     "model": _BZ7_SWITCH_TARGET},
+            "set_model": _bz7_switch_arm(),
+            "interject": _bz7_arm({"after_s": 1}),
+            "default": {"at": {"after_s": 1}, "text": _BZ7_TEXT},
+        }
+
+        def verdict(errs, send):
+            if errs == []:
+                return []
+            if len(errs) == 1 and all(n in errs[0] for n in (
+                    "send", "%r" % (send,), "interject or set_model")):
+                return "refused"
+            return errs
+
+        got, want = {}, {}
+        for name, arm in sorted(arms.items()):
+            step = {"op": "turn", "prompt": "Reply.", "interject": [arm]}
+            legacy = {"id": "BZ7-SEND", "driver": "acp", "model": "m-test",
+                      "steps": [step], "assert": {}}
+            errs = run.validate_case_file(
+                _write_case(tmp, "bz7-send-%s.json" % name, legacy))
+            step_errs = []
+            run._validate_step("bz7-send steps[0]", step, step_errs)
+            send = arm.get("send", "interject")
+            got[name] = (verdict(errs, send), verdict(step_errs, send))
+            want[name] = (([], []) if name in ("set_model", "interject",
+                                               "default")
+                          else ("refused", "refused"))
+        self.assertEqual(got, want)
+
+
+# ---------------------------------------------------------------------------
+# apex-bdfz BZ-8 — anti-vacuity controls, and the test-only legs rulings BZ-R7
+# and BZ-R8 route to BZ-8
+# ---------------------------------------------------------------------------
+
+# BZ-L1's arm text (plan r3 BZ-L1): the nonce, and the ask to repeat it.
+_BZ8_NONCE = "MXAI-C12-INTERJECT"
+_BZ8_TEXT = ("MXAI-C12-INTERJECT \u2014 the operator interjected this line "
+             "mid-wait. Include the nonce MXAI-C12-INTERJECT verbatim in your "
+             "next reply, then finish the wait.")
+# ScriptedBinary turns (start() leaves the clock at 0.05; the prompt registers
+# at 0.1): the tool call at 0.3 fires an after_tool_calls arm, its reply comes
+# at 0.6, and turn_completed at 2.1 is stamped after the send. NO_CHUNK: the
+# agent writes no message chunk. ECHOED: its one chunk, at 1.1, repeats the
+# nonce. PROSE: its one chunk answers without it.
+_BZ8_NO_CHUNK = {"reg_s": 0.05, "run_s": 2.0, "pc_gap_s": 0.15,
+                 "inter_ack_s": 0.3, "tool_calls": [_bz5_call(0.2)]}
+_BZ8_ECHOED = dict(_BZ8_NO_CHUNK,
+                   turn_chunks=[[(1.0, "Noted: %s." % _BZ8_NONCE)]])
+_BZ8_PROSE = dict(_BZ8_NO_CHUNK, turn_chunks=[[(1.0, "Done.")]])
+# A same-session prompt id this session never sent: the product's fallback
+# turn prefix (INTERJECT_FALLBACK_PROMPT_PREFIX, interjection.rs at the base).
+_BZ8_FOREIGN_PID = "interject-fallback-019e24b8"
+_BZ8_GUARD = ("ACP desync guard: ignoring prompt_complete pid=%s (expected "
+              "%s) \u2014 late/foreign completion")
+
+
+def _bz8_nonce_case(case):
+    """A _bz7_case fixture whose scored echo pin reads BZ-L1's nonce."""
+    case["id"] = "BZ8-ANTI-VACUITY"
+    for spec in case["assert"]["ndjson"]:
+        if spec["id"] == "nonce_echoed":
+            spec["value"] = _BZ8_NONCE
+
+
+def _bz8_carrying(events, needle):
+    """The events in which `needle` occurs in any string value, in order."""
+    def has(v):
+        if isinstance(v, str):
+            return needle in v
+        if isinstance(v, dict):
+            return any(has(x) for x in v.values())
+        if isinstance(v, (list, tuple)):
+            return any(has(x) for x in v)
+        return False
+    return [e for e in events if has(e)]
+
+
+def _bz8_format_interjection(text):
+    """format_interjection (xai-interjection-core format.rs at the base): the
+    mid-turn note, the user_query envelope and the unfinished-task trailer."""
+    return ("The user sent a message while you were working:\n<user_query>\n"
+            "%s\n</user_query>\nMake sure to complete any unfinished tasks "
+            "from previous turns." % text)
+
+
+class _BZ8UserEchoBinary(ScriptedBinary):
+    """ScriptedBinary that also echoes every interjection it receives as a
+    user-message-shaped update, 0.05 s after the request: the
+    user_message_chunk the shell writes for a mid-turn interjection
+    (persist_synthetic_user_message_with_model, interjection.rs at the base;
+    replayed on session/load), carrying format_interjection's text, the typed
+    text as the text block's displayText, and _meta modelId plus interjection
+    true. With inter_broadcast it also sends the live
+    x.ai/session/interjection broadcast."""
+
+    def _on_interject(self, d, tid, t):
+        ScriptedBinary._on_interject(self, d, tid, t)
+        text = (d.get("params") or {}).get("text")
+        self._notify(t + 0.05, "session/update", {
+            "sessionId": self.session_id,
+            "update": {"sessionUpdate": "user_message_chunk",
+                       "content": {"type": "text",
+                                   "text": _bz8_format_interjection(text),
+                                   "_meta": {"displayText": text}},
+                       "_meta": {"modelId": "replay-model",
+                                 "interjection": True}}})
+
+
+class _BZ8ForeignCompletionBinary(ScriptedBinary):
+    """ScriptedBinary that also delivers, 0.8 s into the first turn (after its
+    queue row, before its own turn_completed), a same-session prompt_complete
+    for _BZ8_FOREIGN_PID, in the base fake's prompt_complete shape."""
+
+    foreign_at = None
+
+    def _on_prompt(self, d, tid, t):
+        first = not self.turn_pids
+        ScriptedBinary._on_prompt(self, d, tid, t)
+        if first:
+            self.foreign_at = self.t_reg[0] + 0.8
+            self._notify(self.foreign_at, "_x.ai/session/prompt_complete",
+                         {"sessionId": self.session_id,
+                          "promptId": _BZ8_FOREIGN_PID,
+                          "stopReason": "end_turn",
+                          "agentResult": "BZ8-FOREIGN-TURN"})
+
+
+class InterjectAntiVacuityTest(unittest.TestCase):
+    """apex-bdfz BZ-8 (plan r3 section 4 BZ-8, section 3 F-14, section 2.8's
+    hard rule and read scope): the injected text can never satisfy its own
+    nonce pin, and a model-authored chunk can. Every event list comes from
+    the step dispatcher itself (the real _run_case_once over the fake peer, as
+    MidTurnDispatchTest drives it), so a runner change that publishes the
+    interjection where ndjson_text reads turns these legs red."""
+
+    maxDiff = None
+    _dispatch = MidTurnDispatchTest._dispatch
+
+    def _armed(self, script, binary_cls=ScriptedBinary):
+        """One after_tool_calls arm carrying BZ-L1's text, dispatched."""
+        return self._dispatch(script,
+                              _bz5_arm({"after_tool_calls": 1}, _BZ8_TEXT),
+                              mutate=_bz8_nonce_case, binary_cls=binary_cls)
+
+    @staticmethod
+    def _holds(events):
+        return run.check_ndjson(
+            {"op": "text_contains", "value": "MXAI-C12-INTERJECT"}, events,
+            "acp").ok
+
+    def test_injected_text_cannot_satisfy_its_own_nonce(self):
+        """check_ndjson({"op": "text_contains", "value": "MXAI-C12-INTERJECT"},
+        events, "acp") over four dispatcher event lists, each from a run whose
+        arm fired mid-turn and sent BZ-L1's text. (a) The events carrying the
+        nonce in a run whose agent wrote nothing, which are only the runner's
+        own acp_interject record: False. (b) A run whose agent repeated the
+        nonce in an agent_message_chunk: True, the positive half. (c) The full
+        stream of a run whose agent answered without the nonce: False, so the
+        message-dropped verdict stays reachable (the case's own nonce pin fails
+        and the row reads FAIL). (d) The full stream of a run in which the
+        product echoed the interjection as a user-message-shaped update (the
+        user_message_chunk the shell writes for an interjection, beside the
+        x.ai/session/interjection broadcast) and the agent never said it:
+        False."""
+        silent = self._armed(_BZ8_NO_CHUNK)
+        echoed = self._armed(_BZ8_ECHOED)
+        prose = self._armed(_BZ8_PROSE)
+        user_echo = self._armed(dict(_BZ8_PROSE, inter_broadcast=True),
+                                binary_cls=_BZ8UserEchoBinary)
+        with self.subTest(leg="each arm fired mid-turn and sent the text"):
+            for out in (silent, echoed, prose, user_echo):
+                rec = out["ctx"].turns[0]["interjects"][0]
+                self.assertEqual((rec["status"], rec["mid_turn"]),
+                                 ("fired", True))
+                self.assertEqual([r["params"]["text"]
+                                  for _, r in out["binary"].interjects],
+                                 [_BZ8_TEXT])
+        own = _bz8_carrying(silent["ctx"].events, _BZ8_NONCE)
+        with self.subTest(leg="a: the runner record alone"):
+            self.assertIs(self._holds(own), False,
+                          "the runner's own record satisfied its nonce pin: "
+                          "%r" % (own,))
+            self.assertEqual(
+                [(e["type"], e.get("interject_text"), "data" in e)
+                 for e in own],
+                [("acp_interject", _BZ8_TEXT, False)])
+        with self.subTest(leg="b: a model chunk repeats the nonce"):
+            self.assertIs(self._holds(echoed["ctx"].events), True,
+                          "a model-authored chunk did not satisfy the pin")
+        with self.subTest(leg="c: the agent never said it"):
+            self.assertIs(self._holds(prose["ctx"].events), False,
+                          "a stream without the model's echo satisfied the "
+                          "nonce pin: %r" % (prose["ctx"].events,))
+            self.assertEqual(
+                (prose["row"]["status"],
+                 [a["ok"] for a in prose["row"]["asserts"]
+                  if a["spec"]["id"] == "nonce_echoed"]),
+                ("FAIL", [False]))
+        with self.subTest(leg="d: a user-message echo only"):
+            self.assertIs(self._holds(user_echo["ctx"].events), False,
+                          "a user-message echo of the interjection satisfied "
+                          "the nonce pin: %r" % (user_echo["ctx"].events,))
+            self.assertEqual(
+                [(u["content"]["text"], u["content"]["_meta"]["displayText"])
+                 for u in user_echo["ctx"].acp.updates
+                 if u.get("sessionUpdate") == "user_message_chunk"],
+                [(_bz8_format_interjection(_BZ8_TEXT), _BZ8_TEXT)])
+            self.assertEqual(
+                sorted(user_echo["ctx"].turns[0]["interjects"][0]
+                       ["mid_turn_evidence"]),
+                ["completion_after_send",
+                 "interjection_broadcast_before_completion"])
+
+    def test_record_site_never_publishes_the_text_as_message_data(self):
+        """The cheap structural pin beside the behavioural one (plan r3 BZ-8):
+        in run.py's step dispatcher (_run_case_once), every event literal built
+        from an arm record (a dict display that reads arm_rec and has a type
+        key) has a type other than acp_message and no data key, exactly one of
+        them is the acp_interject record and it carries arm_id, and no
+        statement that reads arm_rec names a data key."""
+        with open(run.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_run_case_once")
+
+        def reads_arm_rec(node):
+            return any(isinstance(n, ast.Name) and n.id == "arm_rec"
+                       for n in ast.walk(node))
+
+        def names_data(node):
+            return any(isinstance(n, ast.Constant) and n.value == "data"
+                       for n in ast.walk(node))
+
+        sites, data_lines = [], []
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Dict) and reads_arm_rec(node):
+                pairs = {k.value: v for k, v in zip(node.keys, node.values)
+                         if isinstance(k, ast.Constant)}
+                if "type" in pairs:
+                    t = pairs["type"]
+                    sites.append((node.lineno,
+                                  t.value if isinstance(t, ast.Constant)
+                                  else None, sorted(pairs)))
+            elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign,
+                                   ast.Expr, ast.Return)):
+                if reads_arm_rec(node) and names_data(node):
+                    data_lines.append(node.lineno)
+            elif isinstance(node, ast.For) and names_data(node.iter) \
+                    and any(reads_arm_rec(s) for s in node.body):
+                data_lines.append(node.lineno)
+        with self.subTest(leg="no arm event is an acp_message or has data"):
+            self.assertEqual(
+                [s for s in sites if s[1] == "acp_message" or "data" in s[2]],
+                [], sites)
+            self.assertEqual(data_lines, [])
+        with self.subTest(leg="one acp_interject record site with arm_id"):
+            self.assertEqual(
+                [(t, "arm_id" in keys) for _, t, keys in sites
+                 if t == "acp_interject"],
+                [("acp_interject", True)], sites)
+
+
+class InterjectRoutedLegsTest(unittest.TestCase):
+    """apex-bdfz BZ-8: the test-only legs coordinator rulings BZ-R7 and BZ-R8
+    route to BZ-8, each through the real step dispatcher (_run_case_once over
+    the fake peer, as MidTurnDispatchTest drives it): a turn that dies for a
+    product reason reads VACUOUS with its acp_error pin failed (BZ-R7 F-3);
+    the pumped path keeps the apex-ayl.28 desync guard (BZ-R7 F-4(c));
+    require false never suppresses no_record (BZ-R7 F-7, D-4); a set_model
+    arm armed beyond the turn's end sends nothing and reads VACUOUS (fix
+    review F-3)."""
+
+    maxDiff = None
+    _dispatch = MidTurnDispatchTest._dispatch
+
+    def test_dead_turn_reads_vacuous_with_its_acp_error_pin_failed(self):
+        """BZ-R7 F-3 (plan r3 section 2.5's closing note, section 3 F-10): the
+        parent turn dies for a product reason while its arm is still armed.
+        Leg turn timeout: the step's 5 s budget runs out (the turn would end at
+        60 s), so D-5 closes the arm missed(turn_timeout) and prompt_collect
+        returns the timeout terminal. Leg error turn, in amendment A-1's order:
+        turn_completed with stop_reason error, then the matching
+        prompt_complete carrying the provider detail, then the session/prompt
+        JSON-RPC error; D-2 closes the arm missed(turn_error). Neither close is
+        harness-caused, so no runner cause is written: the declared model
+        premise 0-hits and the row reads VACUOUS, not BLOCKED, with the arm
+        record on the turn record, its acp_interject event, the dead turn's
+        acp_error, and the failed pins interject_fired, nonce_echoed and
+        no_acp_error all still in row["asserts"]."""
+        error = {"code": -32603, "message": "Internal error",
+                 "data": {"message": _BZ5_DETAIL, "http_status": 503}}
+        legs = [
+            ("turn timeout",
+             {"reg_s": 0.05, "run_s": 59.9, "pc_gap_s": 0.15,
+              "turn_chunks": [[(1.0, "C0"), (2.0, "C1")]]},
+             lambda c: c["steps"][0].update(timeout_s=5),
+             "turn_timeout", "timeout after 0.0s"),
+            ("error turn in amendment A-1 order",
+             {"reg_s": 0.05, "run_s": 1.0, "pc_gap_s": 0.8,
+              "turn_stops": ["error"], "turn_agent_result": _BZ5_DETAIL,
+              "prompt_error": error, "prompt_error_s": 0.1,
+              "turn_chunks": [[(0.5, "C0")]]},
+             None, "turn_error", _BZ5_DETAIL),
+        ]
+        for leg, script, mutate, reason, message in legs:
+            out = self._dispatch(script, _bz7_arm({"after_tool_calls": 1}),
+                                 mutate=mutate)
+            row, ctx = out["row"], out["ctx"]
+            with self.subTest(leg=leg):
+                self.assertEqual(
+                    (row["status"], row.get("blocked_reason"),
+                     out["verdict"]["status"]),
+                    ("VACUOUS", None, "VACUOUS"))
+                self.assertIn("interject_fired",
+                              out["verdict"]["verdict"]["vacuous_reason"])
+                self.assertEqual(
+                    sorted(a["spec"]["id"] for a in row["asserts"]
+                           if not a["ok"]),
+                    ["interject_fired", "no_acp_error", "nonce_echoed"])
+                rec = row["turns"][0]["interjects"][0]
+                self.assertEqual(
+                    {k: rec[k] for k in ("arm_id", "status", "fired",
+                                         "disarm_reason", "harness_caused",
+                                         "cause")},
+                    {"arm_id": "step0.arm0", "status": "missed",
+                     "fired": False, "disarm_reason": reason,
+                     "harness_caused": False, "cause": None})
+                self.assertEqual(
+                    [(e["arm_id"], e["status"], e["disarm_reason"])
+                     for e in ctx.events if e.get("type") == "acp_interject"],
+                    [("step0.arm0", "missed", reason)])
+                self.assertEqual(
+                    [e["error"]["message"] for e in ctx.events
+                     if e.get("type") == "acp_error"], [message])
+                self.assertEqual(out["binary"].interjects, [])
+
+    def test_pumped_path_keeps_the_desync_guard(self):
+        """BZ-R7 F-4(c) (batch-3 review F-2, batch-5 review F-3; apex-ayl.28):
+        on an armed turn the pump reads the turn's queue row, which names this
+        prompt, so the turn's own waiter knows its id. A same-session
+        prompt_complete for an id the session never sent (an
+        interject-fallback- prompt, plan r3 section 3 F-6) then arrives
+        mid-turn, before the turn's own turn_completed. It is not adopted: the
+        desync guard logs it verbatim, the pump reads on to the turn's own
+        terminal, the chunk after the foreign line is still this turn's, the
+        turn record's prompt_id is this prompt's, the foreign id never joins
+        the consumed set, and the case's pins decide (PASS)."""
+        logged, saved = [], run.log
+        run.log = logged.append
+        try:
+            out = self._dispatch(_BZ7_ECHO, _bz7_arm({"after_tool_calls": 1}),
+                                 binary_cls=_BZ8ForeignCompletionBinary)
+        finally:
+            run.log = saved
+        ctx, b, row = out["ctx"], out["binary"], out["row"]
+        ours = b.turn_pids[0]
+        with self.subTest(leg="the foreign line came mid-turn, after the row"):
+            self.assertLess(b.t_reg[0], b.foreign_at)
+            self.assertLess(b.foreign_at, b.t_end[0])
+        with self.subTest(leg="the guard refused and logged it"):
+            self.assertEqual(
+                [m for m in logged if m.startswith("ACP desync guard:")],
+                [_BZ8_GUARD % (_BZ8_FOREIGN_PID, ours)])
+        with self.subTest(leg="the turn stays with this prompt"):
+            self.assertEqual((ctx.turns[0]["prompt_id"], ctx.turns[0]["stop"]),
+                             (ours, "end_turn"))
+            self.assertEqual(
+                [e["data"] for e in ctx.events
+                 if e.get("type") == "acp_message"],
+                ["Noted: %s." % _BZ7_NONCE])
+            self.assertIn(ours, ctx.acp._completed_prompt_ids)
+            self.assertNotIn(_BZ8_FOREIGN_PID, ctx.acp._completed_prompt_ids)
+        with self.subTest(leg="the arm and the case pins decide"):
+            rec = ctx.turns[0]["interjects"][0]
+            self.assertEqual((rec["status"], rec["mid_turn"]),
+                             ("fired", True))
+            self.assertEqual((row["status"], row.get("blocked_reason")),
+                             ("PASS", None))
+
+    def test_require_false_never_suppresses_no_record(self):
+        """BZ-R7 F-7, the accepted BZ-7 decision D-4 (erratum E-1): require
+        false suppresses only the cause a written record carries. A declared
+        arm the turn left without any record is a rig failure whatever its
+        require flag: with the records lost (the real pump reads the turn and
+        fires the arm, and its record never reaches the dispatcher) and require
+        false on the arm, the row is still BLOCKED with
+        interject-unavailable: step0.arm0.no_record, with no acp_interject
+        event and no record on the turn."""
+        real_pump = run.AcpSession._pump_mid_turn
+
+        def pump_without_records(sess, arms, waiter, deadline, **kw):
+            # Fault injection (erratum E-1): the records never reach the
+            # dispatcher.
+            real_pump(sess, arms, waiter, deadline, **kw)
+            return []
+
+        out = self._dispatch(
+            _BZ7_ECHO, _bz7_arm({"after_tool_calls": 1}, require=False),
+            pump=pump_without_records)
+        with self.subTest(leg="require false: still BLOCKED on no_record"):
+            self.assertIs(out["case"]["steps"][0]["interject"][0]["require"],
+                          False)
+            self.assertEqual(
+                (out["row"]["status"], out["row"].get("blocked_reason"),
+                 out["verdict"]["status"]),
+                ("BLOCKED", _BZ7_NO_RECORD, "BLOCKED"))
+        with self.subTest(leg="no record reached the dispatcher"):
+            self.assertEqual(out["row"]["turns"][0]["interjects"], [])
+            self.assertEqual([e for e in out["ctx"].events
+                              if e.get("type") == "acp_interject"], [])
+            self.assertEqual(len(out["binary"].interjects), 1)
+
+    def test_late_set_model_arm_sends_nothing_and_reads_vacuous(self):
+        """Fix review F-3 (plan r3 section 3 F-13's late variant; section 2.4
+        D-1 supersedes its "the switch still lands"): in RT-MSW-B's shape the
+        set_model arm's after_s (5 s) lies beyond the long turn's end (2.1).
+        The turn's completion closes the arm first: missed, turn_completed,
+        not harness-caused, and nothing is sent, so the runner wrote no
+        session/set_model (acp.log holds no such SEND line, and the fake never
+        saw a step while the turn ran: early_step_fired false). No
+        acp_set_model is recorded, both turns run on the pre-switch model and
+        end in two acp_end. With BZ-L2's declared premise the row reads
+        VACUOUS (the premise 0-hits; switch_landed and interject_mid_turn fail
+        too); without it, FAIL on switch_landed."""
+        late = {"at": {"after_s": 5.0}, "send": "set_model",
+                "model": _BZ7_SWITCH_TARGET}
+        declared = self._dispatch(_BZ7_SWITCH, dict(late),
+                                  mutate=_bz7_switch)
+        undeclared = self._dispatch(
+            _BZ7_SWITCH, dict(late),
+            mutate=lambda c: _bz7_switch(c, declared=False))
+        ctx, b, row = declared["ctx"], declared["binary"], declared["row"]
+        with self.subTest(leg="nothing was sent: no session/set_model"):
+            with open(os.path.join(declared["run_dir"], "acp.log"),
+                      encoding="utf-8") as fh:
+                sent = [json.loads(line[6:]).get("method") for line in fh
+                        if line.startswith("SEND: ")]
+            self.assertNotIn("session/set_model", sent)
+            self.assertEqual(sent.count("session/prompt"), 2)
+            self.assertFalse(b.early_step_fired)
+        with self.subTest(leg="the arm is missed, closed by turn_completed"):
+            keys = ("arm_id", "send", "model", "status", "fired",
+                    "disarm_reason", "harness_caused", "cause", "mid_turn",
+                    "request_id")
+            self.assertEqual(
+                {k: ctx.turns[0]["interjects"][0].get(k) for k in keys},
+                {"arm_id": "step0.arm0", "send": "set_model",
+                 "model": _BZ7_SWITCH_TARGET, "status": "missed",
+                 "fired": False, "disarm_reason": "turn_completed",
+                 "harness_caused": False, "cause": None, "mid_turn": False,
+                 "request_id": None})
+        with self.subTest(leg="no acp_set_model and two acp_end"):
+            self.assertEqual(
+                [e["type"] for e in ctx.events if e.get("type") in (
+                    "acp_interject", "acp_set_model", "acp_end",
+                    "acp_error")],
+                ["acp_interject", "acp_end", "acp_end"])
+            self.assertEqual([(t["step"], t["model"]) for t in ctx.turns],
+                             [(0, "m-test"), (1, "m-test")])
+        with self.subTest(leg="the declared shape reads VACUOUS"):
+            self.assertEqual(
+                (row["status"], row.get("blocked_reason"),
+                 declared["verdict"]["status"]),
+                ("VACUOUS", None, "VACUOUS"))
+            self.assertIn("interject_fired",
+                          declared["verdict"]["verdict"]["vacuous_reason"])
+            self.assertEqual(
+                sorted(a["spec"]["id"] for a in row["asserts"]
+                       if not a["ok"]),
+                ["interject_fired", "interject_mid_turn", "switch_landed"])
+        with self.subTest(leg="undeclared: FAIL on switch_landed"):
+            self.assertEqual(
+                (undeclared["row"]["status"],
+                 undeclared["row"].get("blocked_reason")),
+                ("FAIL", None))
+            self.assertEqual(
+                sorted(a["spec"]["id"] for a in undeclared["row"]["asserts"]
+                       if not a["ok"]),
+                ["switch_landed"])
 
 
 def _vc_wire_path(wire):

@@ -649,6 +649,94 @@
         "note": {
           "type": "string",
           "description": "recon_note: free-text note appended to the report turns[]."
+        },
+        "interject": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/interject_arm"
+          },
+          "description": "turn (ACP driver only): one or more mid-turn injections armed for THIS in-flight turn, as a list. Each arm sends exactly one ACP request while the parent turn is still running and never after its completion. Headless driver: rejected — one process per turn."
+        }
+      }
+    },
+    "interject_arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at"
+      ],
+      "properties": {
+        "at": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "At least one trigger key here (anyOf); EXACTLY ONE is enforced by _validate_step, because the hand-rolled subset has no oneOf (F-1). Two keys are a validation error from the mirror, not from the schema.",
+          "required": [],
+          "properties": {
+            "after_tool_calls": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "fire on the Nth distinct toolCallId (sessionUpdate == tool_call)."
+            },
+            "after_tool": {
+              "type": "string",
+              "pattern": ".{1,}",
+              "description": "fire on the first tool_call whose x.ai/tool name (fallback: title) equals this."
+            },
+            "after_s": {
+              "type": "number",
+              "minimum": 0.1,
+              "description": "fire N seconds after the parent prompt was sent."
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "after_tool_calls"
+              ]
+            },
+            {
+              "required": [
+                "after_tool"
+              ]
+            },
+            {
+              "required": [
+                "after_s"
+              ]
+            }
+          ]
+        },
+        "send": {
+          "type": "string",
+          "enum": [
+            "interject",
+            "set_model"
+          ],
+          "default": "interject",
+          "description": "interject = x.ai/interject ext-request; set_model = session/set_model (RT-MSW-B)."
+        },
+        "text": {
+          "type": "string",
+          "pattern": ".{1,}",
+          "description": "send=interject: the interjection text; the scored nonce lives here. It MUST instruct the model to repeat that nonce verbatim in its next reply (F-3), because the drained pin reads only model-authored message chunks (see _validate_new_case rule 'echo', R-7: the case-level check needs case['assert']['ndjson'])."
+        },
+        "model": {
+          "type": "string",
+          "description": "send=set_model: target model id, sent as session/set_model modelId. The runner checks only that a set_model arm carries a string model and no text (_validate_step); it does not check the id against the case rows."
+        },
+        "interjection_id": {
+          "type": "string",
+          "description": "optional x.ai/interject interjectionId (originator dedup)."
+        },
+        "interject_timeout_s": {
+          "type": "number",
+          "minimum": 1
+        },
+        "require": {
+          "type": "boolean",
+          "default": true,
+          "description": "false = tolerate a non-fire: it suppresses the runner's BLOCKED cause only (the record is still written and the arm-status assert is still scored)."
         }
       }
     },
@@ -721,6 +809,18 @@
         "absent_ok": {
           "type": "boolean",
           "description": "present: absence is accepted ONLY on an error terminal (the honest-failure pin shape; a silent no-terminal run still FAILs)."
+        },
+        "where": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "description": "count/eq/ne: equality filters on the event's own fields, applied before counting or selecting (apex-bdfz plan r3 section 2.5.2), e.g. {\"status\": \"fired\"} on acp_interject. Dot-path keys mapped to scalar values only; the wire where's prefix / not_prefix forms are not part of this vocabulary. run.py _validate_where also checks the key and value shape."
         },
         "label": {
           "type": "string",
