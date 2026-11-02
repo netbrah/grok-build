@@ -53,6 +53,7 @@ import json
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -4912,7 +4913,7 @@ def _write_fake_live_home(tmp, upstream, row_name=None,
 
 def _write_fake_binary(tmp, upstream, model="m-x", send_auth_env=None,
                        prewarm_record=None, auth_literal=None,
-                       ran_record=None):
+                       ran_record=None, tool_probe_record=None):
     """A fake pager binary: reads the HERMETIC config's base_url,
     POSTs one turn request through it, exits 0 iff the upstream said
     200. (The hermetic base_url is the wiretap, which forwards to the
@@ -4932,6 +4933,13 @@ def _write_fake_binary(tmp, upstream, model="m-x", send_auth_env=None,
     (apex-sk8i, spec r2 §4 fixture extensions) makes the binary write one
     fixed line to that path before it posts; only the file's existence is
     read (it ran, or it never ran), never anything the binary saw.
+
+    apex-h2u2 F-D' (r2 §5.1) extension, again absent by default so the bytes every
+    existing caller produces do not change: `tool_probe_record` makes the binary run
+    the product's own shell forms with the environment the runner handed it and write
+    one json object of sorted names and booleans to that path before it posts (see
+    `_h2u2_fake_probe_src`). Names and booleans only: the probe's children print no
+    value, and the record path is baked into the script text as `ran_record` is.
     """
     b = os.path.join(tmp, "fake-grok")
     if auth_literal is not None:
@@ -4944,6 +4952,7 @@ def _write_fake_binary(tmp, upstream, model="m-x", send_auth_env=None,
             "'@@MODEL@@' '@@AUTH@@' '@@PREC@@' '@@AUTHLIT@@' <<'PYEOF'\n"
             "import json, os, re, sys, urllib.request, urllib.error\n"
             "@@RANREC@@"
+            "@@PROBE@@"
             "cfg = open(sys.argv[1]).read()\n"
             "base = re.search(r'^base_url = \"([^\"]+)\"', cfg, re.M)\n"
             "if not base:\n"
@@ -4989,7 +4998,10 @@ def _write_fake_binary(tmp, upstream, model="m-x", send_auth_env=None,
             .replace("@@AUTHLIT@@", auth_literal or "-")
             .replace("@@RANREC@@",
                      "open(%s, 'w').write('ran\\n')\n" % json.dumps(ran_record)
-                     if ran_record is not None else ""))
+                     if ran_record is not None else "")
+            .replace("@@PROBE@@",
+                     _h2u2_fake_probe_src(tool_probe_record)
+                     if tool_probe_record is not None else ""))
     os.chmod(b, 0o755)
     return b
 
@@ -8010,6 +8022,13 @@ class T3AssertionHygieneTest(unittest.TestCase):
         "HermeticRoutingMapTest", "SignInCredentialRouteRowTest",
         "SignInCredentialFallbackTest", "SkShapeBoundaryTest",
         "CredentialSuffixLegTest",
+        # apex-h2u2: each h2u2 class joins in the task that introduces it
+        # (r2 §5.1's assertion-hygiene rule); H-1 adds the first two, H-2 the
+        # end-to-end class that reads the tool subprocess.
+        "HermeticUserHomePinsTest", "HermeticUserHomeShellTest",
+        "ToolSubprocessHomeE2ETest",
+        # apex-h2u2 H-3 adds the policy-guard class (r2 §5.1).
+        "HermeticHomePolicyGuardTest",
     )
 
     # --- the predicate, mirroring batch-3-T3/t3f_scan.py exactly ------------
@@ -8232,7 +8251,7 @@ class T3AssertionHygieneTest(unittest.TestCase):
         self.assertEqual(sorted(ranges), sorted(self.T3_CLASSES),
                          "the hygiene scan must cover every T3-owned class, "
                          "or it proves nothing")
-        self.assertEqual(len(self.T3_CLASSES), 18)
+        self.assertEqual(len(self.T3_CLASSES), 22)
 
     def test_no_t3_assertion_renders_a_credential_value(self):
         """RR-7 F-1 arm (c), kept as a test so the sweep cannot rot.
@@ -9895,7 +9914,8 @@ def _spy_binary_launches(test, bin_path):
     Replaces `subprocess.Popen`, the module attribute both binary launches
     call (`run_headless_turn`, `AcpSession.start`), with a pass-through. For
     each call whose argv[0] is `bin_path` it appends the argv, the sorted env
-    NAMES and the one non-credential constant GROK_AUTH_EXPIRED to the list
+    NAMES, the one non-credential constant GROK_AUTH_EXPIRED and (apex-h2u2 F-E')
+    two booleans about the HOME pin, to the list
     it returns, then delegates to the saved Popen; every other launch (the
     wiretap's interpreter, anything `subprocess.run` starts) passes through
     unrecorded. It never keeps the env dict or any value from it. Restored on
@@ -9910,7 +9930,14 @@ def _spy_binary_launches(test, bin_path):
             launches.append({
                 "argv": argv,
                 "env_names": sorted(given) if given is not None else None,
-                "grok_auth_expired": (given or {}).get("GROK_AUTH_EXPIRED")})
+                "grok_auth_expired": (given or {}).get("GROK_AUTH_EXPIRED"),
+                # apex-h2u2 F-E' (r2 §5.1): the HOME pin as two booleans. The
+                # scratch path is recomputed from the same env the child was
+                # handed, so a pin pointing anywhere else reads false here.
+                "home_present": "HOME" in (given or {}),
+                "home_is_scratch": (given or {}).get("HOME") == os.path.join(
+                    os.path.dirname((given or {}).get("GROK_HOME", "")),
+                    "userhome")})
         return real(args, *a, **kw)
 
     subprocess.Popen = spy
@@ -11110,3 +11137,887 @@ class CredentialSuffixLegTest(unittest.TestCase):
         self.assertEqual(digests, [run.sha256_12(ambient)],
                          "the ambient-key detail digests the whole ambient "
                          "value")
+
+# ---------------------------------------------------------------------------
+# apex-h2u2 H-1 (spec r2 §5.1/§5.2; brief §2 H-1, §3) — A-1′: the per-attempt
+# scratch USER home.
+#
+# The runner's own HOME holds the operator's zsh/bash startup files and every
+# home-rooted product source the binary reads (r2 §3.2), and `build_env` handed
+# that HOME to the child because `HOME` is an allowlisted name. H-1 pins the
+# child's `HOME` to a fresh, private, empty sibling of GROK_HOME.
+#
+# Fixture discipline (r2 I-9, binding): every test here points the runner's
+# `HOME` at a temporary directory of SYNTHETIC files with SYNTHETIC values, and
+# no test unsets `HOME` or starts a shell without one — an unset `HOME` lets zsh
+# or `home_dir()` fall back to the password-database home and run the operator's
+# real startup files. Assertions name sentinels, plant names and booleans only
+# (r2 §5); both classes join `T3AssertionHygieneTest.T3_CLASSES`.
+# ---------------------------------------------------------------------------
+
+#: every planted value is this concatenation, so the source holds no
+#: contiguous credential shape (r2 §5.1; precedent BE-4).
+H2U2_SYNTHETIC_VALUE = "h2u2-" + "synthetic"
+
+#: the test-local spelling of the scratch user home. r2 §5.2 (review F-7):
+#: expected paths are computed here and never through a new `run.*` symbol, so
+#: every RED below fails as an assertion on the opening bytes rather than as an
+#: AttributeError.
+H2U2_USER_HOME_NAME = "userhome"
+
+#: the names F-A′'s startup files export. A test may only ask whether one of
+#: these is present in a child environment.
+H2U2_SENTINELS = (
+    "H2U2_SENTINEL_ZSHENV", "H2U2_DOTFILE_TOKEN", "H2U2_SENTINEL_ZPROFILE",
+    "H2U2_SENTINEL_ZSHRC", "H2U2_RC_TOKEN", "H2U2_SENTINEL_ZLOGIN",
+    "H2U2_SENTINEL_BASH_PROFILE", "H2U2_SENTINEL_BASHRC",
+)
+
+#: the function and alias the synthetic `.zshrc` defines, which the
+#: snapshot-init form would otherwise capture (r2 §5.1 F-B, `_shell_defs`).
+H2U2_RC_DEFINITIONS = ("h2u2_rc_fn", "h2u2_rc_alias")
+
+H2U2_HOME_MARKER = ".h2u2-home-marker"
+
+#: U-22 (H-0's host record): `agent_filenames()` from
+#: `crates/codegen/xai-grok-tools/src/types/compat.rs:366-377`. F-A′'s
+#: instruction-file names come from this list, as r2 §5.1 requires.
+H2U2_AGENT_FILENAMES = (
+    "Agents.md", "Claude.md", "CLAUDE.md", "CLAUDE.local.md", "AGENT.md",
+    "AGENTS.md", ".claude/CLAUDE.md", ".claude/CLAUDE.local.md",
+)
+
+H2U2_ZSH = shutil.which("zsh") or "/bin/zsh"
+H2U2_BASH = "/bin/bash"
+
+#: the shell and the platform add names of their own (PWD, SHLVL, _,
+#: __CF_USER_TEXT_ENCODING), so no test asserts an exact name set (r2 §5).
+H2U2_DUMPER_SRC = "import os;print(chr(10).join(sorted(os.environ)))"
+
+#: r2 §5.1 F-B: one bounded run per shell form. A form that ever hits this is a
+#: test-design defect to fix before GREEN, never a pass (r2 §6 H-1, STOP 2).
+H2U2_SHELL_TIMEOUT_S = 20
+
+#: the capture clause of the product's snapshot-init script, from
+#: `xai-grok-tools/src/computer/local/static_shell.rs:60-63` at the base.
+H2U2_SNAPSHOT_CAPTURE = (
+    "{ builtin alias -L; builtin alias -gL; builtin alias -sL } 2>/dev/null; "
+    "builtin typeset -f 2>/dev/null")
+
+#: the C-1 entries that are directories rather than files.
+H2U2_HOME_ROOTED_DIRS = (".claude/plugins",)
+
+#: the startup files F-A′ writes: the file, the sentinel names it exports, and
+#: the definitions it makes.
+H2U2_STARTUP_FILES = (
+    (".zshenv", ("H2U2_SENTINEL_ZSHENV", "H2U2_DOTFILE_TOKEN"), ()),
+    (".zprofile", ("H2U2_SENTINEL_ZPROFILE",), ()),
+    (".zshrc", ("H2U2_SENTINEL_ZSHRC", "H2U2_RC_TOKEN"),
+     ("h2u2_rc_fn", "h2u2_rc_alias")),
+    (".zlogin", ("H2U2_SENTINEL_ZLOGIN",), ()),
+    (".bash_profile", ("H2U2_SENTINEL_BASH_PROFILE",), ()),
+    (".bashrc", ("H2U2_SENTINEL_BASHRC",), ()),
+)
+
+#: a captured definition line is `alias <name>=…` or `<name> (…`; anything
+#: else — a continuation of a quoted value, a shell banner — is not a
+#: definition and is dropped rather than scanned for a name.
+_H2U2_DEF_LINE_RE = re.compile(r"^(?:alias )?([A-Za-z_][A-Za-z0-9_]*) ?[=(]")
+
+
+def _h2u2_home_rooted_relatives():
+    """The C-1 table of brief §2 (r2 §3.2 rows A1-A5, B1, B2, B4) as
+    home-relative paths, every one of which F-A′ plants.
+
+    C-1 is binding: a path missing from the fixture is a test defect and is
+    never counted as proof that the route is closed."""
+    out = [
+        # A1 — skill roots (`skills.rs:191-200`).
+        ".agents/skills/h2u2-agents-skill/SKILL.md",
+        ".claude/skills/h2u2-claude-skill/SKILL.md",
+        ".cursor/skills/h2u2-cursor-skill/SKILL.md",
+        # A2 — rule files (`agents_md.rs:258-282`).
+        ".claude/rules/h2u2-rule.md",
+        ".cursor/rules/h2u2-cursor-rule.md",
+        # A2, extra rule dirs: where a synthetic ~/h2u2-extra-rules expands
+        # under the test's own model of `expand_tilde_with_home`.
+        "h2u2-extra-rules/h2u2-extra-rule.md",
+        # A3 — agent discovery roots (`discovery.rs:172-193`).
+        ".claude/agents/h2u2-agent.md",
+        ".grok/agents/h2u2-legacy-agent.md",
+        ".grok/bundled/agents/h2u2-bundled-agent.md",
+        # A4 — plugin discovery (`plugins/discovery.rs:203-212, :364-372`).
+        ".claude/plugins/installed_plugins.json",
+        # A5 — MCP config (`mcp.rs:1268-1273, :1309-1314, :1400-1401`).
+        ".claude.json",
+        ".cursor/mcp.json",
+        # B1/B2 — Claude settings (`claude_settings.rs:330-335, :405-433`).
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        # B4 — git ignores (`ignore.rs:32-37`).
+        ".gitconfig",
+        ".gitignore",
+        # the `~` reachability marker (r2 §5.1).
+        H2U2_HOME_MARKER,
+    ]
+    # A2's instruction files, one per name the product actually looks for.
+    for name in H2U2_AGENT_FILENAMES:
+        out.append(name)
+    for where in (".claude", ".cursor"):
+        for name in H2U2_AGENT_FILENAMES[:6]:
+            out.append("%s/%s" % (where, name))
+    return tuple(out)
+
+
+def _h2u2_synthetic_runner_home(test):
+    """F-A′ (r2 §5.1): a temporary directory that stands in for the runner's
+    `HOME`, holding only synthetic content, and `os.environ` patched so `HOME`
+    is that directory and `SHELL` is the resolved zsh.
+
+    Every planted value is `H2U2_SYNTHETIC_VALUE`, and the planted JSON files
+    declare no hook, no MCP server and no plugin, so no planted file can start a
+    process (brief §2 "Fixture safety", because L-1's pre-fix arm runs the
+    shipped binary on these same bytes). `addCleanup` restores the original
+    environment, whose values are never read into a message."""
+    root = tempfile.mkdtemp(prefix="rt-h2u2-fa-")
+    test.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+    for name, sentinels, defs in H2U2_STARTUP_FILES:
+        lines = ['export %s="%s"' % (n, H2U2_SYNTHETIC_VALUE)
+                 for n in sentinels]
+        if "h2u2_rc_fn" in defs:
+            lines.append("h2u2_rc_fn() { :; }")
+        if "h2u2_rc_alias" in defs:
+            lines.append("alias h2u2_rc_alias=echo")
+        with open(os.path.join(root, name), "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+    for rel in _h2u2_home_rooted_relatives():
+        path = os.path.join(root, rel)
+        if rel in H2U2_HOME_ROOTED_DIRS:
+            os.makedirs(path, exist_ok=True)
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if rel == ".claude/settings.json":
+            text = json.dumps({"env": {"H2U2_CLAUDE_ENV_TOKEN":
+                                       H2U2_SYNTHETIC_VALUE}})
+        elif rel in (".claude.json", ".cursor/mcp.json"):
+            text = json.dumps({"mcpServers": {}})
+        elif rel.endswith("installed_plugins.json") or \
+                rel.endswith("settings.local.json"):
+            text = "{}"
+        elif rel in (".gitconfig", ".gitignore", H2U2_HOME_MARKER):
+            text = ""
+        elif rel.endswith("SKILL.md"):
+            text = "---\nname: %s\ndescription: %s\n---\n" % (
+                os.path.basename(os.path.dirname(path)),
+                H2U2_SYNTHETIC_VALUE)
+        else:
+            text = H2U2_SYNTHETIC_VALUE + "\n"
+        with open(path, "w") as fh:
+            fh.write(text)
+    saved = {}
+    for key in ("HOME", "SHELL", "ZDOTDIR", "GROK_LOGIN_ENV"):
+        saved[key] = os.environ.get(key)
+
+    def restore():
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    test.addCleanup(restore)
+    os.environ["HOME"] = root
+    os.environ["SHELL"] = H2U2_ZSH
+    os.environ.pop("ZDOTDIR", None)
+    os.environ.pop("GROK_LOGIN_ENV", None)
+    return root
+
+
+def _h2u2_scratch_user_home(home):
+    """The expected scratch path, computed the way r2 §5.2 prescribes: as a
+    sibling of `home`, from `os.path` alone. It never reads a `run.*` symbol, so
+    a RED is an assertion and not an import error."""
+    return os.path.join(os.path.dirname(os.path.abspath(home)),
+                        H2U2_USER_HOME_NAME)
+
+
+def _h2u2_source_rc(rc_name):
+    """The `source "$HOME/<rc>"` prelude both `-lc` product scripts open with
+    (`terminal.rs:3128-3131`, `static_shell.rs:66-69`)."""
+    return 'source "$HOME/%s" 2>/dev/null; ' % rc_name
+
+
+def _h2u2_exec_dumper(src):
+    """`exec <interpreter> -c <src>`, with the interpreter path quoted into
+    argv (r2 §5.1 F-B)."""
+    return "exec %s -c %s" % (shlex.quote(sys.executable), shlex.quote(src))
+
+
+def _shell_names(test, env, argv, script, shell=None):
+    """F-B (r2 §5.1), generalized to a shell binary: run
+    `[shell, *argv, script + "; " + dumper]` with stdin and stderr discarded and
+    stdout captured, then return the environment NAMEs the child ends with.
+
+    The fifth argument defaults to `os.environ["SHELL"]`, which F-A′ pins to the
+    resolved zsh, so the 4-argument form r2 names is the common call."""
+    binary = shell or os.environ.get("SHELL") or H2U2_ZSH
+    # Join the prelude and the dumper with exactly one separator. A leading
+    # "; " or a ";;" is a bash syntax error, and the child then exits 0 having
+    # dumped nothing, which would make every name assertion below vacuous.
+    prelude = script.strip().rstrip(";").rstrip()
+    dump = _h2u2_exec_dumper(H2U2_DUMPER_SRC)
+    body = "%s; %s" % (prelude, dump) if prelude else dump
+    proc = subprocess.run(
+        [binary, *argv, body],
+        env=env, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, timeout=H2U2_SHELL_TIMEOUT_S, text=True)
+    return sorted(line for line in proc.stdout.splitlines()
+                  if line and "=" not in line)
+
+
+def _shell_defs(test, env, script, shell=None):
+    """F-B's twin for the snapshot-init form: run the composed script under
+    `-lc` and return only the function and alias NAMES between the `\\x01`
+    markers. An alias line is `name=value`, so the parser keeps the head and
+    drops every value (r2 §5.1: values never leave the parser)."""
+    binary = shell or os.environ.get("SHELL") or H2U2_ZSH
+    proc = subprocess.run(
+        [binary, "-lc", script], env=env, stdin=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        timeout=H2U2_SHELL_TIMEOUT_S, text=True)
+    parts = proc.stdout.split("\x01")
+    body = parts[1] if len(parts) > 1 else ""
+    names = set()
+    for line in body.splitlines():
+        found = _H2U2_DEF_LINE_RE.match(line.strip())
+        if found:
+            names.add(found.group(1))
+    return sorted(names)
+
+
+class HermeticUserHomePinsTest(unittest.TestCase):
+    """T-2, T-3 and T-6 of r2 §5.2: the `HOME` pin, the scratch directory and
+    the home-rooted product sources (I-2, I-3, I-5 and I-8).
+
+    The runner's `HOME` is F-A′'s synthetic directory for the whole test, so
+    even a RED run — where the child keeps the runner's `HOME` — reads only
+    synthetic files (r2 I-9)."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="rt-h2u2-pins-")
+        self.addCleanup(lambda: shutil.rmtree(self._tmp, ignore_errors=True))
+        self._runner_home = _h2u2_synthetic_runner_home(self)
+        live = _write_fake_live_home(self._tmp, "http://127.0.0.1:9")
+        self._hermetic = run.HermeticHome(os.path.join(self._tmp, "root"),
+                                          live, {}, None)
+        self._scratch = _h2u2_scratch_user_home(self._hermetic.home)
+
+    def test_build_env_pins_home_to_scratch(self):
+        """T-2 (I-2, I-8): `HOME` is the scratch path even when the case names
+        it in `env.provider_vars_unset`, and it is never the runner's `HOME`."""
+        cenv = run.build_env(self._hermetic.home, extra_unset=["HOME"])
+        self.assertIn("HOME", _t3_names(cenv),
+                      "a case env.provider_vars_unset naming HOME must not "
+                      "remove it: the runner pins it after both lookup loops "
+                      "(I-8)")
+        self.assertEqual(cenv["HOME"], self._scratch,
+                         "build_env must pin HOME to the scratch user home")
+        plain = run.build_env(self._hermetic.home)
+        self.assertNotEqual(plain["HOME"], self._runner_home,
+                            "the child HOME is never the runner HOME (I-2)")
+
+    def test_hermetic_home_creates_private_empty_user_home(self):
+        """T-3 (I-3): the scratch user home exists for every attempt, private,
+        empty at creation, and a sibling of GROK_HOME rather than inside it."""
+        self.assertTrue(os.path.isdir(self._scratch),
+                        "the scratch user home is not created")
+        self.assertEqual(os.stat(self._scratch).st_mode & 0o777, 0o700,
+                         "the scratch user home is not private (mode 0700)")
+        self.assertEqual(sorted(os.listdir(self._scratch)), [],
+                         "the scratch user home holds an entry at creation")
+        self.assertNotEqual(self._scratch, self._hermetic.home,
+                            "the scratch user home is not GROK_HOME")
+        self.assertEqual(os.path.dirname(self._scratch),
+                         os.path.dirname(self._hermetic.home),
+                         "the scratch user home is a sibling of GROK_HOME")
+        self.assertEqual(os.path.dirname(self._scratch),
+                         os.path.dirname(self._hermetic.cwd),
+                         "the scratch user home is a sibling of the "
+                         "attempt cwd")
+
+    def test_home_rooted_product_sources_absent_under_scratch(self):
+        """T-6 (I-5): a cited path model, like r1's F-C.
+
+        Every home-rooted product path of r2 §3.2 rows A1-A5, B1, B2 and B4
+        exists under F-A′'s directory — the non-vacuity leg C-1 demands, because
+        a path the fixture does not plant is a test defect and never proof of
+        closure — and none of them exists under the `HOME` that `build_env`
+        hands the child once `HermeticHome` is built.
+
+        Two rows are stated here as NOT covered by this model and are never
+        counted as closed (C-1's second branch): libgit2's XDG global config
+        under `.config/git/` (r2 §1.2 CL-6), and config-named extra rule
+        directories other than the synthetic `h2u2-extra-rules` this fixture
+        plants, whose names come from the copied config."""
+        child_home = run.build_env(self._hermetic.home)["HOME"]
+        for rel in _h2u2_home_rooted_relatives():
+            self.assertTrue(
+                os.path.exists(os.path.join(self._runner_home, rel)),
+                "F-A′ does not plant %s: the fixture is incomplete, so its "
+                "absence under the scratch home would prove nothing (C-1)"
+                % rel)
+            self.assertFalse(
+                os.path.exists(os.path.join(child_home, rel)),
+                "%s is still reachable under the child HOME" % rel)
+
+
+@unittest.skipUnless(os.path.exists(H2U2_ZSH),
+                     "F-B needs zsh on the host; H-0 records /bin/zsh and "
+                     "calls a host without it a STOP (r2 §5.1, §6 H-0)")
+class HermeticUserHomeShellTest(unittest.TestCase):
+    """T-4 and T-5 of r2 §5.2: routes 1-3 are closed by real zsh and bash
+    semantics, on synthetic files, in the product's own shell forms (I-4).
+
+    Every form runs under exactly the environment `build_env` returns, and
+    `HOME` always names F-A′'s synthetic directory, so nothing here can read an
+    operator dotfile (r2 I-9)."""
+
+    #: (label, shell binary, argv before the script, script prelude).
+    #: The forms r2 §5.2 lists, at `terminal.rs:3283-3287`,
+    #: `static_shell.rs:166`, the capture script of
+    #: `terminal.rs:3129-3135`, and `shell_state.rs:280-285`.
+    SHELL_FORMS = (
+        ("zsh -o nonomatch -c", H2U2_ZSH, ("-o", "nonomatch", "-c"), ""),
+        ("zsh -c", H2U2_ZSH, ("-c",), ""),
+        ("zsh capture -lc", H2U2_ZSH, ("-lc",), _h2u2_source_rc(".zshrc")),
+        ("zsh -o extendedglob -ilc", H2U2_ZSH,
+         ("-o", "extendedglob", "-ilc"), ""),
+        ("bash -O extglob -ilc", H2U2_BASH, ("-O", "extglob", "-ilc"), ""),
+        ("bash capture -lc", H2U2_BASH, ("-lc",), _h2u2_source_rc(".bashrc")),
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="rt-h2u2-shell-")
+        self.addCleanup(lambda: shutil.rmtree(self._tmp, ignore_errors=True))
+        self._runner_home = _h2u2_synthetic_runner_home(self)
+        live = _write_fake_live_home(self._tmp, "http://127.0.0.1:9")
+        self._hermetic = run.HermeticHome(os.path.join(self._tmp, "root"),
+                                          live, {}, None)
+        self._scratch = _h2u2_scratch_user_home(self._hermetic.home)
+
+    def test_shell_forms_load_no_runner_home_startup_file(self):
+        """T-4 (I-4, routes 1-3): a shell started with exactly `build_env`'s
+        environment carries no sentinel that a startup file under the runner's
+        `HOME` exports — with the scratch directory created AND absent, because
+        r2 §4.2 claims a missing scratch directory still closes the routes."""
+        self.assertTrue(os.path.exists(H2U2_BASH),
+                        "/bin/bash is absent; H-0's host record says it is "
+                        "present, so the bash forms cannot be run here")
+        for present in (True, False):
+            if present:
+                os.makedirs(self._scratch, mode=0o700, exist_ok=True)
+            else:
+                shutil.rmtree(self._scratch, ignore_errors=True)
+            cenv = run.build_env(self._hermetic.home)
+            self.assertIn("HOME", _t3_names(cenv),
+                          "the shell form would run with no HOME at all, so "
+                          "the check below would be vacuous (r2 I-9)")
+            for label, binary, argv, prefix in self.SHELL_FORMS:
+                names = _shell_names(self, cenv, list(argv), prefix,
+                                     shell=binary)
+                self.assertIn("PATH", names,
+                              "%s returned no environment at all: the dumper "
+                              "did not run, so its name set proves nothing"
+                              % label)
+                hit = sorted(set(names) & set(H2U2_SENTINELS))
+                self.assertEqual(
+                    hit, [],
+                    "%s with the scratch user home %s loaded a startup file of "
+                    "the runner HOME: %s"
+                    % (label, "present" if present else "absent",
+                       ",".join(hit)))
+
+    def test_snapshot_init_captures_no_runner_rc_definitions(self):
+        """T-5 (I-4, the static path): the snapshot-init script of
+        `static_shell.rs:65-73`, run under `build_env`'s environment, captures
+        neither the function nor the alias the synthetic `.zshrc` defines."""
+        script = ("%sprintf '\\x01'; %s; printf '\\x01'"
+                  % (_h2u2_source_rc(".zshrc"), H2U2_SNAPSHOT_CAPTURE))
+        cenv = run.build_env(self._hermetic.home)
+        defs = _shell_defs(self, cenv, script, shell=H2U2_ZSH)
+        hit = sorted(set(defs) & set(H2U2_RC_DEFINITIONS))
+        self.assertEqual(hit, [],
+                         "the snapshot-init capture found a definition the "
+                         "runner HOME's .zshrc defines: %s" % ",".join(hit))
+        # Non-vacuity: the same script and the same environment, with only
+        # `HOME` moved back to the runner's, must find both definitions.
+        probe = dict(cenv)
+        probe["HOME"] = self._runner_home
+        again = _shell_defs(self, probe, script, shell=H2U2_ZSH)
+        self.assertEqual(sorted(set(again) & set(H2U2_RC_DEFINITIONS)),
+                         sorted(H2U2_RC_DEFINITIONS),
+                         "the capture form does not read the runner HOME's "
+                         ".zshrc even when HOME points at it, so the "
+                         "assertion above is vacuous")
+
+
+# ---------------------------------------------------------------------------
+# apex-h2u2 H-2 (spec r2 §6 H-2, "the process tree, observed"): no behaviour
+# changes in this task. It adds the two observations that show A-1' on the
+# runner's REAL launch path: F-D′ makes the fake binary start a shell in each of
+# the product's own forms with the environment the runner handed it and record
+# what that child sees; F-E′ records the `HOME` pin at the launch boundary. T-7
+# reads the first, T-8 the second. `ToolSubprocessHomeE2ETest` joins
+# `T3AssertionHygieneTest.T3_CLASSES` in this task (r2 §5.1), so every assertion
+# here names names, booleans or digests — never an environment value.
+#
+# Fixture discipline is unchanged from H-1 (r2 I-9): the runner's `HOME` is
+# F-A′'s synthetic directory for the whole test, so even a RED or counterfactual
+# run — where the child keeps the runner's `HOME` — reads only synthetic files.
+# ---------------------------------------------------------------------------
+
+#: the runner-side plants a child environment could carry by NAME.
+#: `H2U2_CLAUDE_ENV_TOKEN` is what F-A′ plants inside the synthetic
+#: `.claude/settings.json`, so it reaches a child only if the binary read the
+#: runner's settings file (r2 §3.2 B1/B2); the swept plants are the values
+#: `_t3_swept_env_guard` installs in the RUNNER's environment for the duration of
+#: the test, which the child allowlist must keep out.
+H2U2_RUNNER_ONLY_PLANTS = ("H2U2_CLAUDE_ENV_TOKEN",) + tuple(
+    sorted(T3_SWEPT_PLANTS))
+
+#: the case config of the two end-to-end legs. Every row declares its own
+#: `env_key`, so no route resolves through the fallback chain and no chain name
+#: can appear in a child environment for a reason unrelated to this design.
+H2U2_E2E_CFG = '''base_url = "%(a)s/v1"
+models_base_url = "%(a)s/v1"
+[features]
+turn_summary = false
+
+[model."row-h2u2"]
+model = "m-x"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+env_key = "WIRETAP_T2_KEY_X"
+'''
+
+#: F-D′ (r2 §5.1). The source the fake binary runs BEFORE it posts, in its own
+#: environment — the one `build_env` handed it. It starts a shell in the four
+#: product forms and writes ONE json object of sorted names and booleans: the
+#: capture script (`terminal.rs:3129-3131`), the snapshot-init capture
+#: (`static_shell.rs:65-67`), and the two tool forms (`static_shell.rs:166`,
+#: `terminal.rs:3283-3287`); plus the home probe in a tool-form child, whose
+#: scratch path the fake computes from its own `GROK_HOME`. Values never leave
+#: the child: the dumper prints names, and the home probe prints three verdict
+#: words. The tokens below are filled by `_h2u2_fake_probe_src`.
+_H2U2_FAKE_PROBE_TEMPLATE = (
+    "import shlex as _pshlex, subprocess as _psp\n"
+    "_p_scratch = os.path.join(os.path.dirname(os.environ.get('GROK_HOME', '')),"
+    " @@NAME@@)\n"
+    "_p_real = os.path.realpath(_p_scratch)\n"
+    "_p_dump = ('exec ' + _pshlex.quote(sys.executable) + ' -c '\n"
+    "           + _pshlex.quote(@@DUMPER@@))\n"
+    "_p_re = re.compile(@@DEFRE@@)\n"
+    "def _p_shell(argv, body):\n"
+    "    try:\n"
+    "        p = _psp.run([os.environ.get('SHELL', '')] + list(argv) + [body],\n"
+    "                     stdin=_psp.DEVNULL, stdout=_psp.PIPE,\n"
+    "                     stderr=_psp.DEVNULL, text=True, timeout=@@TIMEOUT@@)\n"
+    "    except Exception:\n"
+    "        return ''\n"
+    "    return p.stdout\n"
+    "def _p_names(out):\n"
+    "    return sorted(l for l in out.splitlines() if l and '=' not in l)\n"
+    "def _p_defs(out):\n"
+    "    parts = out.split(chr(1))\n"
+    "    body = parts[1] if len(parts) > 1 else ''\n"
+    "    names = []\n"
+    "    for line in body.splitlines():\n"
+    "        found = _p_re.match(line.strip())\n"
+    "        if found:\n"
+    "            names.append(found.group(1))\n"
+    "    return sorted(names)\n"
+    "_p_home_body = (@@HEAD@@ + _pshlex.quote(_p_scratch) + @@MID@@\n"
+    "                + _pshlex.quote(_p_real) + @@TAIL@@)\n"
+    "_p_flags = {}\n"
+    "for _p_line in _p_shell(['-c'], _p_home_body).splitlines():\n"
+    "    if '=' in _p_line:\n"
+    "        _p_key, _p_val = _p_line.split('=', 1)\n"
+    "        _p_flags[_p_key] = (_p_val == 'true')\n"
+    "_p_rec = {\n"
+    "    'capture_names': _p_names(_p_shell(['-lc'], @@CAPTURE@@)),\n"
+    "    'def_names': _p_defs(_p_shell(['-lc'], @@DEFS@@)),\n"
+    "    'tool_names': _p_names(_p_shell(['-c'], _p_dump)),\n"
+    "    'tool_nonomatch_names': _p_names(\n"
+    "        _p_shell(['-o', 'nonomatch', '-c'], _p_dump)),\n"
+    "    'probe_child_ran': _p_flags.get('PRAN', False),\n"
+    "    'home_is_scratch': _p_flags.get('P1', False),\n"
+    "    'tilde_is_scratch': _p_flags.get('P2', False),\n"
+    "    'marker_reachable': _p_flags.get('P3', False)}\n"
+    "open(@@RECORD@@, 'w').write(json.dumps(_p_rec))\n"
+)
+
+
+def _h2u2_fake_probe_src(record_path):
+    """The F-D′ script text, built from the same product-form strings F-B uses.
+
+    The capture and snapshot-init scripts are composed here (with `_h2u2_source_rc`
+    and `H2U2_SNAPSHOT_CAPTURE`) so the fake runs exactly the script shapes the
+    product runs, and the interpreter path is the fake's own `sys.executable` —
+    the environment still comes from the fake, which is the point of the fixture.
+    The scratch path is computed inside the fake from its own `GROK_HOME`, as
+    r2 §5.1 prescribes, so no test bakes a path into the fake."""
+    capture = "%s; %s" % (_h2u2_source_rc(".zshrc").strip().rstrip(";").rstrip(),
+                          _h2u2_exec_dumper(H2U2_DUMPER_SRC))
+    defs_script = "%sprintf '\\x01'; %s; printf '\\x01'" % (
+        _h2u2_source_rc(".zshrc"), H2U2_SNAPSHOT_CAPTURE)
+    home_head = 'if [ "$HOME" = '
+    home_mid = (' ]; then echo P1=true; else echo P1=false; fi\n'
+                '__p="$(cd ~ 2>/dev/null && pwd -P)"\n'
+                'if [ "$__p" = ')
+    home_tail = (' ]; then echo P2=true; else echo P2=false; fi\n'
+                 'if test -e ~/%s; then echo P3=true; else echo P3=false; fi\n'
+                 'echo PRAN=true' % H2U2_HOME_MARKER)
+    return (_H2U2_FAKE_PROBE_TEMPLATE
+            .replace("@@NAME@@", json.dumps(H2U2_USER_HOME_NAME))
+            .replace("@@DUMPER@@", json.dumps(H2U2_DUMPER_SRC))
+            .replace("@@DEFRE@@", json.dumps(_H2U2_DEF_LINE_RE.pattern))
+            .replace("@@TIMEOUT@@", str(H2U2_SHELL_TIMEOUT_S))
+            .replace("@@HEAD@@", json.dumps(home_head))
+            .replace("@@MID@@", json.dumps(home_mid))
+            .replace("@@TAIL@@", json.dumps(home_tail))
+            .replace("@@CAPTURE@@", json.dumps(capture))
+            .replace("@@DEFS@@", json.dumps(defs_script))
+            .replace("@@RECORD@@", json.dumps(record_path)))
+
+
+class ToolSubprocessHomeE2ETest(unittest.TestCase):
+    """T-7 and T-8 of r2 §5.2: the design observed through the runner's real
+    launch path (I-6, and I-2 at both launch sites).
+
+    T-7 runs `run_case` end-to-end — the real wiretap, a recording upstream, the
+    T3 plants, F-A′'s synthetic runner `HOME` — and reads what the fake binary's
+    four product-form shells saw. T-8 reads the `HOME` pin at each of the two
+    sites `subprocess.Popen` is called from.
+
+    H-2 changes no behaviour, so both tests are green on H-1's bytes: their RED is
+    the declared exception of brief §2 (RR-44 OD-5), observed by running THIS
+    `test_run.py` against the base `run.py` in a scratch copy, where `build_env`
+    has no `HOME` pin and no scratch directory exists. Their counterfactuals (cf-1
+    deletes the pin, cf-2 deletes the `makedirs`) are what separate the two
+    mechanisms. Brief §2's H-2 STOP: T-7 green while `HOME` is not among the
+    tool-form names means the fake's tool shell did not inherit the binary's
+    environment, so the test would be vacuous — the non-vacuity leg below is
+    therefore asserted BEFORE the findings are collected."""
+
+    def _run_case_with_probe(self):
+        """`run_case` with F-A′ active, the plants installed, and F-D′'s record.
+
+        Returns (row, launches, record) where `record` is the json object the fake
+        binary's shells produced. The record lives in this test's temporary
+        directory, outside the hermetic root `_finish` removes."""
+        tmp = tempfile.mkdtemp(prefix="rt-h2u2-e2e-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        _h2u2_synthetic_runner_home(self)
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=tuple(sorted(T3_SWEPT_PLANTS)),
+                            unset=tuple(run.XAI_CREDENTIAL_CHAIN))
+        srv, upstream = _start_recording_upstream()
+        self.addCleanup(srv.shutdown)
+        live = _t2_write_cfg_home(tmp, H2U2_E2E_CFG % {"a": upstream})
+        ran = os.path.join(tmp, "fake-grok.ran")
+        record = os.path.join(tmp, "probe.json")
+        fake_bin = _write_fake_binary(tmp, upstream, ran_record=ran,
+                                      tool_probe_record=record)
+        launches = _spy_binary_launches(self, fake_bin)
+        args, _out = _t2_case_args(tmp, live, fake_bin)
+        case = {"id": "RT-H2U2-H2", "title": "tool subprocess home",
+                "driver": "headless", "model": "row-h2u2",
+                "steps": [{"op": "turn", "prompt": "ping"}],
+                "wirecap": True, "est_calls": 1, "assert": {"exit": 0}}
+        row = run.run_case(case, args, run.Budget(args.budget))
+        self.assertTrue(os.path.exists(ran),
+                        "the fake binary never ran, so the probe below cannot "
+                        "say anything about the child environment")
+        self.assertTrue(os.path.exists(record),
+                        "the fake binary ran but wrote no probe record")
+        with open(record, encoding="utf-8") as fh:
+            rec = json.load(fh)
+        return row, launches, rec
+
+    def _acp_launch(self):
+        """The second launch site: `AcpSession.start` on a binary that does not
+        exist. The launch spy records the environment before `Popen` raises, so
+        the pin is read at the boundary and the child never runs."""
+        tmp = tempfile.mkdtemp(prefix="rt-h2u2-acp-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        _h2u2_synthetic_runner_home(self)
+        live = _write_fake_live_home(tmp, "http://127.0.0.1:9")
+        home = run.HermeticHome(os.path.join(tmp, "root"), live, {}, None)
+        missing = os.path.join(tmp, "no-such-binary")
+        launches = _spy_binary_launches(self, missing)
+        session = run.AcpSession(missing, home.home, home.cwd, "row-h2u2",
+                                 os.path.join(tmp, "acp.log"))
+        with self.assertRaises(FileNotFoundError):
+            session.start()
+        self.assertEqual(len(launches), 1,
+                         "AcpSession.start must launch the binary exactly once "
+                         "before the FileNotFoundError")
+        return launches[0]
+
+    def test_tool_subprocess_reaches_no_runner_home(self):
+        """T-7 (I-6): a tool subprocess the fake binary starts, in the product's
+        own forms and with the environment the runner handed it, carries no
+        synthetic sentinel, no runner rc definition and none of the runner's
+        plants; and it sees the scratch user home as its home."""
+        _row, _launches, rec = self._run_case_with_probe()
+        cap_names = rec["capture_names"]
+        defs = rec["def_names"]
+        tool_names = rec["tool_names"]
+        nm_names = rec["tool_nonomatch_names"]
+        # --- non-vacuity, before any absence is believed ---------------------
+        self.assertTrue(rec["probe_child_ran"],
+                        "the tool-form home probe printed no verdicts, so "
+                        "HOME_IS_SCRATCH, TILDE_IS_SCRATCH and MARKER_REACHABLE "
+                        "would be vacuously absent")
+        self.assertIn("PATH", cap_names,
+                      "the capture form dumped no environment at all, so its "
+                      "empty name set would prove nothing")
+        for name in ("HOME", "GROK_HOME"):
+            self.assertIn(name, tool_names,
+                          "the tool form did not inherit %s from the binary, so "
+                          "the test is vacuous (brief §2 H-2 STOP)" % name)
+            self.assertIn(name, nm_names,
+                          "the -o nonomatch tool form did not inherit %s from "
+                          "the binary (brief §2 H-2 STOP)" % name)
+        # --- the findings, one label per cell so a RED is auditable ----------
+        violations = []
+        for label, names in (("capture", cap_names), ("tool", tool_names),
+                             ("tool_nonomatch", nm_names)):
+            hit = sorted(set(names) & set(H2U2_SENTINELS))
+            if hit:
+                violations.append("%s_sentinels=%s" % (label, ",".join(hit)))
+            hit = sorted(set(names) & set(H2U2_RUNNER_ONLY_PLANTS))
+            if hit:
+                violations.append("%s_plants=%s" % (label, ",".join(hit)))
+        hit = sorted(set(defs) & set(H2U2_RC_DEFINITIONS))
+        if hit:
+            violations.append("rc_definitions=%s" % ",".join(hit))
+        if not rec["home_is_scratch"]:
+            violations.append("home_is_scratch=false")
+        if not rec["tilde_is_scratch"]:
+            violations.append("tilde_is_scratch=false")
+        if rec["marker_reachable"]:
+            violations.append("marker_reachable=true")
+        self.assertEqual(
+            violations, [],
+            "a tool subprocess reached the runner HOME or did not land on the "
+            "scratch user home; failing cells: %s" % ";".join(violations))
+
+    def test_both_launch_sites_carry_the_home_pin(self):
+        """T-8 (I-2 at both sites): the headless launch that T-7's case took, and
+        the ACP launch, each hand the binary a `HOME` equal to the scratch user
+        home of that attempt's `GROK_HOME`. Booleans only — F-E' stores no value
+        and neither does this test.
+
+        Both sites are collected before the one assertion, so a RED names both
+        (r2 §6 H-2: "`HOME_IS_SCRATCH` false at both sites") instead of stopping
+        at the first."""
+        _row, launches, _rec = self._run_case_with_probe()
+        self.assertEqual(len(launches), 1,
+                         "one headless launch of the binary is expected, got %d"
+                         % len(launches))
+        acp = self._acp_launch()
+        violations = []
+        for label, launch in (("headless", launches[0]), ("acp", acp)):
+            if not launch["home_present"]:
+                # r2 I-9: a shell must never start without HOME, so an absent
+                # pin is its own finding, not just a scratch mismatch.
+                violations.append("%s_home_absent=true" % label)
+            if not launch["home_is_scratch"]:
+                violations.append("%s_home_is_scratch=false" % label)
+        self.assertEqual(
+            violations, [],
+            "a launch site did not hand the binary the scratch user home as "
+            "HOME; failing cells: %s" % ";".join(violations))
+
+
+_H2U2_POLICY_BASE = ('base_url = "http://127.0.0.1:9/v1"\n'
+                     '[features]\nturn_summary = false\n')
+
+
+def _h2u2_policy_cfg(body, bait=False):
+    """One T-9 config: the minimal config plus a
+    `[shell_environment_policy]` table carrying exactly `body` as its own
+    lines. With `bait`, the table also sets a name that is NOT `HOME` to
+    `H2U2_SYNTHETIC_VALUE`, so "no synthetic value occurs in any cause" is
+    proven on each cause row instead of asserted over rows that never held a
+    value to name (r2 §4.2)."""
+    text = _H2U2_POLICY_BASE + "[shell_environment_policy]\n" + body
+    if bait:
+        text += 'set = {H2U2_POLICY_BAIT = "%s"}\n' % H2U2_SYNTHETIC_VALUE
+    return text
+
+
+#: r2 §5.2 T-9's table, one entry per specified row: (label, config, expected
+#: rule letter or None). The `unparsable` row is the unterminated table header
+#: r2 §4.4's parse leg names; the `set_HOME` row carries the synthetic value as
+#: HOME's own value, the strongest form of the no-value rule.
+_H2U2_POLICY_ROWS = (
+    ("no_table", _H2U2_POLICY_BASE, None),
+    ("inherit_all", _h2u2_policy_cfg('inherit = "all"\n'), None),
+    ("inherit_core", _h2u2_policy_cfg('inherit = "core"\n'), None),
+    ("ignore_default_excludes_false",
+     _h2u2_policy_cfg("ignore_default_excludes = false\n"), None),
+    ("include_only_HO_star",
+     _h2u2_policy_cfg('include_only = ["HO*"]\n'), None),
+    ("include_only_HOME_PATH",
+     _h2u2_policy_cfg('include_only = ["HOME", "PATH"]\n'), None),
+    ("exclude_bracket_HOME",
+     _h2u2_policy_cfg('exclude = ["[H]OME"]\n'), None),
+    ("inherit_none", _h2u2_policy_cfg('inherit = "none"\n', True), "a"),
+    ("exclude_H_star", _h2u2_policy_cfg('exclude = ["H*"]\n', True), "b"),
+    ("exclude_home_lower", _h2u2_policy_cfg('exclude = ["home"]\n', True),
+     "b"),
+    ("include_only_PATH",
+     _h2u2_policy_cfg('include_only = ["PATH"]\n', True), "c"),
+    ("include_only_bracket_HOME",
+     _h2u2_policy_cfg('include_only = ["[H]OME"]\n', True), "c"),
+    ("set_HOME", _H2U2_POLICY_BASE + "[shell_environment_policy]\n"
+     + 'set = {HOME = "%s"}\n' % H2U2_SYNTHETIC_VALUE, "d"),
+    ("unparsable", _H2U2_POLICY_BASE + '[shell_environment_policy\n'
+     + 'bait = "%s"\n' % H2U2_SYNTHETIC_VALUE, "parse"),
+)
+
+
+class HermeticHomePolicyGuardTest(unittest.TestCase):
+    """T-9 and T-10 of r2 §5.2: M-3', the fail-closed guard on a
+    `shell_environment_policy` that would drop or override `HOME`.
+
+    Why the guard exists: `build_env` pins `HOME` to the per-attempt scratch
+    user home (I-2), and the product builds every tool command's base
+    environment from this one table by clearing the inherited environment and
+    installing the policy-derived map (`shell_env_policy.rs:211-219`), so a
+    policy that empties it, excludes `HOME`, or overwrites `HOME` through
+    `set` undoes that pin inside every tool command. R2 §4.4: the shell then
+    finds a home itself, and if it uses the password database (U-7) the
+    operator's real startup files run again. OD-2 is ruled (a) BLOCK,
+    fail-closed (RR-45), so the case is decided before anything runs.
+
+    T-9 is the pure function's table; T-10 is the same decision through
+    `run_case`. Each cause is compared against a test-local spelling of r2
+    §4.4's text, and a mismatch is reported by row label plus `sha256_12` of
+    what came back — the cause names keys, but a row still never renders a
+    value (r2 §4.2, RR-7).
+    """
+
+    #: r2 §4.4's cause text, spelled here so a RED is auditable without
+    #: reading the implementation's wording back off the product path.
+    CAUSE = ("hermetic-home: shell_environment_policy %s would drop or "
+             "override HOME in tool commands")
+
+    ROWS = _H2U2_POLICY_ROWS
+
+    def _run_case_with_policy(self, inherit, case_id):
+        """`run_case` end-to-end on a config whose
+        `[shell_environment_policy]` sets `inherit` and nothing else, with
+        F-A' active and the T3 plants installed — the same rig T-7 runs.
+
+        Returns (row, launches, ran, logged, verdict_status). Each arm gets
+        its own spy and its own binary path, and a spy records only argv[0]
+        equal to its own path, so an outer arm's list cannot absorb an inner
+        arm's launch.
+        `run.log` is captured (the house pattern at `test_run.py:862`) because
+        the guard reports its cause through `mark`, and `finalize_verdict`
+        leaves `blocked_reason` unset when the cause is not a route or wire
+        artifact."""
+        tmp = tempfile.mkdtemp(prefix="rt-h2u2-guard-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=tuple(sorted(T3_SWEPT_PLANTS)),
+                            unset=tuple(run.XAI_CREDENTIAL_CHAIN))
+        srv, upstream = _start_recording_upstream()
+        self.addCleanup(srv.shutdown)
+        cfg = (H2U2_E2E_CFG % {"a": upstream}
+               + "[shell_environment_policy]\ninherit = \"%s\"\n" % inherit)
+        live = _t2_write_cfg_home(tmp, cfg)
+        ran = os.path.join(tmp, "fake-grok.ran")
+        fake_bin = _write_fake_binary(tmp, upstream, ran_record=ran)
+        launches = _spy_binary_launches(self, fake_bin)
+        args, _out = _t2_case_args(tmp, live, fake_bin)
+        case = {"id": case_id, "title": "policy guard %s" % inherit,
+                "driver": "headless", "model": "row-h2u2",
+                "steps": [{"op": "turn", "prompt": "ping"}],
+                "wirecap": True, "est_calls": 1, "assert": {"exit": 0}}
+        logged, saved = [], run.log
+        run.log = logged.append
+        try:
+            row = run.run_case(case, args, run.Budget(args.budget))
+        finally:
+            run.log = saved
+        verdict_status = None
+        vpath = os.path.join(row["run_dir"], "verdict.json")
+        if os.path.exists(vpath):
+            with open(vpath, encoding="utf-8") as fh:
+                verdict_status = json.load(fh).get("status")
+        return row, launches, os.path.exists(ran), logged, verdict_status
+
+    def test_policy_guard_table(self):
+        """T-9 (I-7, unit): the guard's table is r2 §4.4's, in both
+        directions, and no cause names a value."""
+        self.assertTrue(hasattr(run, "hermetic_shell_policy_cause"),
+                        "r2 §6 H-3's RED on these bytes: the runner has no "
+                        "policy guard, so no config can be decided")
+        findings = []
+        for label, cfg, want in self.ROWS:
+            cause = run.hermetic_shell_policy_cause(cfg)
+            if cause is None and want is not None:
+                findings.append("%s=missing-rule-%s" % (label, want))
+            elif cause is not None and want is None:
+                findings.append("%s=unexpected-cause-%s"
+                                % (label, run.sha256_12(cause)))
+            elif cause is not None:
+                if cause != self.CAUSE % want:
+                    findings.append("%s=text-%s"
+                                    % (label, run.sha256_12(cause)))
+                if H2U2_SYNTHETIC_VALUE in cause:
+                    findings.append("%s=names-a-value" % label)
+        self.assertEqual(
+            findings, [],
+            "hermetic_shell_policy_cause disagrees with r2 §4.4's table on: %s"
+            % ";".join(findings))
+
+    def test_policy_guard_blocks_before_first_step(self):
+        """T-10 (I-7, end-to-end): `inherit = "none"` BLOCKS the case before
+        its first step, and `inherit = "core"` — the product's core list keeps
+        `HOME` (`shell_env_policy.rs:131-134`) — does not.
+
+        Both arms run, the blocked arm first and then the control arm, and
+        their findings are collected into one list asserted once, so a guard
+        that over-blocks reports `control_binary_did_not_run` rather than
+        looking green by blocking everything."""
+        _h2u2_synthetic_runner_home(self)
+        blocked, blocked_launches, blocked_ran, blocked_logged, vstatus = \
+            self._run_case_with_policy("none", "RT-H2U2-M3-BLOCK")
+        _control, control_launches, control_ran, _clog, _cstatus = \
+            self._run_case_with_policy("core", "RT-H2U2-M3-CONTROL")
+        findings = []
+        if blocked["status"] != "BLOCKED":
+            findings.append("blocked_status=%s" % blocked["status"])
+        if vstatus != "BLOCKED":
+            findings.append("verdict_status=%s" % vstatus)
+        if not [ln for ln in blocked_logged if "hermetic-home" in ln]:
+            findings.append("no_hermetic_home_cause_in_log")
+        if blocked_ran:
+            # r2 §5.2 T-10's RED on H-2's GREEN bytes: the binary ran.
+            findings.append("ran_marker_present")
+        if len(blocked_launches) != 0:
+            findings.append("blocked_spy_launches=%d" % len(blocked_launches))
+        if not control_ran:
+            findings.append("control_binary_did_not_run")
+        if len(control_launches) != 1:
+            findings.append("control_spy_launches=%d"
+                            % len(control_launches))
+        self.assertEqual(
+            findings, [],
+            "the policy guard did not decide these two cases as r2 §5.2 T-10 "
+            "states; failing cells: %s" % ";".join(findings))

@@ -52,6 +52,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import urllib.parse
 import urllib.request
 import uuid
@@ -91,10 +92,13 @@ PROVIDER_VARS_UNSET = [
 # can route a request with — a row `env_key`, an `env_http_headers` variable,
 # and the product fallback chain that a row declaring neither resolves
 # through (auth_method.rs:13-15, :30-34). The swept subset is this tuple
-# minus `SWEEP_EXCLUDED_NAMES`: GROK_DIRECT_PLACEHOLDER_KEY is still handed to
-# the routes that declare it and matched by neither the scrub nor the sweep
-# (R2-4 — its value occurs in 1 155 files of the 2026-10-29 run of record,
-# the five real credentials in 0).
+# minus `SWEEP_EXCLUDED_NAMES`: `GROK_DIRECT_PLACEHOLDER_KEY` is handed to the
+# child by sign-in rung S1 (a reachable row's own `env_key`) and by rung S2
+# (only when S1 sets nothing: the first declared `SWEEP_EXCLUDED_NAMES`
+# `env_key` that the runner's environment holds a non-empty value for; the
+# approved D-1 exception, sk8i spec r2 §2.2, RR-32). It is matched by neither
+# the scrub nor the sweep (R2-4 — its value occurs in 1 155 files of the
+# 2026-10-29 run of record, the five real credentials in 0).
 XAI_CREDENTIAL_CHAIN = ("XAI_API_KEY", "GROK_CODE_XAI_API_KEY",
                         "APEX_LLM_PROXY_KEY")
 CREDENTIAL_SURFACE_NAMES = ("APEX_LLM_PROXY_KEY", "CODEX_LLM_PROXY_KEY",
@@ -117,6 +121,8 @@ LITERAL_SWEEP_NAMES = tuple(n for n in sorted(CREDENTIAL_SURFACE_NAMES)
 # a credential-shaped NAME is neither necessary nor sufficient to leak, and
 # `SCS_PASS` / `OPERATOR_SSH_KEY` ride to the binary on the frozen bytes.
 # Widening this is a one-line, reviewed, test-covered edit (R-15).
+# `HOME`, like `GROK_HOME` and `GROK_AUTH_EXPIRED`, is listed here and then
+# overwritten by `build_env` with a runner-pinned value (apex-h2u2).
 CHILD_ENV_NON_CREDENTIAL_ALLOWLIST = (
     "PATH", "HOME", "LANG", "LC_ALL", "TERM", "TZ", "USER", "SHELL",
     "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
@@ -937,6 +943,100 @@ def _apply_no_watch(cfg_text: str):
     return cfg_text[:m.start(1)] + new_section + cfg_text[m.end(1):], True
 
 
+# apex-h2u2 A-1' (r2 §4.1): the per-attempt scratch USER home, a sibling of
+# GROK_HOME. The runner's own HOME carries the operator's zsh/bash startup
+# files and every home-rooted product source the binary reads (r2 §3.2), and
+# `HOME` is an allowlisted name, so without the pin in build_env the child
+# reads all of it.
+HERMETIC_USER_HOME_NAME = "userhome"
+
+
+def hermetic_user_home(home: str) -> str:
+    """The scratch user home for one attempt: a sibling of its GROK_HOME.
+    Pure — it creates nothing (HermeticHome does)."""
+    return os.path.join(os.path.dirname(os.path.abspath(home)),
+                        HERMETIC_USER_HOME_NAME)
+
+
+_HERMETIC_POLICY_CAUSE = ("hermetic-home: shell_environment_policy %s would "
+                          "drop or override HOME in tool commands")
+
+
+def _hermetic_policy_match(patterns, name):
+    """True if any `patterns` entry matches `name` under the product's glob:
+    `WildMatchPattern<'*', '?'>`, case-insensitive (shell_env_policy.rs:10-11).
+    r2 §4.4's model escapes the whole pattern and translates only the two
+    wildcards, so `[` stays literal in both directions; `\\` is literal too
+    (U-11: how the product treats it is UNVERIFIED)."""
+    target = name.upper()
+    for pattern in patterns:
+        expr = (re.escape(pattern.upper())
+                .replace(re.escape("*"), ".*")
+                .replace(re.escape("?"), "."))
+        if re.fullmatch(expr, target):
+            return True
+    return False
+
+
+def _hermetic_policy_shape(policy):
+    """(exclude, include_only, set_names) for a policy table, or None when its
+    shape is not the product's — a table this runner cannot read cannot be
+    shown to keep HOME, so the caller fails closed."""
+    exclude = policy.get("exclude", [])
+    include_only = policy.get("include_only", [])
+    set_map = policy.get("set", {})
+    ok = (isinstance(exclude, list) and isinstance(include_only, list)
+          and isinstance(set_map, dict)
+          and all(isinstance(p, str) for p in exclude)
+          and all(isinstance(p, str) for p in include_only))
+    if not ok:
+        return None
+    return exclude, include_only, list(set_map)
+
+
+def hermetic_shell_policy_cause(cfg_text):
+    """apex-h2u2 M-3' (r2 §4.4): the reason the config's
+    `[shell_environment_policy]` would drop or override `HOME` in every tool
+    command, or None when it cannot.
+
+    `build_env` pins `HOME` to the per-attempt scratch user home, but the
+    product builds each tool command's base environment from this one table —
+    `env_clear()` plus the policy-derived map (shell_env_policy.rs:211-219) —
+    so a policy that empties it, excludes `HOME`, or overwrites `HOME` through
+    `set` undoes that pin inside the shell. OD-2 is ruled (a): block,
+    fail-closed (RR-45). Rules a'-d' are r2 §4.4's, evaluated in the product's
+    own application order (shell_env_policy.rs:176-197): inherit, the default
+    excludes, exclude, set, include_only. The default excludes `*KEY*`,
+    `*SECRET*`, `*TOKEN*` (shell_env_policy.rs:36-38) never match `HOME`, so
+    `ignore_default_excludes` cannot change the answer and is not consulted.
+
+    The cause names keys, never values, and is deliberately not a
+    `credential-unset` record: `finalize_verdict` reads those as route causes
+    (§4.4's reason for not reusing `write_credential_block`).
+    """
+    try:
+        policy = tomllib.loads(cfg_text).get("shell_environment_policy")
+    except tomllib.TOMLDecodeError:
+        return _HERMETIC_POLICY_CAUSE % "parse"
+    if policy is None:
+        return None
+    if not isinstance(policy, dict):
+        return _HERMETIC_POLICY_CAUSE % "parse"
+    shape = _hermetic_policy_shape(policy)
+    if shape is None:
+        return _HERMETIC_POLICY_CAUSE % "parse"
+    exclude, include_only, set_names = shape
+    if policy.get("inherit") == "none":
+        return _HERMETIC_POLICY_CAUSE % "a"
+    if _hermetic_policy_match(exclude, "HOME"):
+        return _HERMETIC_POLICY_CAUSE % "b"
+    if any(name.upper() == "HOME" for name in set_names):
+        return _HERMETIC_POLICY_CAUSE % "d"
+    if include_only and not _hermetic_policy_match(include_only, "HOME"):
+        return _HERMETIC_POLICY_CAUSE % "c"
+    return None
+
+
 class HermeticHome:
     """Tempdir GROK_HOME: live config copy + patch + hermetic auth stub,
     with all base_urls rewritten to the local wiretap (when wirecap)."""
@@ -945,8 +1045,12 @@ class HermeticHome:
                  wire_port, keep: bool = False):
         self.home = os.path.join(root, "home")
         self.cwd = os.path.join(root, "cwd")
+        self.user_home = hermetic_user_home(self.home)
         os.makedirs(self.home, mode=0o700, exist_ok=True)
         os.makedirs(self.cwd, exist_ok=True)
+        # apex-h2u2 I-3: fresh, private (0700) and empty at creation; nothing
+        # is ever written into it.
+        os.makedirs(self.user_home, mode=0o700, exist_ok=True)
         cfg = read_live_config(live_home)
         # Harness invariant (disclosed in the report): this fork fires
         # display-only side-calls on every headless turn — a full-history
@@ -1369,13 +1473,30 @@ def build_env(home: str, extra_unset=None,
     never to enumerate them, so an undeclared name is absent by construction
     rather than by a pattern that has to be right every time.
 
-    `credential_names` is the union's credential half: the variables of the
-    routes THIS case can reach, from resolve_route_credentials. Nothing else
-    credential-shaped rides in, and a route the case cannot name gets no key.
+    `credential_names` is the union's credential half: the reachable routes'
+    credential variables (resolve_route_credentials) ∪ the sign-in variable
+    (resolve_signin_credentials: S1, a reachable row's own `env_key`; S2, only
+    when S1 sets nothing, the first declared `SWEEP_EXCLUDED_NAMES` `env_key`
+    that the runner's environment holds a non-empty value for, which may come
+    from a row no reachable route carries: the approved D-1 exception). Nothing
+    else credential-shaped rides in, and a route the case cannot name gets no
+    key.
+
+    The child's user home is hermetic (apex-h2u2). `HOME` is pinned to the
+    attempt's `hermetic_user_home(home)`, a directory that is empty when the
+    attempt starts. It is written after both loops, so neither the runner's
+    environment nor a case's `provider_vars_unset` can change it. No user
+    startup file, Claude settings `env`, skill, rule, agent, plugin, hook or
+    MCP file under the operator's home is then reached through `HOME` or `~`
+    by the binary or by any descendant that inherits its environment. The
+    system `/etc/zsh*` files still run, and a command that names an absolute
+    path is not covered.
 
     apex-ayl.22 D-7 is preserved: the case env.provider_vars_unset extends the
-    runner L1 set and wins even over an allowlisted name (a subset
-    declaration is rejected at the NEW-case gate)."""
+    runner L1 set and still removes every looked-up allowlisted name (a subset
+    declaration is rejected at the NEW-case gate). Only the three runner-pinned
+    names — `GROK_HOME`, `GROK_AUTH_EXPIRED` and `HOME` — are exempt, because
+    `build_env` writes them after both loops."""
     unset = set(PROVIDER_VARS_UNSET)
     if extra_unset:
         unset.update(extra_unset)
@@ -1392,6 +1513,11 @@ def build_env(home: str, extra_unset=None,
     # kiloecho P0 class 1 (defense-in-depth): never hand the binary a
     # relative GROK_HOME.
     env["GROK_HOME"] = os.path.abspath(home)
+    # apex-h2u2 A-1' (r2 §4.1): the child's user home is the per-attempt
+    # scratch, never the runner's HOME. Written after both lookup loops, so a
+    # case env.provider_vars_unset naming HOME cannot remove it (I-8), and the
+    # credential half of the allowlist is untouched (I-1).
+    env["HOME"] = hermetic_user_home(home)
     return env
 
 
@@ -4728,6 +4854,15 @@ def _run_case_once(case, args, budget, run_dir, attempt, route_out=None):
         home = HermeticHome(run_dir, args.live_home,
                             case.get("config_patch", {}), port,
                             keep=args.keep_home)
+        # apex-h2u2 M-3' (r2 §4.1/§4.4, OD-2 (a) fail-closed): a policy that
+        # drops or overrides HOME undoes the scratch-home pin inside every
+        # tool command, so the case is decided before anything runs.
+        policy_cause = hermetic_shell_policy_cause(home.route_cfg)
+        if policy_cause:
+            mark("BLOCKED", policy_cause)
+            return _finish(case, run_dir, ctx, results, status,
+                           started, None, home, args, budget,
+                           attempt=attempt)
         # REDTEAM-REFRESH T2 (r3 §4.2.1, r3b B1): the case's routes are
         # decided before anything runs. Only a case the wiretap fronts has a
         # map — the L1 key-free path starts no wiretap (and reaches no
