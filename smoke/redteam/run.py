@@ -244,6 +244,75 @@ def resolve_route_credentials(route_map, env=None, declared=None):
     return values, causes
 
 
+def resolve_signin_credentials(route_map, row_routes, env=None):
+    """(values, source, causes): the sign-in key the binary's gate accepts
+    without a live probe (apex-sk8i, spec r2 §2.2).
+
+    S1 (RR-32 F-4): for each reachable route, a row it carries whose `env_key`
+    is that route's own `credential_variable` or a `SWEEP_EXCLUDED_NAMES` name
+    hands that `env_key` when `env` holds a non-empty value for it. A row
+    whose header variable won its route and whose `env_key` is a real key
+    contributes nothing; the wiretap never presents that key. `source` is
+    "route-row" when S1 set `values`.
+
+    S2, only when S1 set nothing on a non-empty map: the first variable, in
+    config order, that some row declares as its `env_key`, that is in
+    `SWEEP_EXCLUDED_NAMES` (a candidate) and that `env` holds a non-empty
+    value for; `source` is "declared-placeholder".
+
+    S3 (RR-33 D-8 (a)): `values` still empty and either a reachable route has
+    no `credential_variable` (it resolves through the fallback chain) or a
+    candidate is declared -> one `credential-unset: ... (sign-in)` cause and
+    `source` None. A route set with no chain route in a config declaring no
+    candidate gets no cause (RR-33's carve-out: the binary refuses it
+    deterministically, without a probe). An empty or absent map returns
+    ({}, None, []).
+
+    As in resolve_route_credentials, nothing derived from a value is printed,
+    logged, hashed or returned except the value itself in `values`."""
+    env = os.environ if env is None else env
+    rows = {r.get("row_name"): r for r in row_routes or ()
+            if isinstance(r, dict)}
+    values = {}
+    for wire_id in sorted(route_map or {}):
+        route = route_map[wire_id]
+        if not isinstance(route, dict):
+            continue
+        for name in route.get("row_names") or ():
+            key = (rows.get(name) or {}).get("env_key")
+            if not (isinstance(key, str) and key):
+                continue
+            if key != route.get("credential_variable") \
+                    and key not in SWEEP_EXCLUDED_NAMES:
+                continue
+            if env.get(key):
+                values[key] = env[key]
+    if values or not route_map:
+        return values, ("route-row" if values else None), []
+    candidates = []
+    for row in row_routes or ():
+        key = row.get("env_key") if isinstance(row, dict) else None
+        if isinstance(key, str) and key in SWEEP_EXCLUDED_NAMES \
+                and key not in candidates:
+            candidates.append(key)
+    for key in candidates:
+        if env.get(key):
+            values[key] = env[key]
+            return values, "declared-placeholder", []
+    chain_route = any(
+        isinstance(route, dict)
+        and not (isinstance(route.get("credential_variable"), str)
+                 and route.get("credential_variable"))
+        for route in route_map.values())
+    if not (chain_route or candidates):
+        return {}, None, []
+    causes = ["credential-unset: %s (sign-in)" % "|".join(candidates)
+              if candidates else
+              "credential-unset: sign-in (no row declares a sweep-excluded "
+              "env_key)"]
+    return {}, None, causes
+
+
 def write_credential_block(run_dir, causes, wire_ids):
     """Records §4.3.3's `absent-and-reachable` cause where finalize_verdict's
     first rule already reads route causes, before the case runs any step: a
@@ -4687,7 +4756,23 @@ def _run_case_once(case, args, budget, run_dir, attempt, route_out=None):
                 return _finish(case, run_dir, ctx, results, status,
                                started, None, home, args, budget,
                                attempt=attempt)
-            case_credential_names = sorted(cred_values)
+            # apex-sk8i (spec r2 §2.2): the sign-in key joins the route
+            # credentials in the child only; route_out and the route map keep
+            # the routes' own credentials.
+            signin_values, signin_source, signin_causes = (
+                resolve_signin_credentials(route_map, home.row_routes()))
+            if signin_causes:
+                write_credential_block(run_dir, signin_causes,
+                                       sorted(route_map))
+                mark("BLOCKED", "; ".join(signin_causes))
+                return _finish(case, run_dir, ctx, results, status,
+                               started, None, home, args, budget,
+                               attempt=attempt)
+            case_credential_names = sorted(set(cred_values)
+                                           | set(signin_values))
+            if signin_values:
+                log("  %s: sign-in credential %s (%s)"
+                    % (cid, ",".join(sorted(signin_values)), signin_source))
             if route_out is not None:
                 route_out["route_map"] = route_map
                 route_out["credential_values"] = cred_values
@@ -5720,8 +5805,13 @@ def unredacted_mcp_env_values(text):
 # §4.4.1) so no legitimate payload is mangled.
 JWT_SHAPE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
                        r"\.[A-Za-z0-9_-]{10,}")
-SK_SHAPE = re.compile(r"sk[_-][A-Za-z0-9_.\-]{16,}",
-                     re.IGNORECASE)
+# spec r2 §2.3 (apex-au7k): `sk` must follow a non-alphanumeric character or
+# a JSON escape (a backslash plus n, t or r) and must not continue a base64url
+# run (a `-` or `_` after a base64url character). Each lookbehind is
+# fixed-width, as `re` requires.
+SK_SHAPE = re.compile(r"(?:(?<![A-Za-z0-9])|(?<=\\[nrt]))"
+                      r"(?<![A-Za-z0-9_-][-_])sk[_-][A-Za-z0-9_.\-]{16,}",
+                      re.IGNORECASE)
 AUTH_SCHEME_BLOB = re.compile(
     r"(?:Bearer|Basic)\s+([A-Za-z0-9_\-+/]{40,}={0,2})")
 ERROR_FIELD_BLOB = re.compile(
@@ -5741,6 +5831,22 @@ def _sweep_hit(root, path, lineno, pattern, fragment):
                              sha256_12(fragment))
 
 
+def credential_suffixes(values):
+    """spec r2 §2.4 (apex-1s3b): the binary logs the last 12 characters of a
+    key as `key_suffix` (`api_key_probe.rs:20-25@8072d8ed`). Returns one
+    `(suffix, value)` pair per distinct suffix of a value longer than 12
+    characters, keeping the first owner; callers pass the scheme-stripped
+    swept values in LITERAL_SWEEP_NAMES order. A shorter value adds nothing,
+    because its full-value match covers it. The value is kept so a detail
+    digests the FULL value: a suffix's sha256_12 would be brute-forceable."""
+    pairs = []
+    for value in values:
+        suffix = value[-12:]
+        if len(value) > 12 and all(suffix != s for s, _v in pairs):
+            pairs.append((suffix, value))
+    return pairs
+
+
 def _sweep_texts(root, ambient_key, files=None, texts=None):
     """The shared §4.4.1 pass over (relpath, path, text) triples. Returns
     (hits, details)."""
@@ -5748,6 +5854,7 @@ def _sweep_texts(root, ambient_key, files=None, texts=None):
     details = []
     values = [strip_credential_scheme(v) for v in literal_sweep_values()]
     values = [v for v in values if v]
+    suffixes = credential_suffixes(values)
     for rel, path, text in texts:
         if ambient_key:
             for m in re.finditer(re.escape(ambient_key), text):
@@ -5761,6 +5868,20 @@ def _sweep_texts(root, ambient_key, files=None, texts=None):
                 details.append(_sweep_hit(root, path,
                                           _sweep_line(text, m.start()),
                                           "credential-literal", value))
+        # spec r2 §2.4: a suffix inside any full value's span belongs to that
+        # full-value leak, which the leg above has already counted.
+        if suffixes:
+            spans = [m.span() for value in values
+                     for m in re.finditer(re.escape(value), text)]
+            for suffix, full in suffixes:
+                for m in re.finditer(re.escape(suffix), text):
+                    if any(a <= m.start() and m.end() <= b
+                           for a, b in spans):
+                        continue
+                    hits += 1
+                    details.append(_sweep_hit(root, path,
+                                              _sweep_line(text, m.start()),
+                                              "credential-suffix", full))
         for pattern, rx, group in (("jwt-shape", JWT_SHAPE, 0),
                                    ("sk-shape", SK_SHAPE, 0),
                                    ("base64-blob-shape", AUTH_SCHEME_BLOB,
@@ -5834,6 +5955,34 @@ def literal_check(root: str, env=None):
     if not values:
         return 0, ["literal check: no declared credential value set "
                    "(skipped — nothing to match)"]
+    # spec r2 §2.4 (RR-32 F-1): the suffix grep runs first, through its own
+    # 0600 patterns file, so the full-value grep below stays the last
+    # GREP_RUNNER call; the two results merge after both greps.
+    suffixes = credential_suffixes(
+        [strip_credential_scheme(value) for value in values])
+    suffix_names, suffix_note = [], None
+    if suffixes:
+        sfd, spat = tempfile.mkstemp(prefix="rt-literal-suffix-",
+                                     suffix=".patterns",
+                                     dir=os.environ.get("TMPDIR") or None)
+        try:
+            os.fchmod(sfd, 0o600)
+            with os.fdopen(sfd, "w") as fh:
+                for suffix, _full in suffixes:
+                    fh.write(suffix + "\n")
+            sproc = GREP_RUNNER([GREP, "-rlF", "-f", spat, root],
+                                capture_output=True, text=True)
+        finally:
+            try:
+                os.unlink(spat)
+            except OSError:
+                pass
+        if sproc.returncode == 0:
+            suffix_names = [n for n in sproc.stdout.splitlines()
+                            if n.strip()]
+        elif sproc.returncode != 1:
+            suffix_note = ("literal check: suffix grep rc %d (check did not "
+                           "run)" % sproc.returncode)
     fd, pat = tempfile.mkstemp(prefix="rt-literal-", suffix=".patterns",
                                dir=os.environ.get("TMPDIR") or None)
     try:
@@ -5851,15 +6000,26 @@ def literal_check(root: str, env=None):
             os.unlink(pat)
         except OSError:
             pass
-    if proc.returncode == 1:
-        return 0, []
-    if proc.returncode != 0:
-        return 0, ["literal check: grep rc %d (check did not run)"
-                   % proc.returncode]
-    names = [n for n in proc.stdout.splitlines() if n.strip()]
-    digests = sorted(sha256_12(n) for n in names)
-    return len(names), ["literal check: %d file(s) match a credential value "
-                        "(names sha256_12 %s)" % (len(names), digests)]
+    details = []
+    names = []
+    if proc.returncode == 0:
+        names = [n for n in proc.stdout.splitlines() if n.strip()]
+    elif proc.returncode != 1:
+        details.append("literal check: grep rc %d (check did not run)"
+                       % proc.returncode)
+    if names:
+        digests = sorted(sha256_12(n) for n in names)
+        details.append("literal check: %d file(s) match a credential value "
+                       "(names sha256_12 %s)" % (len(names), digests))
+    only = [n for n in suffix_names if n not in names]
+    if only:
+        digests = sorted(sha256_12(n) for n in only)
+        details.append("literal check: %d file(s) match a credential suffix "
+                       "(last 12 chars) (names sha256_12 %s)"
+                       % (len(only), digests))
+    if suffix_note:
+        details.append(suffix_note)
+    return len(names) + len(only), details
 
 
 def run_verdict_code(bad=0, sweep_hits=0):

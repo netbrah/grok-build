@@ -4911,7 +4911,8 @@ def _write_fake_live_home(tmp, upstream, row_name=None,
 
 
 def _write_fake_binary(tmp, upstream, model="m-x", send_auth_env=None,
-                       prewarm_record=None, auth_literal=None):
+                       prewarm_record=None, auth_literal=None,
+                       ran_record=None):
     """A fake pager binary: reads the HERMETIC config's base_url,
     POSTs one turn request through it, exits 0 iff the upstream said
     200. (The hermetic base_url is the wiretap, which forwards to the
@@ -4927,7 +4928,10 @@ def _write_fake_binary(tmp, upstream, model="m-x", send_auth_env=None,
     (r3c seat-1 F3). `auth_literal` sends that exact string as the child's
     `authorization` header instead of reading a variable: T3 narrows the
     child environment to an allowlist (§4.3.4), so a test that needs the
-    CHILD to own a credential cannot plant one by name.
+    CHILD to own a credential cannot plant one by name. `ran_record`
+    (apex-sk8i, spec r2 §4 fixture extensions) makes the binary write one
+    fixed line to that path before it posts; only the file's existence is
+    read (it ran, or it never ran), never anything the binary saw.
     """
     b = os.path.join(tmp, "fake-grok")
     if auth_literal is not None:
@@ -4939,6 +4943,7 @@ def _write_fake_binary(tmp, upstream, model="m-x", send_auth_env=None,
             "python3 - \"$GROK_HOME/config.toml\" "
             "'@@MODEL@@' '@@AUTH@@' '@@PREC@@' '@@AUTHLIT@@' <<'PYEOF'\n"
             "import json, os, re, sys, urllib.request, urllib.error\n"
+            "@@RANREC@@"
             "cfg = open(sys.argv[1]).read()\n"
             "base = re.search(r'^base_url = \"([^\"]+)\"', cfg, re.M)\n"
             "if not base:\n"
@@ -4981,7 +4986,10 @@ def _write_fake_binary(tmp, upstream, model="m-x", send_auth_env=None,
             .replace("@@MODEL@@", model)
             .replace("@@AUTH@@", send_auth_env or "-")
             .replace("@@PREC@@", prewarm_record or "-")
-            .replace("@@AUTHLIT@@", auth_literal or "-"))
+            .replace("@@AUTHLIT@@", auth_literal or "-")
+            .replace("@@RANREC@@",
+                     "open(%s, 'w').write('ran\\n')\n" % json.dumps(ran_record)
+                     if ran_record is not None else ""))
     os.chmod(b, 0o755)
     return b
 
@@ -7999,7 +8007,9 @@ class T3AssertionHygieneTest(unittest.TestCase):
         "SweepOutputNoFragmentTest", "SweepExitStatusTest",
         "SliceEvidenceSecretsTest", "LiteralCheckSetTest", "RecheckRouteTest",
         "AuthErrorClassSplitTest", "T3AssertionHygieneTest",
-        "HermeticRoutingMapTest",
+        "HermeticRoutingMapTest", "SignInCredentialRouteRowTest",
+        "SignInCredentialFallbackTest", "SkShapeBoundaryTest",
+        "CredentialSuffixLegTest",
     )
 
     # --- the predicate, mirroring batch-3-T3/t3f_scan.py exactly ------------
@@ -8222,7 +8232,7 @@ class T3AssertionHygieneTest(unittest.TestCase):
         self.assertEqual(sorted(ranges), sorted(self.T3_CLASSES),
                          "the hygiene scan must cover every T3-owned class, "
                          "or it proves nothing")
-        self.assertEqual(len(self.T3_CLASSES), 14)
+        self.assertEqual(len(self.T3_CLASSES), 18)
 
     def test_no_t3_assertion_renders_a_credential_value(self):
         """RR-7 F-1 arm (c), kept as a test so the sweep cannot rot.
@@ -9870,3 +9880,1233 @@ class UpstreamTimerCouplingTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # End of T6.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# apex-sk8i / apex-au7k (spec r2 §2.2, §3, §4): the sign-in credential the
+# binary's gate accepts without a live probe. The child environment is read
+# at the launch boundary (RR-32 F-2), never through the fake binary's view.
+# ---------------------------------------------------------------------------
+
+
+def _spy_binary_launches(test, bin_path):
+    """The launch spy (spec r2 §4 fixture extensions, RR-32 F-2).
+
+    Replaces `subprocess.Popen`, the module attribute both binary launches
+    call (`run_headless_turn`, `AcpSession.start`), with a pass-through. For
+    each call whose argv[0] is `bin_path` it appends the argv, the sorted env
+    NAMES and the one non-credential constant GROK_AUTH_EXPIRED to the list
+    it returns, then delegates to the saved Popen; every other launch (the
+    wiretap's interpreter, anything `subprocess.run` starts) passes through
+    unrecorded. It never keeps the env dict or any value from it. Restored on
+    cleanup (the ReplayBase._patch precedent)."""
+    real = subprocess.Popen
+    launches = []
+
+    def spy(args, *a, **kw):
+        argv = list(args) if isinstance(args, (list, tuple)) else [args]
+        if argv and argv[0] == bin_path:
+            given = kw.get("env")
+            launches.append({
+                "argv": argv,
+                "env_names": sorted(given) if given is not None else None,
+                "grok_auth_expired": (given or {}).get("GROK_AUTH_EXPIRED")})
+        return real(args, *a, **kw)
+
+    subprocess.Popen = spy
+    test.addCleanup(setattr, subprocess, "Popen", real)
+    return launches
+
+
+def _binary_signin_gate(child_names, row_routes, probe_allows=False):
+    """A test-local MODEL of the binary's sign-in gate over NAMES (spec r2
+    §1.2 steps 1-6, read at 8072d8ed):
+
+      * has_byok: some loaded row's own credential resolves, i.e. its env_key
+        is in the child's names (acp_agent.rs:325-329 ranges over every loaded
+        model; config.rs:5948-5967 own_credential, :6283-6293; an
+        env_http_headers variable is not a rung);
+      * probes: no row key and a fallback-chain rung present
+        (api_key_probe.rs:27-37 should_probe; the rungs are
+        auth_method.rs:24-34's three names, run.XAI_CREDENTIAL_CHAIN);
+      * has_external_api_key: has_byok, or a chain rung the probe allows
+        (shell auth_method.rs:37-50).
+
+    `probe_allows` stands for the live probe's verdict, which no offline model
+    knows; False is the deterministic refusal T9 measured. A hand-built model:
+    it says nothing about the live path (Agents.md §8)."""
+    names = set(child_names or ())
+    has_byok = any(isinstance(r.get("env_key"), str) and r["env_key"]
+                   and r["env_key"] in names for r in row_routes or ())
+    chain = any(n in names for n in run.XAI_CREDENTIAL_CHAIN)
+    return {"has_byok": has_byok, "probes": (not has_byok) and chain,
+            "has_external_api_key": has_byok or (chain and bool(probe_allows))}
+
+
+class SignInCredentialRouteRowTest(unittest.TestCase):
+    """apex-sk8i SA-1 (spec r2 §4 SA-1; §2.2 S1 as narrowed by RR-32 F-4): a
+    reachable row's own env_key that is its route's credential_variable or a
+    SWEEP_EXCLUDED_NAMES name reaches the child, so on-prem-only and mixed
+    route sets hold a row key (BYOK) and sign in without a probe. RED on
+    c3812b21: the child holds only the route credentials (T9's deterministic
+    refusal and its probe race), and resolve_signin_credentials does not
+    exist."""
+
+    # One on-prem-shaped row (plan r3 §4.3.1: env_key is the placeholder and
+    # an env_http_headers variable authenticates); a test-only header variable
+    # stands in for the real one.
+    ONPREM_CFG = ('''base_url = "%(a)s/v1"
+models_base_url = "%(a)s/v1"
+[features]
+turn_summary = false
+
+[model."row-onprem"]
+model = "m-onprem"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+env_key = "GROK_DIRECT_PLACEHOLDER_KEY"
+
+[model."row-onprem".env_http_headers]
+Authorization = "WIRETAP_T2_KEY_HDR"
+''')
+
+    # The same row plus a row declaring neither credential: its route resolves
+    # through the fallback chain (T9's mixed route set).
+    MIXED_CFG = ONPREM_CFG + ('''
+[model."row-chain"]
+model = "m-chain"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+''')
+
+    ONPREM_STEPS = [{"op": "turn", "prompt": "ping"}]
+    MIXED_STEPS = [{"op": "turn", "prompt": "ping", "model": "row-chain"}]
+
+    def _plants(self):
+        """(NAME, value) for every synthetic value this file plants."""
+        return ([(k, _t2_env_plant(k)) for k in T2_TEST_ONLY_KEYS]
+                + [(k, _t3_env_plant(k)) for k in sorted(T3_SWEPT_PLANTS)])
+
+    def _credential_names(self, launch):
+        return sorted(set(launch["env_names"])
+                      - set(run.CHILD_ENV_NON_CREDENTIAL_ALLOWLIST))
+
+    def _run_e2e(self, cfg, steps):
+        """run_case end-to-end through the real wiretap and a recording
+        upstream; the fake binary marks that it ran and the launch spy records
+        each launch of it. Returns (row, launches, ran_marker, row_routes)."""
+        tmp = tempfile.mkdtemp(prefix="rt-sk8i-s1-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        srv, upstream = _start_recording_upstream()
+        self.addCleanup(srv.shutdown)
+        cfg_text = cfg % {"a": upstream}
+        live = _t2_write_cfg_home(tmp, cfg_text)
+        ran = os.path.join(tmp, "fake-grok.ran")
+        fake_bin = _write_fake_binary(tmp, upstream, model="m-onprem",
+                                      ran_record=ran)
+        launches = _spy_binary_launches(self, fake_bin)
+        args, _out = _t2_case_args(tmp, live, fake_bin)
+        case = {"id": "RT-SK8I-S1", "title": "sign-in row key",
+                "driver": "headless", "model": "row-onprem",
+                "steps": steps, "wirecap": True, "est_calls": 1,
+                "assert": {"exit": 0}}
+        row = run.run_case(case, args, run.Budget(args.budget))
+        return row, launches, ran, run.derive_row_routes(cfg_text, None)
+
+    def _home(self, tmp, label, cfg_text):
+        live = _t2_write_cfg_home(os.path.join(tmp, label), cfg_text)
+        return run.HermeticHome(os.path.join(tmp, label, "root"), live, {},
+                                None)
+
+    def test_onprem_route_set_child_env_holds_its_row_key(self):
+        """spec r2 §3 F-1, F-8: the on-prem-only child holds its row's own key
+        beside the route's header variable, so the gate reads BYOK and never
+        probes; nothing else credential-shaped rides in, and no plant reaches
+        argv."""
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=("GROK_DIRECT_PLACEHOLDER_KEY",))
+        _row, launches, ran, rows = self._run_e2e(self.ONPREM_CFG,
+                                                  self.ONPREM_STEPS)
+        self.assertTrue(os.path.exists(ran),
+                        "the fake binary must have run (no ran marker)")
+        self.assertEqual(len(launches), 1,
+                         "one launch of the binary is expected, got %d"
+                         % len(launches))
+        names = self._credential_names(launches[0])
+        gate = _binary_signin_gate(launches[0]["env_names"], rows)
+        self.assertEqual(
+            names, ["GROK_DIRECT_PLACEHOLDER_KEY", "WIRETAP_T2_KEY_HDR"],
+            "the child's credential names must be exactly the row's own key "
+            "and the route's header variable; gate model: has_byok=%s "
+            "probes=%s has_external_api_key=%s"
+            % (gate["has_byok"], gate["probes"],
+               gate["has_external_api_key"]))
+        self.assertTrue(gate["has_byok"], "the gate must read BYOK")
+        self.assertFalse(gate["probes"], "a row key means no probe")
+        self.assertTrue(gate["has_external_api_key"],
+                        "the gate must accept the child without a probe")
+        self.assertEqual(launches[0]["grok_auth_expired"], "1",
+                         "GROK_AUTH_EXPIRED is unchanged")
+        _t3_assert_absent(self, launches[0]["argv"], self._plants(),
+                          "the binary's argv")
+
+    def test_mixed_route_set_needs_no_probe(self):
+        """spec r2 §3 F-2, F-8, a test about chain resolution: the chain names
+        are planted from T3_SWEPT_PLANTS under the guard, so the first set
+        rung is run.XAI_CREDENTIAL_CHAIN[0]. The child holds the on-prem row's
+        key, so the gate never probes although a chain rung is present."""
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=tuple(run.XAI_CREDENTIAL_CHAIN)
+                            + ("GROK_DIRECT_PLACEHOLDER_KEY",))
+        _row, launches, ran, rows = self._run_e2e(self.MIXED_CFG,
+                                                  self.MIXED_STEPS)
+        self.assertTrue(os.path.exists(ran),
+                        "the fake binary must have run (no ran marker)")
+        self.assertEqual(len(launches), 1,
+                         "one launch of the binary is expected, got %d"
+                         % len(launches))
+        rung = run.XAI_CREDENTIAL_CHAIN[0]
+        names = self._credential_names(launches[0])
+        gate = _binary_signin_gate(launches[0]["env_names"], rows)
+        self.assertEqual(
+            names, sorted(["GROK_DIRECT_PLACEHOLDER_KEY", "WIRETAP_T2_KEY_HDR",
+                           rung]),
+            "the child's credential names must be exactly the header "
+            "variable, the first set chain rung and the on-prem row's own "
+            "key; gate model: has_byok=%s probes=%s has_external_api_key=%s"
+            % (gate["has_byok"], gate["probes"],
+               gate["has_external_api_key"]))
+        self.assertTrue(rung in names, "a chain rung is in the child")
+        self.assertFalse(gate["probes"],
+                         "no probe although a chain rung is present "
+                         "(api_key_probe.rs:36)")
+        self.assertTrue(gate["has_byok"], "the gate must read BYOK")
+        self.assertEqual(launches[0]["grok_auth_expired"], "1",
+                         "GROK_AUTH_EXPIRED is unchanged")
+        _t3_assert_absent(self, launches[0]["argv"], self._plants(),
+                          "the binary's argv")
+
+    def test_resolve_signin_credentials_s1_unit(self):
+        """S1 as a unit over three route sets, values compared by digest only:
+        (1) on-prem and (2) mixed hand the placeholder as the route row's key;
+        (3) T2_TWO_ORIGIN_CFG with row-x and row-tf hands WIRETAP_T2_KEY_X
+        only: row-tf's env_key WIRETAP_T2_KEY_B is neither its route's
+        credential_variable (the header variable wins) nor sweep-excluded
+        (RR-32 F-4). Leg (3)'s env holds values for both (RR-34 F-2 (b))."""
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=tuple(run.XAI_CREDENTIAL_CHAIN)
+                            + ("GROK_DIRECT_PLACEHOLDER_KEY",))
+        tmp = tempfile.mkdtemp(prefix="rt-sk8i-s1u-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        held = {"GROK_DIRECT_PLACEHOLDER_KEY":
+                _t3_env_plant("GROK_DIRECT_PLACEHOLDER_KEY"),
+                "WIRETAP_T2_KEY_HDR": _t2_env_plant("WIRETAP_T2_KEY_HDR"),
+                run.XAI_CREDENTIAL_CHAIN[0]:
+                _t3_env_plant(run.XAI_CREDENTIAL_CHAIN[0])}
+        legs = (
+            ("(1) on-prem", self.ONPREM_CFG, ["row-onprem"]),
+            ("(2) mixed", self.MIXED_CFG, ["row-onprem", "row-chain"]))
+        for label, cfg, selectors in legs:
+            home = self._home(tmp, label[1], cfg % {"a": "http://127.0.0.1:9"})
+            route_map, route_causes = home.route_map(selectors, [])
+            self.assertEqual(route_causes, [], "%s: the map resolves" % label)
+            values, source, causes = run.resolve_signin_credentials(
+                route_map, home.row_routes(), env=held)
+            self.assertEqual(sorted(values), ["GROK_DIRECT_PLACEHOLDER_KEY"],
+                             "%s: S1 hands the route row's own key" % label)
+            self.assertEqual((source, causes), ("route-row", []),
+                             "%s: source and causes" % label)
+            _t3_assert_value(self, values.get("GROK_DIRECT_PLACEHOLDER_KEY"),
+                             held["GROK_DIRECT_PLACEHOLDER_KEY"],
+                             "%s: the handed value is the planted one" % label)
+        home = self._home(tmp, "3", T2_TWO_ORIGIN_CFG % {
+            "a": "http://127.0.0.1:9", "b": "http://127.0.0.1:9"})
+        route_map, route_causes = home.route_map(["row-x", "row-tf"], [])
+        self.assertEqual(route_causes, [], "(3): the map resolves")
+        t2_held = {k: _t2_env_plant(k) for k in
+                   ("WIRETAP_T2_KEY_X", "WIRETAP_T2_KEY_B",
+                    "WIRETAP_T2_KEY_HDR")}
+        values, source, causes = run.resolve_signin_credentials(
+            route_map, home.row_routes(), env=t2_held)
+        self.assertEqual(sorted(values), ["WIRETAP_T2_KEY_X"],
+                         "(3): row-tf's env_key is not its route credential "
+                         "and not sweep-excluded, so it is not handed")
+        self.assertEqual((source, causes), ("route-row", []),
+                         "(3): source and causes")
+        _t3_assert_value(self, values.get("WIRETAP_T2_KEY_X"),
+                         t2_held["WIRETAP_T2_KEY_X"],
+                         "(3): the handed value is the planted one")
+
+    def test_no_route_and_key_free_paths_unchanged(self):
+        """spec r2 §3 F-7: an empty route map (no selector resolves) and no
+        map at all (the key-free path) hand nothing and block nothing, even
+        with a sweep-excluded key available; KeyFreeModeUnchangedTest is the
+        end-to-end twin."""
+        rows = run.derive_row_routes(
+            self.ONPREM_CFG % {"a": "http://127.0.0.1:9"}, None)
+        held = {"GROK_DIRECT_PLACEHOLDER_KEY":
+                _t3_env_plant("GROK_DIRECT_PLACEHOLDER_KEY")}
+        for label, route_map in (("empty map", {}),
+                                 ("no map (key-free)", None)):
+            result = run.resolve_signin_credentials(route_map, rows, env=held)
+            _t3_assert_value(self, result, ({}, None, []),
+                             "%s: ({}, None, []) expected" % label)
+
+    def test_route_map_and_recheck_credentials_unchanged(self):
+        """GUARD (green before and after; spec r2 §3 F-10): the sign-in rule
+        changes neither the routing authority nor the recheck's credential.
+        WIRETAP_ROUTE_MAP stays byte-equal to json.dumps(route_map,
+        sort_keys=True) of the case's own route map, and
+        route_out["credential_values"] holds exactly the route credentials."""
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=tuple(run.XAI_CREDENTIAL_CHAIN)
+                            + ("GROK_DIRECT_PLACEHOLDER_KEY",))
+        real = run.Wiretap
+        maps = []
+
+        class MapRecordingWiretap(real):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                maps.append(self.env.get("WIRETAP_ROUTE_MAP"))
+
+        run.Wiretap = MapRecordingWiretap
+        self.addCleanup(setattr, run, "Wiretap", real)
+        legs = (("on-prem", self.ONPREM_CFG, ["row-onprem"], self.ONPREM_STEPS),
+                ("mixed", self.MIXED_CFG, ["row-onprem", "row-chain"],
+                 self.MIXED_STEPS))
+        for label, cfg, selectors, steps in legs:
+            del maps[:]
+            tmp = tempfile.mkdtemp(prefix="rt-sk8i-guard-")
+            self.addCleanup(lambda t=tmp: shutil.rmtree(t, ignore_errors=True))
+            srv, upstream = _start_recording_upstream()
+            self.addCleanup(srv.shutdown)
+            live = _t2_write_cfg_home(tmp, cfg % {"a": upstream})
+            fake_bin = _write_fake_binary(tmp, upstream, model="m-onprem")
+            args, out = _t2_case_args(tmp, live, fake_bin)
+            case = {"id": "RT-SK8I-GUARD", "title": "routing unchanged",
+                    "driver": "headless", "model": "row-onprem",
+                    "steps": steps, "wirecap": True, "est_calls": 1,
+                    "assert": {"exit": 0}}
+            route_out = {}
+            run._run_case_once(case, args, run.Budget(args.budget),
+                               os.path.join(out, "rt-sk8i-guard"), 1,
+                               route_out)
+            expect_home = run.HermeticHome(os.path.join(tmp, "expect"), live,
+                                           {}, None)
+            expect_map, expect_causes = expect_home.route_map(selectors, [])
+            self.assertEqual(expect_causes, [], "%s: the map resolves" % label)
+            self.assertEqual(len(maps), 1,
+                             "%s: one wiretap is started, got %d"
+                             % (label, len(maps)))
+            self.assertEqual(maps[0], json.dumps(expect_map, sort_keys=True),
+                             "%s: WIRETAP_ROUTE_MAP is the case's own route "
+                             "map, byte for byte" % label)
+            self.assertEqual(route_out.get("route_map"), expect_map,
+                             "%s: route_out's route map is unchanged" % label)
+            expect_values, _expect_causes = run.resolve_route_credentials(
+                expect_map)
+            self.assertEqual(sorted(route_out["credential_values"]),
+                             sorted(expect_values),
+                             "%s: the recheck authenticates with the route "
+                             "credentials only (r3a A13)" % label)
+            self.assertNotIn("GROK_DIRECT_PLACEHOLDER_KEY",
+                             sorted(route_out["credential_values"]),
+                             "%s: no sign-in-only variable in route_out"
+                             % label)
+            _t3_assert_value(self, route_out["credential_values"],
+                             expect_values,
+                             "%s: route_out's credential values" % label)
+
+
+# The spec r2 §3 F-6 test-local constant (RR-32 F-5): T2_ORPHAN_CFG, unedited,
+# plus one row no case selects that declares the sweep-excluded placeholder as
+# its env_key, so S2 has a set candidate it must leave alone when S1 found a
+# row key.
+T2_ORPHAN_PLACEHOLDER_CFG = T2_ORPHAN_CFG + ('''
+[model."row-onprem"]
+model = "m-onprem"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+env_key = "GROK_DIRECT_PLACEHOLDER_KEY"
+''')
+
+
+class SignInCredentialFallbackTest(unittest.TestCase):
+    """apex-sk8i SA-2 (spec r2 §4 SA-2; §2.2 S2, S3 with RR-33 D-8 (a)'s
+    trigger, and the names-only sign-in log line). When no reachable row hands
+    its own key, the child gets the first set SWEEP_EXCLUDED_NAMES variable
+    some row declares as its env_key (S2); a route set left without one BLOCKS
+    before its first step with a named credential-unset cause (S3), except
+    RR-33's carve-out (no chain route and no declared candidate). RED on SA-1
+    GREEN: a chain-only child holds no row key so the probe decides, nothing
+    BLOCKS, and no sign-in line is logged."""
+
+    # A chain row (neither credential), an unreachable on-prem-shaped row (the
+    # placeholder env_key plus a header variable) and an unreachable
+    # proxy-shaped row whose env_key is a test-only stand-in for a real key.
+    CHAIN_CFG = ('''base_url = "%(a)s/v1"
+models_base_url = "%(a)s/v1"
+[features]
+turn_summary = false
+
+[model."row-chain"]
+model = "m-chain"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+
+[model."row-onprem"]
+model = "m-onprem"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+env_key = "GROK_DIRECT_PLACEHOLDER_KEY"
+
+[model."row-onprem".env_http_headers]
+Authorization = "WIRETAP_T2_KEY_HDR"
+
+[model."row-proxy"]
+model = "m-proxy"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+env_key = "WIRETAP_T2_KEY_B"
+''')
+
+    # Chain rows only: no row declares any env_key (spec r2 §3 F-5).
+    CHAIN_ONLY_CFG = ('''base_url = "%(a)s/v1"
+models_base_url = "%(a)s/v1"
+[features]
+turn_summary = false
+
+[model."row-chain"]
+model = "m-chain"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+
+[model."row-chain-b"]
+model = "m-chain-b"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+''')
+
+    # Two sweep-excluded env_key rows in a fixed config order, neither
+    # reachable from row-chain (spec r2 §3 F-9). The test-only name is first
+    # in the config and second in the extended SWEEP_EXCLUDED_NAMES, so the
+    # pick can only follow the config.
+    ORDER_CFG = ('''base_url = "%(a)s/v1"
+models_base_url = "%(a)s/v1"
+[features]
+turn_summary = false
+
+[model."row-chain"]
+model = "m-chain"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+
+[model."row-first"]
+model = "m-first"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+env_key = "WIRETAP_T2_KEY_AMB"
+
+[model."row-second"]
+model = "m-second"
+base_url = "%(a)s/v1"
+api_backend = "responses"
+env_key = "GROK_DIRECT_PLACEHOLDER_KEY"
+''')
+
+    CHAIN_STEPS = [{"op": "turn", "prompt": "ping"}]
+    CHAIN_NAMES = tuple(run.XAI_CREDENTIAL_CHAIN) + (
+        "GROK_DIRECT_PLACEHOLDER_KEY",)
+
+    def _plants(self):
+        """(NAME, value) for every synthetic value this class plants."""
+        return ([(k, _t2_env_plant(k)) for k in T2_TEST_ONLY_KEYS]
+                + [(k, _t3_env_plant(k)) for k in sorted(T3_SWEPT_PLANTS)]
+                + [(k, _t2_env_plant(k))
+                   for k in ChildEnvAllowlistTest.PLANTED])
+
+    def _plant_undeclared(self):
+        """ChildEnvAllowlistTest.PLANTED's ten names, which no row declares and
+        the allowlist does not hold, set to that class's own synthetic
+        spelling (_t2_env_plant's) and restored on cleanup (spec r2 §3 F-8)."""
+        saved = {k: os.environ.get(k) for k in ChildEnvAllowlistTest.PLANTED}
+        for k in ChildEnvAllowlistTest.PLANTED:
+            os.environ[k] = _t2_env_plant(k)
+
+        def restore():
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(restore)
+
+    def _credential_names(self, launch):
+        return sorted(set(launch["env_names"])
+                      - set(run.CHILD_ENV_NON_CREDENTIAL_ALLOWLIST))
+
+    def _home(self, tmp, label, cfg_text):
+        live = _t2_write_cfg_home(os.path.join(tmp, label), cfg_text)
+        return run.HermeticHome(os.path.join(tmp, label, "root"), live, {},
+                                None)
+
+    def _run_e2e(self, cfg, selector, wire_model, steps, asserts=None,
+                 route_out=None):
+        """One case end-to-end through the real wiretap and a recording
+        upstream: run_case, or _run_case_once when the test reads route_out.
+        The fake binary marks that it ran and the launch spy records each
+        launch of it. Returns the row, the launches, the ran-marker path, the
+        config's row routes, the POST count, the live home and the tmp dir."""
+        tmp = tempfile.mkdtemp(prefix="rt-sk8i-s2-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        srv, upstream = _start_recording_upstream()
+        self.addCleanup(srv.shutdown)
+        cfg_text = cfg % {"a": upstream}
+        live = _t2_write_cfg_home(tmp, cfg_text)
+        ran = os.path.join(tmp, "fake-grok.ran")
+        fake_bin = _write_fake_binary(tmp, upstream, model=wire_model,
+                                      ran_record=ran)
+        launches = _spy_binary_launches(self, fake_bin)
+        args, out = _t2_case_args(tmp, live, fake_bin)
+        case = {"id": "RT-SK8I-S2", "title": "sign-in fallback",
+                "driver": "headless", "model": selector, "steps": steps,
+                "wirecap": True, "est_calls": 1,
+                "assert": {"exit": 0} if asserts is None else asserts}
+        if route_out is None:
+            row = run.run_case(case, args, run.Budget(args.budget))
+        else:
+            row = run._run_case_once(case, args, run.Budget(args.budget),
+                                     os.path.join(out, "rt-sk8i-s2"), 1,
+                                     route_out)
+        with srv.lock:
+            post_count = sum(1 for r in srv.requests if r["method"] == "POST")
+        return {"row": row, "launches": launches, "ran": ran,
+                "rows": run.derive_row_routes(cfg_text, None),
+                "post_count": post_count, "live": live, "tmp": tmp}
+
+    def test_chain_only_route_set_child_env_holds_the_placeholder(self):
+        """spec r2 §3 F-3, F-8, F-10; a test about chain resolution, so the
+        chain names are planted from T3_SWEPT_PLANTS under the guard and the
+        first set rung is run.XAI_CREDENTIAL_CHAIN[0]. A case reaching only the
+        chain row gets S2's declared placeholder beside its rung, so the gate
+        reads BYOK and never probes. The unreachable rows' variables and
+        ChildEnvAllowlistTest.PLANTED's ten names stay out, no plant reaches
+        argv, and WIRETAP_ROUTE_MAP is the case's own route map."""
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=self.CHAIN_NAMES)
+        self._plant_undeclared()
+        real = run.Wiretap
+        maps = []
+
+        class MapRecordingWiretap(real):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                maps.append(self.env.get("WIRETAP_ROUTE_MAP"))
+
+        run.Wiretap = MapRecordingWiretap
+        self.addCleanup(setattr, run, "Wiretap", real)
+        res = self._run_e2e(self.CHAIN_CFG, "row-chain", "m-chain",
+                            self.CHAIN_STEPS)
+        launches = res["launches"]
+        self.assertTrue(os.path.exists(res["ran"]),
+                        "the fake binary must have run (no ran marker)")
+        self.assertEqual(len(launches), 1,
+                         "one launch of the binary is expected, got %d"
+                         % len(launches))
+        rung = run.XAI_CREDENTIAL_CHAIN[0]
+        names = self._credential_names(launches[0])
+        gate = _binary_signin_gate(launches[0]["env_names"], res["rows"])
+        self.assertEqual(
+            names, sorted([rung, "GROK_DIRECT_PLACEHOLDER_KEY"]),
+            "the chain-only child's credential names must be exactly the "
+            "first set chain rung and the declared placeholder; gate model: "
+            "has_byok=%s probes=%s has_external_api_key=%s"
+            % (gate["has_byok"], gate["probes"],
+               gate["has_external_api_key"]))
+        for name in (("WIRETAP_T2_KEY_B", "WIRETAP_T2_KEY_HDR")
+                     + tuple(ChildEnvAllowlistTest.PLANTED)):
+            self.assertNotIn(name, launches[0]["env_names"],
+                             "%s must not reach the child" % name)
+        self.assertTrue(gate["has_byok"], "the gate must read BYOK")
+        self.assertFalse(gate["probes"],
+                         "a row key means no probe, although a chain rung "
+                         "is present (api_key_probe.rs:36)")
+        self.assertTrue(gate["has_external_api_key"],
+                        "the gate must accept the child without a probe")
+        self.assertEqual(launches[0]["grok_auth_expired"], "1",
+                         "GROK_AUTH_EXPIRED is unchanged")
+        _t3_assert_absent(self, launches[0]["argv"], self._plants(),
+                          "the binary's argv")
+        expect_home = run.HermeticHome(os.path.join(res["tmp"], "expect"),
+                                       res["live"], {}, None)
+        expect_map, expect_causes = expect_home.route_map(["row-chain"], [])
+        self.assertEqual(expect_causes, [], "the map resolves")
+        self.assertEqual(len(maps), 1,
+                         "one wiretap is started, got %d" % len(maps))
+        self.assertEqual(maps[0], json.dumps(expect_map, sort_keys=True),
+                         "WIRETAP_ROUTE_MAP is the case's own route map, "
+                         "byte for byte (spec r2 §3 F-10)")
+
+    def test_placeholder_unset_blocks_before_the_first_step(self):
+        """spec r2 §3 F-4 (chain resolution): the placeholder is declared but
+        unset, so S2 has a candidate and no value and S3 BLOCKS the case before
+        its first step with that name; nothing is forwarded and the binary
+        never runs."""
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=tuple(run.XAI_CREDENTIAL_CHAIN))
+        _t3_env_unset(self, "GROK_DIRECT_PLACEHOLDER_KEY")
+        res = self._run_e2e(self.CHAIN_CFG, "row-chain", "m-chain",
+                            self.CHAIN_STEPS)
+        row = res["row"]
+        self.assertEqual(row["status"], "BLOCKED",
+                         "a chain-only case whose declared placeholder is "
+                         "unset must BLOCK before its first step")
+        self.assertEqual(row.get("blocked_reason"),
+                         "credential-unset: GROK_DIRECT_PLACEHOLDER_KEY "
+                         "(sign-in)")
+        self.assertEqual(res["post_count"], 0,
+                         "nothing may be forwarded on a BLOCKED sign-in")
+        self.assertFalse(os.path.exists(res["ran"]),
+                         "the fake binary must never run (ran marker exists)")
+        self.assertEqual(len(res["launches"]), 0,
+                         "the launch spy must record no launch, got %d"
+                         % len(res["launches"]))
+
+    def test_no_declared_placeholder_blocks_with_the_named_cause(self):
+        """spec r2 §3 F-5 (chain resolution): no row declares a sweep-excluded
+        env_key, so S2 has no candidate even with the placeholder set in the
+        runner's environment, and the chain route makes S3 fire with the
+        no-declaration cause; nothing is forwarded."""
+        _t3_swept_env_guard(self, names=self.CHAIN_NAMES)
+        res = self._run_e2e(self.CHAIN_ONLY_CFG, "row-chain", "m-chain",
+                            self.CHAIN_STEPS)
+        row = res["row"]
+        self.assertEqual(row["status"], "BLOCKED",
+                         "a chain-only case in a config declaring no "
+                         "sweep-excluded env_key must BLOCK")
+        self.assertEqual(row.get("blocked_reason"),
+                         "credential-unset: sign-in (no row declares a "
+                         "sweep-excluded env_key)")
+        self.assertEqual(res["post_count"], 0,
+                         "nothing may be forwarded on a BLOCKED sign-in")
+
+    def test_fallback_choice_follows_config_order(self):
+        """spec r2 §3 F-9 and RR-34 F-1's leg; values are compared by digest
+        only. SWEEP_EXCLUDED_NAMES is extended (restored on cleanup) by a
+        test-only name ORDER_CFG declares before the placeholder. Over a map
+        reaching only the chain row, S2 hands the first candidate in config
+        order on every call; with both unset, S3 names both, '|'-joined, in
+        config order. RR-34 F-1: over SA-1's on-prem fixture, whose one route
+        carries a credential_variable (no chain route), the declared candidate
+        alone triggers S3 when the placeholder is unset."""
+        tmp = tempfile.mkdtemp(prefix="rt-sk8i-s2u-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        saved = run.SWEEP_EXCLUDED_NAMES
+        self.addCleanup(setattr, run, "SWEEP_EXCLUDED_NAMES", saved)
+        run.SWEEP_EXCLUDED_NAMES = saved + ("WIRETAP_T2_KEY_AMB",)
+        home = self._home(tmp, "order",
+                          self.ORDER_CFG % {"a": "http://127.0.0.1:9"})
+        route_map, route_causes = home.route_map(["row-chain"], [])
+        self.assertEqual(route_causes, [], "the order map resolves")
+        self.assertEqual(sorted(route_map), ["m-chain"],
+                         "the order map reaches only the chain row")
+        held = {"WIRETAP_T2_KEY_AMB": _t2_env_plant("WIRETAP_T2_KEY_AMB"),
+                "GROK_DIRECT_PLACEHOLDER_KEY":
+                _t3_env_plant("GROK_DIRECT_PLACEHOLDER_KEY")}
+        for call in range(3):
+            values, source, causes = run.resolve_signin_credentials(
+                route_map, home.row_routes(), env=held)
+            self.assertEqual(sorted(values), ["WIRETAP_T2_KEY_AMB"],
+                             "call %d: S2 hands the first candidate in "
+                             "config order" % call)
+            _t3_assert_value(self, values.get("WIRETAP_T2_KEY_AMB"),
+                             held["WIRETAP_T2_KEY_AMB"],
+                             "call %d: the handed value is the planted one"
+                             % call)
+            self.assertEqual((source, causes), ("declared-placeholder", []),
+                             "call %d: source and causes" % call)
+        for call in range(3):
+            result = run.resolve_signin_credentials(
+                route_map, home.row_routes(), env={})
+            self.assertEqual(
+                result,
+                ({}, None, ["credential-unset: WIRETAP_T2_KEY_AMB"
+                            "|GROK_DIRECT_PLACEHOLDER_KEY (sign-in)"]),
+                "call %d: with both unset, S3 names both candidates in "
+                "config order" % call)
+        run.SWEEP_EXCLUDED_NAMES = saved
+        onprem = self._home(tmp, "onprem",
+                            SignInCredentialRouteRowTest.ONPREM_CFG
+                            % {"a": "http://127.0.0.1:9"})
+        route_map, route_causes = onprem.route_map(["row-onprem"], [])
+        self.assertEqual(route_causes, [], "the on-prem map resolves")
+        self.assertTrue(route_map and all(
+            r.get("credential_variable") for r in route_map.values()),
+            "every reachable on-prem route carries a credential_variable")
+        result = run.resolve_signin_credentials(
+            route_map, onprem.row_routes(), env={})
+        self.assertEqual(
+            result,
+            ({}, None, ["credential-unset: GROK_DIRECT_PLACEHOLDER_KEY "
+                        "(sign-in)"]),
+            "RR-34 F-1: no chain route, the placeholder declared and unset: "
+            "the candidates disjunct alone triggers S3")
+
+    def test_proxy_row_case_child_env_unchanged(self):
+        """GUARD (green before and after; spec r2 §3 F-6, RR-32 F-5, RR-34 F-2
+        (c)). A case reaching T2_ORPHAN_CFG's row-x, whose env_key is its own
+        route credential, in a config that also declares the placeholder on an
+        unreachable row, with only the placeholder planted by the swept guard
+        and _t2_env_guard supplying row-x's test-only key so the case
+        launches. S1 finds row-x's key, so S2 adds nothing: the child's
+        credential names are exactly the route credentials."""
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=("GROK_DIRECT_PLACEHOLDER_KEY",))
+        res = self._run_e2e(T2_ORPHAN_PLACEHOLDER_CFG, "row-x", "m-x",
+                            self.CHAIN_STEPS)
+        launches = res["launches"]
+        self.assertTrue(os.path.exists(res["ran"]),
+                        "the fake binary must have run (no ran marker)")
+        self.assertEqual(len(launches), 1,
+                         "one launch of the binary is expected, got %d"
+                         % len(launches))
+        expect_home = run.HermeticHome(os.path.join(res["tmp"], "expect"),
+                                       res["live"], {}, None)
+        expect_map, expect_causes = expect_home.route_map(["row-x"], [])
+        self.assertEqual(expect_causes, [], "the map resolves")
+        self.assertEqual(
+            self._credential_names(launches[0]),
+            sorted(run.resolve_route_credentials(expect_map)[0]),
+            "the child's credential names must be exactly the route "
+            "credentials")
+        self.assertNotIn("GROK_DIRECT_PLACEHOLDER_KEY",
+                         launches[0]["env_names"],
+                         "S2 must not add the placeholder when S1 found a "
+                         "row key")
+        _t3_assert_absent(self, launches[0]["argv"], self._plants(),
+                          "the binary's argv")
+
+    def test_signin_log_line_carries_names_only(self):
+        """spec r2 §3 F-11 and F-10 (RR-32 F-9, RR-34 F-2 (a)); its S2 case is
+        about chain resolution. run.log is captured over three end-to-end
+        cases. SA-1's on-prem fixture (S1) logs exactly one sign-in line,
+        naming the placeholder and ending (route-row); this class's chain-only
+        fixture (S2) logs exactly one, naming the placeholder and ending
+        (declared-placeholder); both keep route_out's credentials the routes'
+        own. A case whose explicit selector resolves to no row, with no steps
+        (GOLDEN-SMOKE-01's shape), passes the sign-in call site with an empty
+        map and logs none. No plant value occurs in any captured line."""
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=self.CHAIN_NAMES)
+        logged = []
+        real_log = run.log
+        run.log = logged.append
+        self.addCleanup(setattr, run, "log", real_log)
+        legs = (("S1", SignInCredentialRouteRowTest.ONPREM_CFG, "row-onprem",
+                 "m-onprem", SignInCredentialRouteRowTest.ONPREM_STEPS,
+                 "(route-row)"),
+                ("S2", self.CHAIN_CFG, "row-chain", "m-chain",
+                 self.CHAIN_STEPS, "(declared-placeholder)"))
+        for label, cfg, selector, wire_model, steps, ending in legs:
+            del logged[:]
+            route_out = {}
+            self._run_e2e(cfg, selector, wire_model, steps,
+                          route_out=route_out)
+            _t3_assert_absent(self, logged, self._plants(),
+                              "%s: the captured log lines" % label)
+            signin = [m for m in logged if "sign-in credential" in m]
+            self.assertEqual(len(signin), 1,
+                             "%s: exactly one sign-in credential line is "
+                             "expected, got %d" % (label, len(signin)))
+            self.assertIn("GROK_DIRECT_PLACEHOLDER_KEY", signin[0],
+                          "%s: the line names the handed variable" % label)
+            self.assertTrue(signin[0].endswith(ending),
+                            "%s: the line ends %s" % (label, ending))
+            self.assertNotIn("GROK_DIRECT_PLACEHOLDER_KEY",
+                             sorted(route_out.get("credential_values") or {}),
+                             "%s: route_out keeps the route credentials only"
+                             % label)
+        del logged[:]
+        route_out = {}
+        self._run_e2e(self.CHAIN_CFG, "row-unknown", "m-chain", [],
+                      asserts={}, route_out=route_out)
+        _t3_assert_absent(self, logged, self._plants(),
+                          "{}: the captured log lines")
+        self.assertEqual(route_out.get("route_map"), {},
+                         "{}: the explicit selector resolves to no row and "
+                         "the case passed the sign-in call site")
+        signin = [m for m in logged if "sign-in credential" in m]
+        self.assertEqual(len(signin), 0,
+                         "{}: no sign-in credential line is expected, got %d"
+                         % len(signin))
+
+    def test_blocked_signin_cause_reads_as_harness_auth_failure(self):
+        """spec r2 §3 F-4's row read through the existing R-12 triage (chain
+        resolution): the sign-in cause starts with credential-unset and the
+        case captured no request, so _triage_block's auth_class is
+        harness-auth-failure. This item does not edit the triage; the test
+        proves it need not."""
+        _t2_env_guard(self)
+        _t3_swept_env_guard(self, names=tuple(run.XAI_CREDENTIAL_CHAIN))
+        _t3_env_unset(self, "GROK_DIRECT_PLACEHOLDER_KEY")
+        res = self._run_e2e(self.CHAIN_CFG, "row-chain", "m-chain",
+                            self.CHAIN_STEPS)
+        row = res["row"]
+        triage = row.get("triage") or {}
+        self.assertEqual(triage.get("auth_class"), run.AUTH_CLASS_LOCAL,
+                         "the blocked sign-in row must read as a harness auth "
+                         "failure; row status %s, triage block %s"
+                         % (row["status"],
+                            "present" if row.get("triage") else "absent"))
+        self.assertTrue((row.get("blocked_reason") or "").endswith(
+            "(sign-in)"), "the BLOCK is the sign-in cause")
+
+
+class SkShapeBoundaryTest(unittest.TestCase):
+    """apex-au7k SA-3 (spec r2 §4 SA-3; §2.3 (B) as RR-32 F-6 words it).
+    `SK_SHAPE` holds three conditions in one pattern: the candidate `sk`
+    follows a non-alphanumeric character (the house left boundary) or a JSON
+    escape (a backslash plus n, t or r), and it does not continue a base64url
+    run (a `-` or `_` right before it, itself preceded by a base64url
+    character). RED on SA-2 GREEN, where `SK_SHAPE` is as at 7622c21a with no
+    left boundary: identifier substrings and base64url runs each draw one
+    `sk-shape` detail, and a key glued after a dropped run is digested
+    together with the run's tail. The three GUARDs pin what the pattern must
+    keep: the true-positive forms, a key after a JSON escape and the
+    fragment-free detail. Every key-shaped literal is a concatenation, every
+    declared value is unset, and the assertions count details by pattern name
+    and print counts, labels and digests only."""
+
+    # 20 base64url characters with no `sk` in any case: the tail the synthetic
+    # keys and runs below share.
+    TAIL = "Q1w2E3r4T5y6U7i8O9p0"
+    # A ciphertext-like base64url run (Fernet-style prefix), with no `sk` in
+    # any case and no JWT prefix; it ends in a letter.
+    RUN = "gAAAAABpQx7Rm2Vt9LwZ" + "0aHc4UeJ1nYb8DfG3iKo" + "5TqW6pXz"
+    # spec r2 §3 F-12: a real tool name, a disk identifier and an upper-case
+    # constant, each carrying `sk_` plus 16+ word characters inside a word.
+    IDENTIFIERS = (("tool-name", "get_task_or_subagent_output"),
+                   ("disk-identifier", "disk_free_kib_before_after_check"),
+                   ("upper-case-constant", "TASK_RESULT_DIRECTORY_FOR_AGENT"))
+    # §3 F-13: the embedded `sk` glued after a letter of the run.
+    ALNUM_PRECEDED = RUN + "sk" + "-" + TAIL + "Ab9Cd8Ef7"
+    # §3 F-14: the embedded `sk` after `b_` or `b-`, which the boundary alone
+    # accepts and only the base64url lookbehind rejects.
+    CONTINUATIONS = (
+        ("underscore-then-dash", RUN + "b_" + "sk" + "-" + TAIL + "Ab9Cd8Ef7"),
+        ("dash-then-underscore", RUN + "b-" + "sk" + "_" + TAIL + "Ab9Cd8Ef7"))
+    # §3 F-25: a run ending in a dropped candidate, a `.`, then a standalone
+    # key at the end of the line.
+    STANDALONE_KEY = "sk" + "-" + "Zx8Cv7Bn6Mm5Ll4Kj3Hh2"
+    DROPPED_RUN_THEN_KEY = (RUN + "b_" + "sk" + "-" + TAIL + "."
+                            + STANDALONE_KEY)
+    # §3 F-15: (label, key, line template) per true-positive context.
+    TRUE_POSITIVES = (
+        ("after-bearer", "sk" + "-" + "bearerform" + TAIL,
+         "Authorization: Bearer %s"),
+        ("inside-json-quotes", "sk" + "_" + "jsonquoted" + TAIL,
+         '{"value": "%s"}'),
+        ("after-equals", "sk" + "-" + "assignment" + TAIL, "LOCAL_VALUE=%s"),
+        ("line-start", "sk" + "_" + "linestart" + TAIL, "%s trailing words"),
+        ("upper-case-after-space", "SK" + "-" + "UPPERCASEFORM" + TAIL.upper(),
+         "header value %s"),
+        ("lone-dash-after-space", "sk" + "-" + "afteraflag" + TAIL,
+         "flag -%s"))
+    # §3 F-24: (label, raw separator, the JSON escape json.dumps writes for
+    # it, key).
+    ESCAPED = (
+        ("newline", "\n", "\\n", "sk" + "-" + "newlineform" + TAIL),
+        ("tab", "\t", "\\t", "sk" + "_" + "tabbedform" + TAIL),
+        ("carriage-return", "\r", "\\r", "sk" + "-" + "returnform" + TAIL))
+
+    def _sweep_files(self, *texts):
+        """One one-line file per text in a fresh run dir, swept the way main()
+        sweeps a run dir. Returns (hits, details)."""
+        root = tempfile.mkdtemp(prefix="rt-sk8i-skshape-")
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        for i, text in enumerate(texts):
+            with open(os.path.join(root, "resp-%03d.jsonl" % i), "w") as fh:
+                fh.write(text + "\n")
+        return run.redaction_sweep(root, "")
+
+    @staticmethod
+    def _pattern_name(detail):
+        """The `<pattern>` field of `path:line: <pattern> <sha256_12>`."""
+        return detail.split(": ", 1)[1].split()[0]
+
+    def _sk_shape_digests(self, *texts):
+        """The `<sha256_12>` field of every `sk-shape` detail of a sweep."""
+        _hits, found = self._sweep_files(*texts)
+        return [x.split()[-1] for x in found
+                if self._pattern_name(x) == "sk-shape"]
+
+    def test_identifier_substrings_do_not_hit(self):
+        """§3 F-12, one file per fixture. RED on SA-2 GREEN: one `sk-shape`
+        detail per file."""
+        _t3_swept_env_guard(self, unset=tuple(T3_SWEPT_PLANTS))
+        counts = {}
+        for label, text in self.IDENTIFIERS:
+            counts[label] = len(self._sk_shape_digests(text))
+        self.assertEqual(counts, {label: 0 for label, _t in self.IDENTIFIERS},
+                         "sk-shape details per one-line identifier file: an "
+                         "identifier substring is never a key")
+
+    def test_base64url_alnum_preceded_sk_does_not_hit(self):
+        """§3 F-13. RED on SA-2 GREEN: one `sk-shape` detail."""
+        _t3_swept_env_guard(self, unset=tuple(T3_SWEPT_PLANTS))
+        self.assertEqual(len(self._sk_shape_digests(self.ALNUM_PRECEDED)), 0,
+                         "a base64url run with a letter before its embedded "
+                         "sk draws no sk-shape detail")
+
+    def test_base64url_run_continuation_does_not_hit(self):
+        """§3 F-14, the `_` and the `-` variants, one file each. The boundary
+        alone accepts both; only the base64url lookbehind rejects them
+        (counterfactual (ii)). RED on SA-2 GREEN: one `sk-shape` detail each.
+        Asserted on `sk-shape` only: the `key-heuristic` count the underscore
+        variant draws is written down by the unit record, not asserted."""
+        _t3_swept_env_guard(self, unset=tuple(T3_SWEPT_PLANTS))
+        counts = {}
+        for label, text in self.CONTINUATIONS:
+            counts[label] = len(self._sk_shape_digests(text))
+        self.assertEqual(counts,
+                         {label: 0 for label, _t in self.CONTINUATIONS},
+                         "sk-shape details per base64url continuation file")
+
+    def test_key_after_a_dropped_run_still_hits(self):
+        """§3 F-25 (RR-32 F-6). The run's own candidate is dropped, and the
+        standalone key after the `.` still hits once, digested alone. RED on
+        SA-2 GREEN: one detail whose digest covers the whole span from the
+        dropped candidate's `sk` (the greedy tail runs through the key); a
+        post-filter design gives zero (counterfactual (iv))."""
+        _t3_swept_env_guard(self, unset=tuple(T3_SWEPT_PLANTS))
+        digests = self._sk_shape_digests(self.DROPPED_RUN_THEN_KEY)
+        self.assertEqual(len(digests), 1,
+                         "exactly one sk-shape detail is expected, got %d"
+                         % len(digests))
+        self.assertEqual(digests[0], run.sha256_12(self.STANDALONE_KEY),
+                         "the detail's digest must be the standalone key's "
+                         "sha256_12 alone")
+
+    def test_real_key_forms_still_hit_once(self):
+        """GUARD, §3 F-15: one file per true-positive context, exactly one
+        `sk-shape` detail each, counted by pattern name (a dash form may add a
+        `key-heuristic` detail). Green before and after."""
+        _t3_swept_env_guard(self, unset=tuple(T3_SWEPT_PLANTS))
+        counts = {}
+        for label, key, template in self.TRUE_POSITIVES:
+            counts[label] = len(self._sk_shape_digests(template % key))
+        self.assertEqual(counts,
+                         {label: 1 for label, _k, _t in self.TRUE_POSITIVES},
+                         "sk-shape details per true-positive file")
+
+    def test_key_after_a_json_escape_still_hits(self):
+        """GUARD, §3 F-24 (RR-32 F-6): files written with json.dumps, whose
+        string value puts a line break, a tab or a carriage return before a
+        key shape, hold the escape itself (a backslash plus n, t or r); exactly
+        one `sk-shape` detail per file. Green before and after; red under the
+        boundary without the escape alternative (counterfactual (iii))."""
+        _t3_swept_env_guard(self, unset=tuple(T3_SWEPT_PLANTS))
+        counts = {}
+        for label, raw, escape, key in self.ESCAPED:
+            text = json.dumps({"text": "field one" + raw + key})
+            self.assertTrue(escape in text,
+                            "%s: the file must hold the JSON escape" % label)
+            counts[label] = len(self._sk_shape_digests(text))
+        self.assertEqual(counts,
+                         {label: 1 for label, _r, _e, _k in self.ESCAPED},
+                         "sk-shape details per JSON-escape file")
+
+    def test_details_never_quote_a_fragment(self):
+        """GUARD, §3 F-16: over §3 F-15's plants every detail is
+        `path:line: <pattern> <sha256_12>`, and no plant, nor its first or
+        last 12 characters, appears in any detail. Green before and after."""
+        _t3_swept_env_guard(self, unset=tuple(T3_SWEPT_PLANTS))
+        _hits, found = self._sweep_files(
+            *[template % key for _l, key, template in self.TRUE_POSITIVES])
+        sk_count = sum(1 for x in found
+                       if self._pattern_name(x) == "sk-shape")
+        self.assertEqual(sk_count, len(self.TRUE_POSITIVES),
+                         "one sk-shape detail per plant is expected, got %d"
+                         % sk_count)
+        for x in found:
+            _t3_assert_detail_shape(self, x, "SA-3 sweep detail")
+        needles = []
+        for label, key, _template in self.TRUE_POSITIVES:
+            needles += [(label, key), (label + " first-12", key[:12]),
+                        (label + " last-12", key[-12:])]
+        _t3_assert_absent(self, "\n".join(found), needles,
+                          "the SA-3 sweep details")
+
+
+class CredentialSuffixLegTest(unittest.TestCase):
+    """apex-1s3b's redteam half, SA-4 (spec r2 §4 SA-4; §2.4 (C) as RR-32 F-1
+    words it). The binary logs the last 12 characters of a key as
+    `key_suffix` (`api_key_probe.rs:20-25@8072d8ed`), which neither the
+    full-value sweep nor the full-value literal check can see. RED on SA-3
+    GREEN, where both match whole values only. The three GUARDs pin what must
+    not move: no double count inside a full value, no placeholder pattern and
+    the ambient-key leg. Chain plants are set only where spec r2's SA-4 cells
+    name them (the `XAI_API_KEY` plant, and the suffix the
+    `APEX_LLM_PROXY_KEY`, `CODEX_LLM_PROXY_KEY` and `GROK_CODE_XAI_API_KEY`
+    plants share); the two GUARDs that need no chain value unset every chain
+    name. Assertions print counts, labels and digests only."""
+
+    # The probe's line as the binary writes it: `LogEntry`'s fields in
+    # serialization order (`unified_log.rs:62-84@8072d8ed`), then the probe's
+    # ctx (`api_key_probe.rs:176-188`), compact JSON. Only `key_suffix` varies.
+    PROBE_ENTRY = {"ts": "2026-11-01T02:57:18.123Z", "src": "shell",
+                   "pid": 4242, "ver": "1.0.24", "lvl": "info",
+                   "msg": "auth: first-party API key probe"}
+    PROBE_CTX = {"verdict": "Unknown", "allows_advertise": True,
+                 "elapsed_ms": 411, "timeout_ms": 400, "attempts": 1}
+
+    def _probe_home(self, key_suffix):
+        """A run dir whose only file is one case home's
+        `home/logs/unified.jsonl`, holding the probe line. Returns
+        (root, path)."""
+        root = tempfile.mkdtemp(prefix="rt-sk8i-suffix-")
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        logs = os.path.join(root, "case-01", "home", "logs")
+        os.makedirs(logs)
+        entry = dict(self.PROBE_ENTRY,
+                     ctx=dict(self.PROBE_CTX, key_suffix=key_suffix))
+        path = os.path.join(logs, "unified.jsonl")
+        with open(path, "w") as fh:
+            fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
+        return root, path
+
+    def _dir_with(self, *texts):
+        """One one-line `resp-NNN.jsonl` file per text in a fresh run dir.
+        Returns (root, paths)."""
+        root = tempfile.mkdtemp(prefix="rt-sk8i-suffix-")
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        paths = []
+        for i, text in enumerate(texts):
+            path = os.path.join(root, "resp-%03d.jsonl" % i)
+            with open(path, "w") as fh:
+                fh.write(text + "\n")
+            paths.append(path)
+        return root, paths
+
+    @staticmethod
+    def _pattern_name(detail):
+        """The `<pattern>` field of `path:line: <pattern> <sha256_12>`."""
+        return detail.split(": ", 1)[1].split()[0]
+
+    def _digests(self, found, pattern):
+        """The `<sha256_12>` field of every `pattern` detail of a sweep."""
+        return [x.split()[-1] for x in found
+                if self._pattern_name(x) == pattern]
+
+    def test_suffix_only_occurrence_hits_the_sweep(self):
+        """§3 F-17: the probe line carries only the last 12 characters of the
+        `XAI_API_KEY` plant, a suffix no other plant contains. RED on SA-3
+        GREEN: zero hits."""
+        _t3_swept_env_guard(self)
+        key = _t3_env_plant("XAI_API_KEY")
+        root, _path = self._probe_home(key[-12:])
+        hits, found = run.redaction_sweep(root, "")
+        digests = self._digests(found, "credential-suffix")
+        self.assertEqual((hits, len(digests)), (1, 1),
+                         "exactly one hit, a credential-suffix detail, is "
+                         "expected; got %d hit(s), %d credential-suffix"
+                         % (hits, len(digests)))
+        self.assertEqual(digests[0], run.sha256_12(key),
+                         "the detail digests the FULL value, never the "
+                         "suffix")
+        for x in found:
+            _t3_assert_detail_shape(self, x, "SA-4 sweep detail")
+        _t3_assert_absent(self, "\n".join(found),
+                          [("XAI_API_KEY", key),
+                           ("XAI_API_KEY last-12", key[-12:])],
+                          "the suffix-leg sweep details")
+
+    def test_literal_check_reports_suffix_files_through_a_file(self):
+        """§3 F-17 through `literal_check` (RR-32 F-1). A list-accumulating
+        spy on `run.GREP_RUNNER` records every call's argv and, for a call
+        carrying `-f`, the patterns file's text and mode (read before grep
+        runs, while the file exists) and grep's exit status. The suffix call
+        is the one whose file holds the plant's last 12 characters but not
+        the plant. RED on SA-3 GREEN: `(0, [])` from a single, full-value
+        grep call; no suffix call exists."""
+        _t3_swept_env_guard(self)
+        key = _t3_env_plant("XAI_API_KEY")
+        root, path = self._probe_home(key[-12:])
+        calls = []
+        real = run.GREP_RUNNER
+
+        def spy(argv, *a, **kw):
+            call = {"argv": list(argv)}
+            if "-f" in argv:
+                live = argv[argv.index("-f") + 1]
+                with open(live) as fh:      # grep has not run yet, so the
+                    call["patterns"] = fh.read()   # file still exists
+                call["mode"] = os.stat(live).st_mode & 0o777
+            calls.append(call)
+            proc = real(argv, *a, **kw)
+            call["exit_code"] = proc.returncode
+            return proc
+        run.GREP_RUNNER = spy
+        self.addCleanup(lambda: setattr(run, "GREP_RUNNER", real))
+        hits, details = run.literal_check(root)
+        suffix_idx = [i for i, c in enumerate(calls)
+                      if key[-12:] in c.get("patterns", "")
+                      and key not in c.get("patterns", "")]
+        full_idx = [i for i, c in enumerate(calls)
+                    if key in c.get("patterns", "")]
+        self.assertEqual(len(suffix_idx), 1,
+                         "exactly one suffix grep call is expected; %d grep "
+                         "call(s) recorded, %d of them suffix calls, and "
+                         "literal_check returned %d hit(s) with %d "
+                         "detail(s)" % (len(calls), len(suffix_idx), hits,
+                                        len(details)))
+        self.assertEqual(len(full_idx), 1,
+                         "exactly one full-value grep call is expected; got "
+                         "%d" % len(full_idx))
+        self.assertEqual(calls[suffix_idx[0]]["mode"], 0o600,
+                         "the suffix patterns file is private (0600)")
+        self.assertLess(suffix_idx[0], full_idx[0],
+                        "the suffix grep runs before the full-value grep")
+        self.assertEqual(full_idx[0], len(calls) - 1,
+                         "the full-value grep is the last GREP_RUNNER call")
+        self.assertEqual(calls[full_idx[0]]["exit_code"], 1,
+                         "this dir holds no full value, so the full-value "
+                         "grep exits 1 (the early-return path)")
+        _t3_assert_value(
+            self, (hits, details),
+            (1, ["literal check: 1 file(s) match a credential suffix (last "
+                 "12 chars) (names sha256_12 %s)" % [run.sha256_12(path)]]),
+            "one suffix file is reported although the full-value grep "
+            "exits 1")
+        needles = [("XAI_API_KEY", key), ("XAI_API_KEY last-12", key[-12:])]
+        for call in calls:
+            self.assertFalse("-e" in call["argv"],
+                             "no pattern may be an argv element: %s"
+                             % (_t3_argv_audit(call["argv"]),))
+            for elem in call["argv"]:
+                _t3_assert_absent(self, elem, needles,
+                                  "a credential value or suffix must never "
+                                  "be argv-visible (HYG-1)")
+        self.assertTrue("-f" in calls[suffix_idx[0]]["argv"],
+                        "the suffix patterns come from a file: %s"
+                        % (_t3_argv_audit(calls[suffix_idx[0]]["argv"]),))
+
+    def test_shared_suffix_counts_once(self):
+        """§3 F-20. The `APEX_LLM_PROXY_KEY`, `CODEX_LLM_PROXY_KEY` and
+        `GROK_CODE_XAI_API_KEY` plants share one 12-character suffix: one
+        occurrence is one detail, digested from the first owner in
+        `LITERAL_SWEEP_NAMES` order. A value of 12 characters or fewer adds
+        no suffix pattern. RED on SA-3 GREEN: zero hits."""
+        _t3_swept_env_guard(self)
+        owners = ("APEX_LLM_PROXY_KEY", "CODEX_LLM_PROXY_KEY",
+                  "GROK_CODE_XAI_API_KEY")
+        tails = {n: _t3_env_plant(n)[-12:] for n in owners}
+        self.assertEqual(len(set(tails.values())), 1,
+                         "the three plants must share one suffix")
+        root, _path = self._probe_home(tails["APEX_LLM_PROXY_KEY"])
+        hits, found = run.redaction_sweep(root, "")
+        digests = self._digests(found, "credential-suffix")
+        self.assertEqual(len(digests), 1,
+                         "one occurrence of a shared suffix is one "
+                         "credential-suffix detail; got %d (of %d hit(s))"
+                         % (len(digests), hits))
+        self.assertEqual(digests[0],
+                         run.sha256_12(_t3_env_plant("APEX_LLM_PROXY_KEY")),
+                         "the detail is attributed to the first owner in "
+                         "LITERAL_SWEEP_NAMES order")
+        short = "short" + "plant" + "12"
+        self.assertEqual(len(short), 12, "the boundary: 12 characters")
+        values = [short if n == "CODEX_TRUE_FOUNDRY_KEY" else _t3_env_plant(n)
+                  for n in run.LITERAL_SWEEP_NAMES]
+        self.assertEqual(
+            [run.sha256_12(v) for _s, v in run.credential_suffixes(values)],
+            [run.sha256_12(_t3_env_plant(n)) for n in
+             ("APEX_LLM_PROXY_KEY", "GROK_DIRECT_ONPREM_AUTH", "XAI_API_KEY")],
+            "one suffix pattern per distinct suffix, first owner kept; the "
+            "12-character value under CODEX_TRUE_FOUNDRY_KEY adds none")
+
+    def test_suffix_leak_sets_the_exit_status(self):
+        """§3 F-22: a run dir whose only finding is §3 F-17's line fails the
+        run and the persisted verdict records the hit. RED on SA-3 GREEN:
+        hits 0, code 0."""
+        _t3_swept_env_guard(self)
+        key = _t3_env_plant("XAI_API_KEY")
+        root, _path = self._probe_home(key[-12:])
+        hits, _found = run.redaction_sweep(root, "")
+        code = run.run_verdict_code(bad=0, sweep_hits=hits)
+        self.assertEqual(code, 1,
+                         "a run whose only finding is a key suffix may not "
+                         "exit 0; hits=%d" % hits)
+        run.persist_run_verdict(
+            root, [{"status": "PASS", "id": "C0", "run_dir": None}],
+            sweep_hits=hits, code=code)
+        with open(os.path.join(root, "run-verdict.json")) as fh:
+            doc = json.load(fh)
+        self.assertGreater(doc["sweep_hits"], 0,
+                           "the persisted verdict records the suffix hit")
+        self.assertEqual(doc["exit_code"], 1)
+
+    def test_full_value_is_not_double_counted(self):
+        """GUARD, §3 F-18: a file holding the whole `XAI_API_KEY` plant, which
+        also contains the suffix three other plants share, so an occurrence
+        inside a full value's span is exercised. One `credential-literal`
+        detail and no `credential-suffix` detail; `literal_check` counts the
+        file once. Green before and after."""
+        _t3_swept_env_guard(self)
+        key = _t3_env_plant("XAI_API_KEY")
+        self.assertTrue(_t3_env_plant("APEX_LLM_PROXY_KEY")[-12:] in key,
+                        "the plant must contain the shared suffix, or the "
+                        "any-full-value-span rule goes unexercised")
+        root, paths = self._dir_with('{"frame": "%s"}' % key)
+        _hits, found = run.redaction_sweep(root, "")
+        counts = {p: len(self._digests(found, p))
+                  for p in ("credential-literal", "credential-suffix")}
+        self.assertEqual(counts, {"credential-literal": 1,
+                                  "credential-suffix": 0},
+                         "details per pattern for one full-value leak")
+        _t3_assert_value(
+            self, run.literal_check(root),
+            (1, ["literal check: 1 file(s) match a credential value (names "
+                 "sha256_12 %s)" % [run.sha256_12(paths[0])]]),
+            "literal_check counts the file once")
+
+    def test_placeholder_suffix_is_never_a_pattern(self):
+        """GUARD, §3 F-19 (R2-4): a file holding only the last 12 characters
+        of the placeholder plant gives `(0, [])` from the sweep and from
+        `literal_check`. The chain names are unset; the other swept names hold
+        their plants, so `literal_check` runs both greps. Green before and
+        after."""
+        _t3_swept_env_guard(self, unset=tuple(run.XAI_CREDENTIAL_CHAIN))
+        root, _paths = self._dir_with(
+            _t3_env_plant("GROK_DIRECT_PLACEHOLDER_KEY")[-12:])
+        _t3_assert_value(self, run.redaction_sweep(root, ""), (0, []),
+                         "the sweep: the placeholder's suffix is never a "
+                         "pattern")
+        _t3_assert_value(self, run.literal_check(root), (0, []),
+                         "literal_check: the placeholder's suffix is never "
+                         "a pattern")
+
+    def test_ambient_key_leg_unchanged(self):
+        """GUARD, §3 F-21: swept with `ambient_key=` the plant `main` reads as
+        the ambient key (`CODEX_LLM_PROXY_KEY`'s), a file holding the whole
+        plant draws exactly one `ambient-key` detail and a file holding only
+        its last 12 characters draws none. Only that name is set. Green
+        before and after."""
+        _t3_swept_env_guard(self, unset=tuple(
+            n for n in T3_SWEPT_PLANTS if n != "CODEX_LLM_PROXY_KEY"))
+        ambient = _t3_env_plant("CODEX_LLM_PROXY_KEY")
+        root, _paths = self._dir_with('{"frame": "%s"}' % ambient,
+                                      '{"frame": "%s"}' % ambient[-12:])
+        _hits, found = run.redaction_sweep(root, ambient)
+        labels = {"resp-000.jsonl": "whole", "resp-001.jsonl": "last-12"}
+        counts = {"whole": 0, "last-12": 0}
+        digests = []
+        for x in found:
+            if self._pattern_name(x) == "ambient-key":
+                counts[labels[x.split(":", 1)[0]]] += 1
+                digests.append(x.split()[-1])
+        self.assertEqual(counts, {"whole": 1, "last-12": 0},
+                         "ambient-key details per file")
+        self.assertEqual(digests, [run.sha256_12(ambient)],
+                         "the ambient-key detail digests the whole ambient "
+                         "value")
