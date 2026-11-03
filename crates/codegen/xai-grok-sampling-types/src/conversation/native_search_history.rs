@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const NATIVE_SCHEMA_VERSION: u32 = 2;
+pub const NATIVE_SCHEMA_VERSION: u32 = 3;
 pub const NATIVE_POLICY_REVISION: u32 = 1;
-pub const NATIVE_READER_FLOOR: u32 = 2;
-pub const NATIVE_LIMITS_REVISION: u32 = 1;
+pub const NATIVE_READER_FLOOR: u32 = 3;
+pub const NATIVE_LIMITS_REVISION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NativeUnavailable {
@@ -147,6 +147,36 @@ pub struct NativeSource {
     pub ordered_blocks: Vec<NativeRawBlock>,
     pub eligible_snapshots: Vec<NativeBlobRef>,
     pub older_sources: Vec<NativeBlobRef>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct NativeSourceV3(NativeSourceV2);
+
+impl std::fmt::Debug for NativeSourceV3 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeSourceV3").finish_non_exhaustive()
+    }
+}
+
+impl<'de> Deserialize<'de> for NativeSourceV3 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let source = NativeSourceV2::deserialize(deserializer)?;
+        if source.schema_version != 3 {
+            return Err(serde::de::Error::custom("invalid native source-v3 profile"));
+        }
+        Ok(Self(source))
+    }
+}
+
+impl NativeSourceV3 {
+    pub fn from_parts(source: NativeSource, links: Vec<NativeEligibleMemberLink>) -> Self {
+        Self(NativeSourceV2::from_parts(source, links))
+    }
+
+    pub fn into_parts(self) -> (NativeSource, Vec<NativeEligibleMemberLink>) {
+        self.0.into_parts()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,6 +324,71 @@ pub struct NativeLedger {
     pub usage: Vec<NativeResponseAccounting>,
     pub observations: Vec<NativeObservation>,
     pub transitions: Vec<Value>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeLedgerV3 {
+    pub source_digest: String,
+    pub active_digest: String,
+    pub groups: Vec<NativeGroupRecord>,
+    pub lifecycle: NativeLifecycle,
+    pub accounting: Vec<NativeViewLink>,
+    pub usage: Vec<NativeResponseAccounting>,
+    pub observations: Vec<NativeObservation>,
+    pub transitions: Vec<Value>,
+    pub eligible_member_accounting: Vec<NativeEligibleMemberAccounting>,
+    pub messages_response_metadata: Vec<NativeMessagesResponseMetadata>,
+}
+
+impl std::fmt::Debug for NativeLedgerV3 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeLedgerV3").finish_non_exhaustive()
+    }
+}
+
+impl NativeLedgerV3 {
+    pub fn from_parts(
+        ledger: NativeLedger,
+        accounting: Vec<NativeEligibleMemberAccounting>,
+        metadata: Vec<NativeMessagesResponseMetadata>,
+    ) -> Self {
+        Self {
+            source_digest: ledger.source_digest,
+            active_digest: ledger.active_digest,
+            groups: ledger.groups,
+            lifecycle: ledger.lifecycle,
+            accounting: ledger.accounting,
+            usage: ledger.usage,
+            observations: ledger.observations,
+            transitions: ledger.transitions,
+            eligible_member_accounting: accounting,
+            messages_response_metadata: metadata,
+        }
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        NativeLedger,
+        Vec<NativeEligibleMemberAccounting>,
+        Vec<NativeMessagesResponseMetadata>,
+    ) {
+        (
+            NativeLedger {
+                source_digest: self.source_digest,
+                active_digest: self.active_digest,
+                groups: self.groups,
+                lifecycle: self.lifecycle,
+                accounting: self.accounting,
+                usage: self.usage,
+                observations: self.observations,
+                transitions: self.transitions,
+            },
+            self.eligible_member_accounting,
+            self.messages_response_metadata,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -811,6 +906,8 @@ pub(super) fn native_validate_waiting_clients(
 
 // Contract r2 section 3, limits_revision 1. These are encoded-byte limits, not RSS limits.
 pub const NATIVE_BLOCK_BYTES: u64 = 512 * 1024;
+
+pub const NATIVE_MESSAGES_METADATA_OBSERVATIONS: u64 = 100_000;
 pub const NATIVE_RESPONSE_BYTES: u64 = 1024 * 1024;
 pub const NATIVE_RESPONSE_BLOCKS: u64 = 128;
 pub const NATIVE_GROUP_BYTES: u64 = 2 * 1024 * 1024;
@@ -1063,6 +1160,7 @@ pub struct NativeAttemptEvidence {
     pub status: NativeResponseStatus,
     pub blocks: Vec<NativeCapturedBlock>,
     pub usage: BTreeMap<String, Value>,
+    pub messages_metadata: NativeMessagesCapture,
     pub latency_ms: Option<u64>,
     pub http_dispatches: u64,
     pub observed_bytes: u64,
@@ -1452,6 +1550,702 @@ pub struct NativeEligibleSnapshot {
     pub child_name: String,
     pub schema: NativeBlobRef,
     pub binding: NativeBlobRef,
+}
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum NativeMessagesPresence {
+    #[default]
+    Missing,
+    Null,
+    Value(Value),
+}
+
+impl std::fmt::Debug for NativeMessagesPresence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => f.write_str("Missing"),
+            Self::Null => f.write_str("Null"),
+            Self::Value(_) => f.write_str("Value(<redacted>)"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NativeMessagesObservationKind {
+    MessageStart,
+    MessageDelta,
+    NonStream,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeMessagesObservation {
+    pub ordinal: u64,
+    pub kind: NativeMessagesObservationKind,
+    pub terminal: bool,
+    pub usage: NativeMessagesPresence,
+    pub stop_reason: NativeMessagesPresence,
+    pub stop_sequence: NativeMessagesPresence,
+    pub stop_details: NativeMessagesPresence,
+}
+
+fn native_required_nullable<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(deserializer)
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeMessagesFinalized {
+    pub usage: NativeMessagesPresence,
+    pub stop_reason: NativeMessagesPresence,
+    pub stop_sequence: NativeMessagesPresence,
+    pub stop_details: NativeMessagesPresence,
+    #[serde(deserialize_with = "native_required_nullable")]
+    pub terminal_observation: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum NativeMessagesCoverage {
+    Complete,
+    Partial { reason: NativeUnavailable },
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum NativeMessagesCapture {
+    Observed {
+        observations: Vec<NativeMessagesObservation>,
+        finalized: Box<NativeMessagesFinalized>,
+        coverage: NativeMessagesCoverage,
+    },
+    LegacyUnrecorded {
+        source_schema: u32,
+    },
+    CompatibilityUnrecorded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeMessagesResponseKey {
+    pub request: String,
+    pub lease: u64,
+    pub attempt: u64,
+    #[serde(deserialize_with = "native_required_nullable")]
+    pub response_occurrence: Option<u64>,
+    pub continuation: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeMessagesResponseMetadata {
+    pub key: NativeMessagesResponseKey,
+    pub capture: NativeMessagesCapture,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum NativeMessagesMetadataState {
+    LegacyUnrecorded,
+    Revision3 {
+        messages_response_metadata: Vec<NativeMessagesResponseMetadata>,
+    },
+}
+
+macro_rules! native_messages_redacted_debug {
+    ($($ty:ty),+ $(,)?) => {$(
+        impl std::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($ty)).finish_non_exhaustive()
+            }
+        }
+    )+};
+}
+native_messages_redacted_debug!(
+    NativeMessagesObservation,
+    NativeMessagesFinalized,
+    NativeMessagesCapture,
+    NativeMessagesResponseMetadata,
+    NativeMessagesMetadataState
+);
+
+impl NativeMessagesPresence {
+    pub fn from_member(value: Option<&Value>) -> Self {
+        match value {
+            None => Self::Missing,
+            Some(Value::Null) => Self::Null,
+            Some(value) => Self::Value(value.clone()),
+        }
+    }
+
+    pub fn value(&self) -> Option<&Value> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Missing | Self::Null => None,
+        }
+    }
+
+    fn validate(&self) -> Result<(), NativeUnavailable> {
+        if matches!(self, Self::Value(Value::Null)) {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        Ok(())
+    }
+}
+
+fn native_messages_stop_envelope(kind: NativeMessagesObservationKind, envelope: &Value) -> &Value {
+    if kind == NativeMessagesObservationKind::MessageDelta {
+        envelope.get("delta").unwrap_or(envelope)
+    } else {
+        envelope
+    }
+}
+
+impl NativeMessagesObservation {
+    pub fn from_envelope(
+        ordinal: u64,
+        kind: NativeMessagesObservationKind,
+        envelope: &Value,
+    ) -> Self {
+        let stops = native_messages_stop_envelope(kind, envelope);
+        let stop_reason = NativeMessagesPresence::from_member(stops.get("stop_reason"));
+        Self {
+            ordinal,
+            kind,
+            terminal: stop_reason.value().is_some_and(Value::is_string),
+            usage: NativeMessagesPresence::from_member(envelope.get("usage")),
+            stop_reason,
+            stop_sequence: NativeMessagesPresence::from_member(stops.get("stop_sequence")),
+            stop_details: NativeMessagesPresence::from_member(stops.get("stop_details")),
+        }
+    }
+}
+
+impl NativeMessagesFinalized {
+    pub fn validate_usage(value: &Value) -> Result<(), NativeUnavailable> {
+        let object = value
+            .as_object()
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        for key in [
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ] {
+            if let Some(value) = object.get(key)
+                && !value.is_null()
+                && value.as_u64().is_none()
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+        }
+        for (key, fields) in [
+            (
+                "server_tool_use",
+                &["web_search_requests", "web_fetch_requests"][..],
+            ),
+            ("output_tokens_details", &["thinking_tokens"][..]),
+            (
+                "cache_creation",
+                &["ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"][..],
+            ),
+        ] {
+            if let Some(value) = object.get(key).filter(|value| !value.is_null()) {
+                let nested = value
+                    .as_object()
+                    .ok_or(NativeUnavailable::InvalidReference)?;
+                for field in fields {
+                    if let Some(value) = nested.get(*field)
+                        && !value.is_null()
+                        && value.as_u64().is_none()
+                    {
+                        return Err(NativeUnavailable::InvalidReference);
+                    }
+                }
+            }
+        }
+        if let Some(iterations) = object.get("iterations").filter(|value| !value.is_null())
+            && !iterations
+                .as_array()
+                .is_some_and(|rows| rows.iter().all(Value::is_object))
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        if let Some(speed) = object.get("speed").filter(|value| !value.is_null())
+            && !speed.is_string()
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        if let Some(credit) = object
+            .get("fallback_credit")
+            .filter(|value| !value.is_null())
+            && !credit.is_object()
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        Ok(())
+    }
+
+    pub fn merge_usage(
+        previous: &mut serde_json::Map<String, Value>,
+        incoming: &serde_json::Map<String, Value>,
+        kind: NativeMessagesObservationKind,
+    ) {
+        if kind != NativeMessagesObservationKind::MessageDelta {
+            previous.clone_from(incoming);
+            return;
+        }
+        for (key, value) in incoming {
+            if value.is_null()
+                || matches!(
+                    key.as_str(),
+                    "cache_creation" | "service_tier" | "inference_geo"
+                )
+            {
+                continue;
+            }
+            if matches!(key.as_str(), "server_tool_use" | "output_tokens_details")
+                && let Some(old) = previous.get_mut(key).and_then(Value::as_object_mut)
+                && let Some(new) = value.as_object()
+            {
+                for (field, value) in new {
+                    if !value.is_null() {
+                        old.insert(field.clone(), value.clone());
+                    }
+                }
+            } else {
+                previous.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    pub fn apply(
+        &mut self,
+        observation: &NativeMessagesObservation,
+    ) -> Result<(), NativeUnavailable> {
+        if let NativeMessagesPresence::Value(value) = &observation.usage {
+            Self::validate_usage(value)?;
+            let incoming = value
+                .as_object()
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            if let NativeMessagesPresence::Value(current) = &mut self.usage {
+                Self::merge_usage(
+                    current
+                        .as_object_mut()
+                        .ok_or(NativeUnavailable::InvalidReference)?,
+                    incoming,
+                    observation.kind,
+                );
+            } else {
+                self.usage = NativeMessagesPresence::Value(value.clone());
+            }
+        }
+        if observation.kind != NativeMessagesObservationKind::MessageDelta || observation.terminal {
+            self.stop_reason = observation.stop_reason.clone();
+            self.stop_sequence = observation.stop_sequence.clone();
+            self.stop_details = observation.stop_details.clone();
+        }
+        if observation.terminal {
+            self.terminal_observation = Some(observation.ordinal);
+        }
+        Ok(())
+    }
+}
+
+impl NativeMessagesCapture {
+    pub fn empty_failed() -> Self {
+        Self::Observed {
+            observations: Vec::new(),
+            finalized: NativeMessagesFinalized::default().into(),
+            coverage: NativeMessagesCoverage::Partial {
+                reason: NativeUnavailable::Failed,
+            },
+        }
+    }
+
+    pub fn observations(&self) -> &[NativeMessagesObservation] {
+        match self {
+            Self::Observed { observations, .. } => observations,
+            Self::LegacyUnrecorded { .. } | Self::CompatibilityUnrecorded => &[],
+        }
+    }
+
+    pub fn member_count(&self) -> Result<u64, NativeUnavailable> {
+        (self.observations().len() as u64)
+            .checked_add(1)
+            .ok_or(NativeUnavailable::Capacity)
+    }
+
+    pub fn is_observed(&self) -> bool {
+        matches!(self, Self::Observed { .. })
+    }
+
+    pub fn validate(
+        &self,
+        usage: &BTreeMap<String, Value>,
+        stop: &Option<String>,
+        outcome: &NativeResponseStatus,
+        stream_complete: bool,
+    ) -> Result<(), NativeUnavailable> {
+        let Self::Observed {
+            observations,
+            finalized,
+            coverage,
+        } = self
+        else {
+            if matches!(self, Self::LegacyUnrecorded { source_schema } if !matches!(source_schema, 1 | 2))
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            return Ok(());
+        };
+        if observations.len() as u64 > NATIVE_MESSAGES_METADATA_OBSERVATIONS {
+            return Err(NativeUnavailable::Capacity);
+        }
+        let mut reduced = NativeMessagesFinalized::default();
+        let mut terminal = false;
+        for (ordinal, observation) in observations.iter().enumerate() {
+            if observation.ordinal != ordinal as u64
+                || terminal
+                || (ordinal > 0 && observation.kind != NativeMessagesObservationKind::MessageDelta)
+                || (observation.kind == NativeMessagesObservationKind::MessageStart
+                    && observation.terminal)
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            for presence in [
+                &observation.usage,
+                &observation.stop_reason,
+                &observation.stop_sequence,
+                &observation.stop_details,
+            ] {
+                presence.validate()?;
+            }
+            if observation
+                .stop_reason
+                .value()
+                .is_some_and(|value| !value.is_string())
+                || observation
+                    .stop_sequence
+                    .value()
+                    .is_some_and(|value| !value.is_string())
+                || observation
+                    .stop_details
+                    .value()
+                    .is_some_and(|value| !value.is_object())
+                || observation.terminal
+                    != observation
+                        .stop_reason
+                        .value()
+                        .is_some_and(Value::is_string)
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            reduced.apply(observation)?;
+            terminal = observation.terminal;
+        }
+        if &reduced != finalized.as_ref() {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let expected_usage = match &finalized.usage {
+            NativeMessagesPresence::Value(Value::Object(object)) => {
+                object.clone().into_iter().collect()
+            }
+            NativeMessagesPresence::Missing | NativeMessagesPresence::Null => BTreeMap::new(),
+            NativeMessagesPresence::Value(_) => return Err(NativeUnavailable::InvalidReference),
+        };
+        if usage != &expected_usage
+            || (finalized.stop_reason.value().is_some()
+                && finalized.stop_reason.value().and_then(Value::as_str) != stop.as_deref())
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        match coverage {
+            NativeMessagesCoverage::Complete
+                if !stream_complete || *outcome != NativeResponseStatus::Accepted || !terminal =>
+            {
+                Err(NativeUnavailable::InvalidReference)
+            }
+            NativeMessagesCoverage::Partial { reason }
+                if *outcome != NativeResponseStatus::PartialTerminal(*reason) =>
+            {
+                Err(NativeUnavailable::InvalidReference)
+            }
+            NativeMessagesCoverage::Complete | NativeMessagesCoverage::Partial { .. } => Ok(()),
+        }
+    }
+}
+
+struct NativeMessagesPresenceView<'a>(Option<&'a Value>);
+
+impl Serialize for NativeMessagesPresenceView<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            None => serializer.serialize_unit_variant("NativeMessagesPresence", 0, "Missing"),
+            Some(Value::Null) => {
+                serializer.serialize_unit_variant("NativeMessagesPresence", 1, "Null")
+            }
+            Some(value) => {
+                serializer.serialize_newtype_variant("NativeMessagesPresence", 2, "Value", value)
+            }
+        }
+    }
+}
+
+struct NativeMessagesMergedMap<'a> {
+    old: &'a serde_json::Map<String, Value>,
+    new: &'a serde_json::Map<String, Value>,
+    usage: bool,
+}
+
+impl Serialize for NativeMessagesMergedMap<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        for (key, old) in self.old {
+            let replacement = self.new.get(key).filter(|value| !value.is_null());
+            let start_only = self.usage
+                && matches!(
+                    key.as_str(),
+                    "cache_creation" | "service_tier" | "inference_geo"
+                );
+            if !start_only
+                && self.usage
+                && matches!(key.as_str(), "server_tool_use" | "output_tokens_details")
+                && let Some(new) = replacement.and_then(Value::as_object)
+                && let Some(old) = old.as_object()
+            {
+                map.serialize_entry(
+                    key,
+                    &Self {
+                        old,
+                        new,
+                        usage: false,
+                    },
+                )?;
+            } else {
+                map.serialize_entry(
+                    key,
+                    if start_only {
+                        old
+                    } else {
+                        replacement.unwrap_or(old)
+                    },
+                )?;
+            }
+        }
+        for (key, value) in self.new {
+            if !(self.old.contains_key(key)
+                || value.is_null()
+                || (self.usage
+                    && matches!(
+                        key.as_str(),
+                        "cache_creation" | "service_tier" | "inference_geo"
+                    )))
+            {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
+
+struct NativeMessagesUsageView<'a> {
+    old: &'a NativeMessagesPresence,
+    new: Option<&'a Value>,
+    kind: NativeMessagesObservationKind,
+}
+
+impl Serialize for NativeMessagesUsageView<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Some(new) = self.new.filter(|value| !value.is_null()) {
+            if self.kind == NativeMessagesObservationKind::MessageDelta
+                && let Some(old) = self.old.value().and_then(Value::as_object)
+                && let Some(new) = new.as_object()
+            {
+                return serializer.serialize_newtype_variant(
+                    "NativeMessagesPresence",
+                    2,
+                    "Value",
+                    &NativeMessagesMergedMap {
+                        old,
+                        new,
+                        usage: true,
+                    },
+                );
+            }
+            return serializer.serialize_newtype_variant("NativeMessagesPresence", 2, "Value", new);
+        }
+        self.old.serialize(serializer)
+    }
+}
+
+#[derive(Serialize)]
+struct NativeMessagesObservationView<'a> {
+    ordinal: u64,
+    kind: NativeMessagesObservationKind,
+    terminal: bool,
+    usage: NativeMessagesPresenceView<'a>,
+    stop_reason: NativeMessagesPresenceView<'a>,
+    stop_sequence: NativeMessagesPresenceView<'a>,
+    stop_details: NativeMessagesPresenceView<'a>,
+}
+
+#[derive(Serialize)]
+struct NativeMessagesFinalizedView<'a> {
+    usage: NativeMessagesUsageView<'a>,
+    stop_reason: NativeMessagesPresenceView<'a>,
+    stop_sequence: NativeMessagesPresenceView<'a>,
+    stop_details: NativeMessagesPresenceView<'a>,
+    terminal_observation: Option<u64>,
+}
+
+fn native_messages_member(presence: &NativeMessagesPresence) -> Option<&Value> {
+    static NULL: Value = Value::Null;
+    match presence {
+        NativeMessagesPresence::Missing => None,
+        NativeMessagesPresence::Null => Some(&NULL),
+        NativeMessagesPresence::Value(value) => Some(value),
+    }
+}
+
+impl NativeMessagesObservation {
+    pub fn envelope_encoded_len(
+        ordinal: u64,
+        kind: NativeMessagesObservationKind,
+        envelope: &Value,
+        limit: u64,
+    ) -> Result<u64, NativeUnavailable> {
+        let stops = native_messages_stop_envelope(kind, envelope);
+        let view = NativeMessagesObservationView {
+            ordinal,
+            kind,
+            terminal: stops.get("stop_reason").is_some_and(Value::is_string),
+            usage: NativeMessagesPresenceView(envelope.get("usage")),
+            stop_reason: NativeMessagesPresenceView(stops.get("stop_reason")),
+            stop_sequence: NativeMessagesPresenceView(stops.get("stop_sequence")),
+            stop_details: NativeMessagesPresenceView(stops.get("stop_details")),
+        };
+        native_encoded_len(&view, limit)
+    }
+}
+
+impl NativeMessagesFinalized {
+    pub fn preview_encoded_len(
+        &self,
+        ordinal: u64,
+        kind: NativeMessagesObservationKind,
+        envelope: &Value,
+        limit: u64,
+    ) -> Result<u64, NativeUnavailable> {
+        if let Some(value) = envelope.get("usage").filter(|value| !value.is_null()) {
+            Self::validate_usage(value)?;
+        }
+        let stops = native_messages_stop_envelope(kind, envelope);
+        let terminal = stops.get("stop_reason").is_some_and(Value::is_string);
+        let replace = terminal || kind != NativeMessagesObservationKind::MessageDelta;
+        let view = NativeMessagesFinalizedView {
+            usage: NativeMessagesUsageView {
+                old: &self.usage,
+                new: envelope.get("usage"),
+                kind,
+            },
+            stop_reason: NativeMessagesPresenceView(if replace {
+                stops.get("stop_reason")
+            } else {
+                native_messages_member(&self.stop_reason)
+            }),
+            stop_sequence: NativeMessagesPresenceView(if replace {
+                stops.get("stop_sequence")
+            } else {
+                native_messages_member(&self.stop_sequence)
+            }),
+            stop_details: NativeMessagesPresenceView(if replace {
+                stops.get("stop_details")
+            } else {
+                native_messages_member(&self.stop_details)
+            }),
+            terminal_observation: if terminal {
+                Some(ordinal)
+            } else {
+                self.terminal_observation
+            },
+        };
+        native_encoded_len(&view, limit)
+    }
+}
+
+impl NativeMessagesFinalized {
+    pub fn preview_usage_encoded_len(
+        &self,
+        kind: NativeMessagesObservationKind,
+        envelope: &Value,
+        limit: u64,
+    ) -> Result<u64, NativeUnavailable> {
+        let view = NativeMessagesUsageView {
+            old: &self.usage,
+            new: envelope.get("usage"),
+            kind,
+        };
+        let encoded = native_encoded_len(&view, limit)?;
+        if self.usage.value().is_some()
+            || envelope.get("usage").is_some_and(|value| !value.is_null())
+        {
+            encoded
+                .checked_sub(b"{\"Value\":}".len() as u64)
+                .ok_or(NativeUnavailable::Capacity)
+        } else {
+            Ok(2)
+        }
+    }
+}
+
+impl NativeMessagesCapture {
+    pub fn allocation_probe(
+        usage: &BTreeMap<String, Value>,
+        stop: Option<&str>,
+        outcome: NativeResponseStatus,
+    ) -> Self {
+        let start = serde_json::json!({"usage":usage,"stop_reason":null});
+        let mut terminal_usage = serde_json::Map::new();
+        if let Some(output_tokens) = usage.get("output_tokens") {
+            terminal_usage.insert("output_tokens".into(), output_tokens.clone());
+        }
+        let terminal = serde_json::json!({"usage":terminal_usage,"stop_reason":stop});
+        let observations = vec![
+            NativeMessagesObservation::from_envelope(
+                0,
+                NativeMessagesObservationKind::MessageStart,
+                &start,
+            ),
+            NativeMessagesObservation::from_envelope(
+                1,
+                NativeMessagesObservationKind::MessageDelta,
+                &terminal,
+            ),
+        ];
+        let finalized = NativeMessagesFinalized {
+            usage: NativeMessagesPresence::Value(serde_json::json!(usage)),
+            stop_reason: NativeMessagesPresence::from_member(terminal.get("stop_reason")),
+            stop_sequence: NativeMessagesPresence::Missing,
+            stop_details: NativeMessagesPresence::Missing,
+            terminal_observation: stop.map(|_| 1),
+        };
+        Self::Observed {
+            observations,
+            finalized: finalized.into(),
+            coverage: match outcome {
+                NativeResponseStatus::Collecting => NativeMessagesCoverage::Partial {
+                    reason: NativeUnavailable::Incomplete,
+                },
+                NativeResponseStatus::Accepted => NativeMessagesCoverage::Complete,
+                NativeResponseStatus::PartialTerminal(reason) => {
+                    NativeMessagesCoverage::Partial { reason }
+                }
+            },
+        }
+    }
 }
 
 /// Immutable provenance from the shell's one typed registry snapshot.
@@ -3437,7 +4231,7 @@ impl NativeHistoryPlan {
                 versions.reader,
                 versions.limits
             ),
-            (1, 1, 1, 1) | (2, 1, 2, 1)
+            (1, 1, 1, 1) | (2, 1, 2, 1) | (3, 1, 3, 2)
         ) || versions.projection != 1
             || (
                 versions.schema,
@@ -3533,6 +4327,8 @@ impl NativeHistoryPlan {
         let ledger = match self.record.schema_version {
             1 => serde_json::from_slice::<NativeLedger>(&self.ledger_bytes),
             2 => serde_json::from_slice::<NativeLedgerV2>(&self.ledger_bytes)
+                .map(|ledger| ledger.into_parts().0),
+            3 => serde_json::from_slice::<NativeLedgerV3>(&self.ledger_bytes)
                 .map(|ledger| ledger.into_parts().0),
             _ => return Err(NativePlanRefusal::UnsupportedVersion),
         }

@@ -859,12 +859,14 @@ mod tests {
                 content: MessageContent::Blocks(vec![
                     ContentBlock::Text {
                         text: "calling the tool".to_string(),
+                        citations: crate::presence::WirePresence::missing(),
                         cache_control: None,
                     },
                     ContentBlock::ToolUse {
                         id: "call_1".to_string(),
                         name: "lookup".to_string(),
                         input: serde_json::json!({ "key": 1 }),
+                        caller: None,
                         cache_control: None,
                     },
                 ]),
@@ -1467,6 +1469,7 @@ mod tests {
                 role: MessageRole::User,
                 content: MessageContent::Blocks(vec![ContentBlock::Text {
                     text,
+                    citations: crate::presence::WirePresence::missing(),
                     cache_control: None,
                 }]),
             })
@@ -1507,6 +1510,7 @@ mod tests {
             content: MessageContent::Blocks(vec![
                 ContentBlock::Text {
                     text: String::new(),
+                    citations: crate::presence::WirePresence::missing(),
                     cache_control: None,
                 },
                 ContentBlock::Image {
@@ -1533,6 +1537,7 @@ mod tests {
             content: MessageContent::Blocks(vec![
                 ContentBlock::Text {
                     text: "hi".to_string(),
+                    citations: crate::presence::WirePresence::missing(),
                     cache_control: None,
                 },
                 ContentBlock::Image {
@@ -1565,6 +1570,7 @@ mod tests {
             content: MessageContent::Blocks(vec![
                 ContentBlock::Text {
                     text: "a".repeat(pad),
+                    citations: crate::presence::WirePresence::missing(),
                     cache_control: None,
                 },
                 ContentBlock::Image {
@@ -1601,6 +1607,7 @@ mod tests {
             content: MessageContent::Blocks(vec![
                 ContentBlock::Text {
                     text: "a".repeat(pad),
+                    citations: crate::presence::WirePresence::missing(),
                     cache_control: None,
                 },
                 ContentBlock::Image {

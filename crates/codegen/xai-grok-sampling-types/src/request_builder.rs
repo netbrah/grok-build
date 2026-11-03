@@ -513,7 +513,11 @@ fn check_block_list(
     let mut list_marker: Option<usize> = None;
     for (block_index, block) in blocks.iter().enumerate() {
         match block {
-            ContentBlock::Text { text, cache_control } => {
+            ContentBlock::Text {
+                text,
+                citations: _,
+                cache_control,
+            } => {
                 let _ = text;
                 last_markable = Some(block_index);
                 if cache_control.is_some() {
@@ -533,6 +537,7 @@ fn check_block_list(
                 id,
                 name,
                 input,
+                caller: _,
                 cache_control,
             } => {
                 let _ = (name, input);
@@ -606,8 +611,13 @@ fn check_block_list(
             // ended end_turn. So `check_block_list` PERMITS it (inert no-op),
             // not rejects it. No `cache_control` field by construction (same
             // as Unknown/Thinking), so no marker; no pairing; no `last_markable`.
-            ContentBlock::ServerToolUse { id, name, input } => {
-                let _ = (id, name, input);
+            ContentBlock::ServerToolUse {
+                id,
+                name,
+                input,
+                caller,
+            } => {
+                let _ = (id, name, input, caller);
             }
             ContentBlock::ToolSearchToolResult {
                 tool_use_id,
@@ -872,6 +882,7 @@ mod tests {
     fn text_block(text: &str, marker: Option<CacheControl>) -> ContentBlock {
         ContentBlock::Text {
             text: text.to_string(),
+            citations: crate::presence::WirePresence::missing(),
             cache_control: marker,
         }
     }
@@ -892,6 +903,7 @@ mod tests {
                 id: "call_1".to_string(),
                 name: "lookup".to_string(),
                 input: serde_json::json!({ "key": 1 }),
+                caller: None,
                 cache_control: None,
             },
         ]))
@@ -1450,6 +1462,7 @@ pub fn f() {
                 id: "c1".to_string(),
                 name: "lookup".to_string(),
                 input: serde_json::json!({}),
+                caller: None,
                 cache_control: None,
             },
         ]))
@@ -1799,6 +1812,7 @@ pub fn f() {
         seq.push_message(assistant_blocks(vec![
             ContentBlock::Text {
                 text: "t".to_string(),
+                citations: crate::presence::WirePresence::missing(),
                 cache_control: None,
             },
             ContentBlock::Image {
@@ -1812,6 +1826,7 @@ pub fn f() {
                 id: "c1".to_string(),
                 name: "probe".to_string(),
                 input: serde_json::json!({}),
+                caller: None,
                 cache_control: None,
             },
             ContentBlock::Thinking {
@@ -1826,17 +1841,16 @@ pub fn f() {
             },
         ]))
         .expect("assistant push");
-        seq.push_message(user_blocks(vec![
-            ContentBlock::ToolResult {
-                tool_use_id: "c1".to_string(),
-                content: ToolResultContent::Blocks(vec![ContentBlock::Text {
-                    text: "ok".to_string(),
-                    cache_control: None,
-                }]),
-                is_error: false,
+        seq.push_message(user_blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: "c1".to_string(),
+            content: ToolResultContent::Blocks(vec![ContentBlock::Text {
+                text: "ok".to_string(),
+                citations: crate::presence::WirePresence::missing(),
                 cache_control: None,
-            },
-        ]))
+            }]),
+            is_error: false,
+            cache_control: None,
+        }]))
         .expect("tool_result push");
         let request = MessagesRequestBuilder::new()
             .model("m".to_string())

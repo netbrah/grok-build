@@ -361,12 +361,155 @@ fn is_false(value: &bool) -> bool {
     !value
 }
 
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+pub struct Caller(serde_json::Value);
+
+impl std::fmt::Debug for Caller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Caller").finish_non_exhaustive()
+    }
+}
+
+impl<'de> Deserialize<'de> for Caller {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("caller must be an object"))?;
+        let valid = match object.get("type").and_then(serde_json::Value::as_str) {
+            Some("direct") => true,
+            Some("code_execution_20250825" | "code_execution_20260120") => object
+                .get("tool_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| !id.is_empty()),
+            _ => false,
+        };
+        if !valid {
+            return Err(serde::de::Error::custom("unsupported or malformed caller"));
+        }
+        crate::conversation::native_search_history::native_encoded_len(
+            &value,
+            crate::request_validation::MAX_ENCODED_MESSAGES_REQUEST_BYTES,
+        )
+        .map_err(|_| serde::de::Error::custom("caller exceeds the retention limit"))?;
+        Ok(Self(value))
+    }
+}
+
+impl Caller {
+    // Missing uses the field default; a present null must still fail validation.
+    fn deserialize_present<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Self>, D::Error> {
+        Self::deserialize(deserializer).map(Some)
+    }
+}
+
+#[derive(Clone)]
+pub struct TextCitation(serde_json::Value);
+
+impl std::fmt::Debug for TextCitation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextCitation").finish_non_exhaustive()
+    }
+}
+
+impl Serialize for TextCitation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TextCitation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("citation must be an object"))?;
+        let string = |field| object.get(field).is_some_and(serde_json::Value::is_string);
+        let nullable_string = |field| {
+            matches!(
+                object.get(field),
+                Some(serde_json::Value::Null | serde_json::Value::String(_))
+            )
+        };
+        let number = |field| object.get(field).and_then(serde_json::Value::as_u64);
+        let char_range = number("start_char_index")
+            .zip(number("end_char_index"))
+            .is_some_and(|(start, end)| end >= start);
+        let page_range = number("start_page_number")
+            .zip(number("end_page_number"))
+            .is_some_and(|(start, end)| start >= 1 && end >= start);
+        let block_range = number("start_block_index")
+            .zip(number("end_block_index"))
+            .is_some_and(|(start, end)| end > start);
+        let document = number("document_index").is_some()
+            && nullable_string("document_title")
+            && nullable_string("file_id");
+        let valid = string("cited_text")
+            && match object.get("type").and_then(serde_json::Value::as_str) {
+                Some("char_location") => document && char_range,
+                Some("page_location") => document && page_range,
+                Some("content_block_location") => document && block_range,
+                Some("web_search_result_location") => {
+                    string("encrypted_index")
+                        && string("url")
+                        && nullable_string("title")
+                        && object
+                            .get("title")
+                            .and_then(serde_json::Value::as_str)
+                            .is_none_or(|title| title.chars().count() <= 512)
+                }
+                Some("search_result_location") => {
+                    number("search_result_index").is_some()
+                        && string("source")
+                        && nullable_string("title")
+                        && block_range
+                }
+                _ => false,
+            };
+        if !valid {
+            return Err(serde::de::Error::custom(
+                "unsupported or malformed citation",
+            ));
+        }
+        crate::conversation::native_search_history::native_encoded_len(
+            &value,
+            crate::request_validation::MAX_ENCODED_MESSAGES_REQUEST_BYTES,
+        )
+        .map_err(|_| serde::de::Error::custom("citation exceeds the retention limit"))?;
+        Ok(Self(value))
+    }
+}
+
+impl TextCitation {
+    fn deserialize_list<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<WirePresence<Vec<Self>>, D::Error> {
+        let citations = WirePresence::<Vec<Self>>::deserialize(deserializer)?;
+        if let Some(values) = citations.as_ref() {
+            if values.len() > crate::request_validation::MAX_MESSAGES_REQUEST_ITEMS {
+                return Err(serde::de::Error::custom("citations exceed the item limit"));
+            }
+            crate::conversation::native_search_history::native_encoded_len(
+                values,
+                crate::request_validation::MAX_ENCODED_MESSAGES_REQUEST_BYTES,
+            )
+            .map_err(|_| serde::de::Error::custom("citations exceed the retention limit"))?;
+        }
+        Ok(citations)
+    }
+}
+
 /// Content blocks used in both requests and responses
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
         text: String,
+        #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+        citations: WirePresence<Vec<TextCitation>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
@@ -379,6 +522,8 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        caller: Option<Caller>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
@@ -416,6 +561,8 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        caller: Option<Caller>,
     },
     /// The provider's hosted-tool-search ANSWER (Messages wire, apex-xk51):
     /// `tool_search_tool_result`. `tool_use_id` pairs it to `server_tool_use.id`
@@ -465,6 +612,8 @@ impl<'de> Deserialize<'de> for ContentBlock {
         enum StrictBlock {
             Text {
                 text: String,
+                #[serde(default, deserialize_with = "TextCitation::deserialize_list")]
+                citations: WirePresence<Vec<TextCitation>>,
                 cache_control: Option<CacheControl>,
             },
             Image {
@@ -475,6 +624,8 @@ impl<'de> Deserialize<'de> for ContentBlock {
                 id: String,
                 name: String,
                 input: serde_json::Value,
+                #[serde(default, deserialize_with = "Caller::deserialize_present")]
+                caller: Option<Caller>,
                 cache_control: Option<CacheControl>,
             },
             ToolResult {
@@ -499,6 +650,8 @@ impl<'de> Deserialize<'de> for ContentBlock {
                 id: String,
                 name: String,
                 input: serde_json::Value,
+                #[serde(default, deserialize_with = "Caller::deserialize_present")]
+                caller: Option<Caller>,
             },
             ToolSearchToolResult {
                 tool_use_id: String,
@@ -513,9 +666,11 @@ impl<'de> Deserialize<'de> for ContentBlock {
         Ok(match block {
             StrictBlock::Text {
                 text,
+                citations,
                 cache_control,
             } => ContentBlock::Text {
                 text,
+                citations,
                 cache_control,
             },
             StrictBlock::Image {
@@ -529,11 +684,13 @@ impl<'de> Deserialize<'de> for ContentBlock {
                 id,
                 name,
                 input,
+                caller,
                 cache_control,
             } => ContentBlock::ToolUse {
                 id,
                 name,
                 input,
+                caller,
                 cache_control,
             },
             StrictBlock::ToolResult {
@@ -555,9 +712,17 @@ impl<'de> Deserialize<'de> for ContentBlock {
                 signature,
             },
             StrictBlock::RedactedThinking { data } => ContentBlock::RedactedThinking { data },
-            StrictBlock::ServerToolUse { id, name, input } => {
-                ContentBlock::ServerToolUse { id, name, input }
-            }
+            StrictBlock::ServerToolUse {
+                id,
+                name,
+                input,
+                caller,
+            } => ContentBlock::ServerToolUse {
+                id,
+                name,
+                input,
+                caller,
+            },
             StrictBlock::ToolSearchToolResult {
                 tool_use_id,
                 content,
@@ -1310,7 +1475,10 @@ pub struct MessagesResponse {
     pub role: String, // "assistant"
     pub content: Vec<ContentBlock>,
     pub model: String,
-    pub stop_reason: Option<StopReason>,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub stop_reason: WirePresence<StopReason>,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub stop_sequence: WirePresence<String>,
     pub usage: MessagesUsage,
     /// Spec A0 L107 (Q6): required-nullable — Missing/Null/Value never collapse; the delta rule is retain-on-omission/null (§4.3).
     #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
@@ -1358,24 +1526,24 @@ impl StopReason {
 /// wirejig/refs/anthropic@d3d5028 spec/src/resources/messages/messages.ts:1290).
 /// `output_tokens` remains the authoritative total; this is a read-only
 /// decomposition for observability.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OutputTokensDetails {
     /// Output tokens the model generated as internal reasoning (thinking).
-    #[serde(default)]
-    pub thinking_tokens: u32,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub thinking_tokens: WirePresence<u32>,
 }
 
 /// Breakdown of cached input tokens by TTL (pin
 /// wirejig/refs/anthropic@d3d5028 spec/src/resources/messages/messages.ts:310-321).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CacheCreation {
-    #[serde(default)]
-    pub ephemeral_5m_input_tokens: u32,
-    #[serde(default)]
-    pub ephemeral_1h_input_tokens: u32,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub ephemeral_5m_input_tokens: WirePresence<u32>,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub ephemeral_1h_input_tokens: WirePresence<u32>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct MessagesUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -1391,6 +1559,43 @@ pub struct MessagesUsage {
     /// Spec A0 L109 (Q8) + L4257: required-nullable, start-only — not a delta field; retains its exact start state (pin messages.ts:2388).
     #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
     pub cache_creation: WirePresence<CacheCreation>,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub server_tool_use: WirePresence<ServerToolUsage>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct ServerToolUsage {
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub web_search_requests: WirePresence<u64>,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub web_fetch_requests: WirePresence<u64>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl std::fmt::Debug for ServerToolUsage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerToolUsage").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for MessagesUsage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MessagesUsage")
+            .field("input_tokens", &self.input_tokens)
+            .field("output_tokens", &self.output_tokens)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for MessageDeltaUsage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MessageDeltaUsage")
+            .field("output_tokens", &self.output_tokens)
+            .finish_non_exhaustive()
+    }
 }
 
 // ============================================================================
@@ -1467,23 +1672,12 @@ const KNOWN_DELTA_SUBTYPES: &[&str] = &[
     "input_json_delta",
     "thinking_delta",
     "signature_delta",
+    "citations_delta",
 ];
 
 impl<'de> Deserialize<'de> for MessageStreamEvent {
-    /// The single production parse site (spec D2): the client decodes every
-    /// SSE data payload against this impl, so the R1 forward-compat table
-    /// lives here and nowhere else.
-    ///
-    /// Target semantics (MW-3 spec R1, binding):
-    /// - unknown top-level event type -> `Ping` (liveness, never fatal);
-    /// - unknown `content_block` kind in `content_block_start` -> phantom-open
-    ///   (the event survives with `ContentBlock::Unknown`; the transform
-    ///   opens-and-swallow the block — spec D3);
-    /// - unknown delta subtype in `content_block_delta` -> `Ping`;
-    /// - KNOWN event type missing a required field -> FATAL (wire corruption
-    ///   must not be hidden; surfaces as `SamplingError::Serialization` at
-    ///   the client);
-    /// - `ping` -> `Ping`; well-known shapes parse strictly as before.
+    /// Reject unclassified event, block and delta tags.
+    /// Known shapes remain strict; only documented Ping is liveness-only.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Stage 1: capture the wire tag plus the remaining payload fields, so
         // the known-vs-unknown decision happens BEFORE any strict variant
@@ -1498,8 +1692,10 @@ impl<'de> Deserialize<'de> for MessageStreamEvent {
         let EventProbe { tag, fields } = EventProbe::deserialize(deserializer)?;
 
         if !KNOWN_EVENT_TAGS.contains(&tag.as_str()) {
-            // R1: unknown top-level event type -> Ping.
-            return Ok(MessageStreamEvent::Ping);
+            let tag = tag.chars().take(128).collect::<String>();
+            return Err(serde::de::Error::custom(format!(
+                "unsupported Messages event type {tag:?}"
+            )));
         }
 
         // Stage 2: known tag — strict-parse the variant payload.
@@ -1561,11 +1757,14 @@ impl<'de> Deserialize<'de> for MessageStreamEvent {
                     serde::Deserialize::deserialize(content_block)
                         .map_err(serde::de::Error::custom)?
                 } else {
-                    // R1/D3: unknown kind -> phantom (index survives; the
-                    // transform opens-and-swallow the block).
-                    ContentBlock::Unknown {
-                        kind: kind.unwrap_or_default().to_owned(),
-                    }
+                    let kind = kind
+                        .unwrap_or_default()
+                        .chars()
+                        .take(128)
+                        .collect::<String>();
+                    return Err(serde::de::Error::custom(format!(
+                        "unsupported Messages block kind {kind:?}"
+                    )));
                 };
                 Ok(MessageStreamEvent::ContentBlockStart {
                     index,
@@ -1577,8 +1776,14 @@ impl<'de> Deserialize<'de> for MessageStreamEvent {
                     serde::Deserialize::deserialize(value).map_err(serde::de::Error::custom)?;
                 let subtype = delta.get("type").and_then(serde_json::Value::as_str);
                 if !KNOWN_DELTA_SUBTYPES.contains(&subtype.unwrap_or_default()) {
-                    // R1: unknown delta subtype -> Ping (liveness).
-                    return Ok(MessageStreamEvent::Ping);
+                    let subtype = subtype
+                        .unwrap_or_default()
+                        .chars()
+                        .take(128)
+                        .collect::<String>();
+                    return Err(serde::de::Error::custom(format!(
+                        "unsupported Messages delta subtype {subtype:?}"
+                    )));
                 }
                 // Known subtype: strict (wrong-typed/missing fields stay fatal).
                 let delta =
@@ -1618,12 +1823,11 @@ impl StrTag for serde_json::Value {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageDeltaBody {
-    pub stop_reason: Option<StopReason>,
-    /// The stop sequence that was matched, present only when `stop_reason == "stop_sequence"`; `None` otherwise.
-    /// Consumers echo it on the Messages API `message.stop_sequence`.
-    /// Optional so its absence never fails the terminal parse.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop_sequence: Option<String>,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub stop_reason: WirePresence<StopReason>,
+    /// Exact terminal stop-sequence presence; missing and null stay distinct.
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub stop_sequence: WirePresence<String>,
     /// Spec A0 L110 (Q9): terminal replacement — Missing → missing completed field, Null → explicit null, Value → that value; none retains the start value.
     #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
     pub stop_details: WirePresence<StopDetails>,
@@ -1632,19 +1836,30 @@ pub struct MessageDeltaBody {
     pub container: WirePresence<serde_json::Value>,
 }
 
-/// Detail for a terminal `message_delta`, e.g. `{"type":"refusal","category":"frontier_llm","explanation":"..."}`.
-/// All fields optional so an unknown shape never fails the terminal parse.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Complete bounded stop metadata; nested presence is preserved independently.
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct StopDetails {
-    #[serde(rename = "type", default)]
-    pub r#type: Option<String>,
-    #[serde(default)]
-    pub category: Option<String>,
-    #[serde(default)]
-    pub explanation: Option<String>,
+    #[serde(
+        rename = "type",
+        default,
+        skip_serializing_if = "WirePresence::is_absent"
+    )]
+    pub r#type: WirePresence<String>,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub category: WirePresence<String>,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub explanation: WirePresence<String>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+impl std::fmt::Debug for StopDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StopDetails").finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct MessageDeltaUsage {
     pub output_tokens: u32,
     /// Spec A0 L104 (Q3): accept omission and explicit null and retain the corresponding `message_start` value; a present non-null value replaces it.
@@ -1659,6 +1874,10 @@ pub struct MessageDeltaUsage {
     /// Spec A0 L104 (Q3): accept omission and explicit null and retain the corresponding `message_start` value; a present non-null value replaces it (pin messages.ts:2423; terminal-delta thinking decomposition).
     #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
     pub output_tokens_details: WirePresence<OutputTokensDetails>,
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub server_tool_use: WirePresence<ServerToolUsage>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Content delta within a content_block_delta event
@@ -1669,6 +1888,7 @@ pub enum StreamDelta {
     InputJsonDelta { partial_json: String },
     ThinkingDelta { thinking: String },
     SignatureDelta { signature: String },
+    CitationsDelta { citation: TextCitation },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1756,7 +1976,7 @@ mod tests {
         // The catch-all must also work through the Option<StopReason> field it is parsed from in production
         let delta: MessageDeltaBody =
             serde_json::from_str(r#"{"stop_reason":"mystery_reason"}"#).unwrap();
-        match delta.stop_reason {
+        match delta.stop_reason.as_ref() {
             Some(StopReason::Unknown(s)) => assert_eq!(s, "mystery_reason"),
             other => panic!("expected Unknown through Option, got {other:?}"),
         }
@@ -1772,7 +1992,10 @@ mod tests {
         .expect("refusal message_delta must deserialize");
         match event {
             MessageStreamEvent::MessageDelta { delta, usage } => {
-                assert!(matches!(delta.stop_reason, Some(StopReason::Refusal)));
+                assert!(matches!(
+                    delta.stop_reason.as_ref(),
+                    Some(StopReason::Refusal)
+                ));
                 assert!(
                     delta.stop_details.is_missing(),
                     "no stop_details on the wire"
@@ -1794,15 +2017,21 @@ mod tests {
         .expect("refusal message_delta with stop_details must deserialize");
         match event {
             MessageStreamEvent::MessageDelta { delta, .. } => {
-                assert!(matches!(delta.stop_reason, Some(StopReason::Refusal)));
+                assert!(matches!(
+                    delta.stop_reason.as_ref(),
+                    Some(StopReason::Refusal)
+                ));
                 let details = delta
                     .stop_details
                     .as_ref()
                     .expect("stop_details must be captured");
-                assert_eq!(details.r#type.as_deref(), Some("refusal"));
-                assert_eq!(details.category.as_deref(), Some("frontier_llm"));
+                assert_eq!(details.r#type.as_ref().map(String::as_str), Some("refusal"));
                 assert_eq!(
-                    details.explanation.as_deref(),
+                    details.category.as_ref().map(String::as_str),
+                    Some("frontier_llm")
+                );
+                assert_eq!(
+                    details.explanation.as_ref().map(String::as_str),
                     Some("This request was blocked.")
                 );
             }
@@ -1820,8 +2049,14 @@ mod tests {
         .expect("stop_sequence message_delta must deserialize");
         match event {
             MessageStreamEvent::MessageDelta { delta, .. } => {
-                assert!(matches!(delta.stop_reason, Some(StopReason::StopSequence)));
-                assert_eq!(delta.stop_sequence.as_deref(), Some("END"));
+                assert!(matches!(
+                    delta.stop_reason.as_ref(),
+                    Some(StopReason::StopSequence)
+                ));
+                assert_eq!(
+                    delta.stop_sequence.as_ref().map(String::as_str),
+                    Some("END")
+                );
             }
             other => panic!("expected MessageDelta, got {other:?}"),
         }
@@ -1833,7 +2068,7 @@ mod tests {
         .expect("end_turn message_delta must deserialize");
         match event {
             MessageStreamEvent::MessageDelta { delta, .. } => {
-                assert_eq!(delta.stop_sequence, None);
+                assert_eq!(delta.stop_sequence.as_ref(), None);
             }
             other => panic!("expected MessageDelta, got {other:?}"),
         }
@@ -1948,14 +2183,14 @@ mod tests {
         assert_eq!(
             usage.output_tokens_details.as_ref(),
             Some(&OutputTokensDetails {
-                thinking_tokens: 31
+                thinking_tokens: crate::presence::WirePresence::value(31)
             })
         );
         assert_eq!(
             usage.cache_creation.as_ref(),
             Some(&CacheCreation {
-                ephemeral_5m_input_tokens: 8,
-                ephemeral_1h_input_tokens: 2
+                ephemeral_5m_input_tokens: crate::presence::WirePresence::value(8),
+                ephemeral_1h_input_tokens: crate::presence::WirePresence::value(2)
             })
         );
     }
@@ -1985,7 +2220,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             usage.output_tokens_details.as_ref(),
-            Some(&OutputTokensDetails { thinking_tokens: 0 })
+            Some(&OutputTokensDetails {
+                thinking_tokens: crate::presence::WirePresence::value(0)
+            })
         );
     }
 
@@ -2000,99 +2237,102 @@ mod tests {
     // ping -> Ping; id-less message_start -> lenient (MW-2 R9 pin).
     // ========================================================================
 
-    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_event_types (re-expressed; grok maps the unknown kind to a liveness Ping instead of HY's decode-skip — same forward-compat class, grok-shaped event)
-    /// A top-level event type this build does not model is liveness, not a
-    /// protocol error: it maps to `Ping` and the stream continues.
+    /// Unclassified event tags fail; known Ping remains liveness-only.
     #[test]
-    fn unknown_top_level_event_type_maps_to_ping() {
-        let event: MessageStreamEvent = serde_json::from_str(r#"{"type":"citation","index":0}"#)
-            .expect("an unknown event type must not fail the frame parse");
+    fn unclassified_top_level_event_fails_while_ping_survives() {
         assert!(
-            matches!(event, MessageStreamEvent::Ping),
-            "unknown top-level event type must map to Ping, got {event:?}"
+            serde_json::from_str::<MessageStreamEvent>(r#"{"type":"citation","index":0}"#).is_err()
+        );
+        let ping: MessageStreamEvent = serde_json::from_str(r#"{"type":"ping"}"#).unwrap();
+        assert!(matches!(ping, MessageStreamEvent::Ping));
+        let stop: MessageStreamEvent = serde_json::from_str(r#"{"type":"message_stop"}"#).unwrap();
+        assert!(matches!(stop, MessageStreamEvent::MessageStop));
+        let wire = serde_json::json!({"type":"future_".to_owned() + &"x".repeat(10_000)});
+        let error = serde_json::from_value::<MessageStreamEvent>(wire).unwrap_err();
+        assert!(
+            error.to_string().len() < 1024,
+            "MSS_U5_UNKNOWN_TAG_PREVIEW_BOUND"
         );
     }
 
-    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_content_block_kinds (re-expressed, start half; grok deviates from HY's Ping mapping per the D3 phantom-open ruling: the unknown kind must open a swallowed phantom block, not disappear — otherwise its later delta/stop hit the fatal unopened-index classes (spec G3))
-    /// An unknown `content_block` kind in `content_block_start` keeps the
-    /// event (with its index) and maps the block to the phantom `Unknown`
-    /// variant, so the stream transform opens-and-swallow the block. A block
-    /// object with no `type` at all is likewise an unknown kind (phantom with
-    /// an empty kind string), not corruption of a known shape.
+    /// Historical provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_content_block_kinds (re-expressed, start half; grok deviates from HY's Ping mapping per the D3 phantom-open ruling: the unknown kind must open a swallowed phantom block, not disappear — otherwise its later delta/stop hit the fatal unopened-index classes (spec G3))
+    /// Unknown or typeless block starts fail; known block shapes remain strict.
     #[test]
-    fn unknown_content_block_kind_opens_phantom_block() {
-        let event: MessageStreamEvent = serde_json::from_str(
+    fn unknown_content_block_kind_fails_explicitly() {
+        assert!(serde_json::from_str::<MessageStreamEvent>(
             r#"{"type":"content_block_start","index":3,"content_block":{"type":"brand_new_block","id":"b1"}}"#,
-        )
-        .expect("an unknown content block kind must not fail the frame parse");
-        match event {
+        ).is_err());
+        assert!(
+            serde_json::from_str::<MessageStreamEvent>(
+                r#"{"type":"content_block_start","index":0,"content_block":{"id":"b2"}}"#,
+            )
+            .is_err()
+        );
+        let known: MessageStreamEvent = serde_json::from_value(serde_json::json!({
+            "type":"content_block_start","index":3,"content_block":{"type":"text","text":"known"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            known,
             MessageStreamEvent::ContentBlockStart {
-                index,
-                content_block,
-            } => {
-                assert_eq!(index, 3, "the index must survive for the phantom-open");
-                match content_block {
-                    ContentBlock::Unknown { kind } => assert_eq!(kind, "brand_new_block"),
-                    other => panic!(
-                        "unknown kind must map to the phantom Unknown variant, got {other:?}"
-                    ),
-                }
+                index: 3,
+                content_block: ContentBlock::Text { .. }
             }
-            other => panic!(
-                "unknown content block kind must stay a ContentBlockStart (phantom-open), got {other:?}"
-            ),
-        }
-
-        let event: MessageStreamEvent = serde_json::from_str(
-            r#"{"type":"content_block_start","index":0,"content_block":{"id":"b2"}}"#,
-        )
-        .expect("a block object without a type is an unknown kind, not corruption");
-        match event {
-            MessageStreamEvent::ContentBlockStart { content_block, .. } => match content_block {
-                ContentBlock::Unknown { kind } => assert!(kind.is_empty()),
-                other => panic!("typeless block must map to the phantom variant, got {other:?}"),
-            },
-            other => panic!("expected ContentBlockStart, got {other:?}"),
-        }
+        ));
+        assert!(
+            serde_json::from_value::<MessageStreamEvent>(serde_json::json!({
+                "type":"content_block_start","index":3,"content_block":{"type":"text"}
+            }))
+            .is_err()
+        );
     }
 
-    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_content_block_kinds (re-expressed, delta half; HY asserts Ping for an unknown delta subtype — same mapping on this wire)
-    /// An unknown delta subtype in `content_block_delta` maps the whole event
-    /// to `Ping` (liveness): the delta is dropped, never fatal.
+    /// Historical provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_content_block_kinds (re-expressed, delta half; HY asserts Ping for an unknown delta subtype — same mapping on this wire)
+    /// Unclassified delta subtypes fail; known delta shapes remain strict.
     #[test]
-    fn unknown_delta_subtype_maps_to_ping() {
-        let event: MessageStreamEvent = serde_json::from_str(
+    fn unknown_delta_subtype_fails_explicitly() {
+        assert!(serde_json::from_str::<MessageStreamEvent>(
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"brand_new_delta","x":"y"}}"#,
-        )
-        .expect("an unknown delta subtype must not fail the frame parse");
+        ).is_err());
+        let known: MessageStreamEvent = serde_json::from_value(serde_json::json!({
+            "type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"known"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            known,
+            MessageStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: StreamDelta::TextDelta { .. }
+            }
+        ));
         assert!(
-            matches!(event, MessageStreamEvent::Ping),
-            "unknown delta subtype must map the event to Ping, got {event:?}"
+            serde_json::from_value::<MessageStreamEvent>(serde_json::json!({
+                "type":"content_block_delta","index":0,"delta":{"type":"text_delta"}
+            }))
+            .is_err()
         );
     }
 
-    /// Provenance: none (56a CITATIONS-1 record pin). At this base a live
-    /// `citation_delta` is an unknown delta subtype under R1 forward-compat:
-    /// the whole `content_block_delta` frame maps to `Ping` (liveness
-    /// swallow) — the RECORDED-ABSENT pre-56b behavior of the
-    /// `TextBlock.citations` surface (spec r23 L106 row Q5; registry entry
-    /// CITATIONS-1). Names this surface explicitly;
-    /// `unknown_delta_subtype_maps_to_ping` uses `brand_new_delta` and
-    /// predates the record. When 56b models the surface, this pin flips in
-    /// the same commit (strict-parse pin) — a mid-state tree fails the gate
-    /// by construction (SDD §6 R4).
+    /// Provenance: none (56a CITATIONS-1 record pin).
+    /// Plural citations_delta is the protocol spelling; singular citation_delta is not an alias.
     #[test]
-    fn citation_delta_maps_to_ping_today() {
-        let event: MessageStreamEvent = serde_json::from_str(
+    fn singular_citation_delta_fails_and_plural_citations_decode() {
+        assert!(serde_json::from_str::<MessageStreamEvent>(
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"citation_delta","x":"y"}}"#,
-        )
-        .expect("an unmodeled delta subtype must not fail the frame parse");
-        assert!(
-            matches!(event, MessageStreamEvent::Ping),
-            "RECORDED-ABSENT (56a): citation_delta must map to Ping (liveness swallow) \
-             until registry entry CITATIONS-1 flips modeled_by in the same commit \
-             (56b), got {event:?}"
-        );
+        ).is_err());
+        let known: MessageStreamEvent = serde_json::from_value(serde_json::json!({
+            "type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{
+                "type":"web_search_result_location","cited_text":"known","encrypted_index":"opaque",
+                "title":null,"url":"https://example.invalid/citation"}}
+        }))
+        .unwrap();
+        assert!(matches!(
+            known,
+            MessageStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: StreamDelta::CitationsDelta { .. }
+            }
+        ));
     }
 
     /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_keeps_malformed_known_events_strict (re-expressed; near-verbatim)
@@ -2207,7 +2447,12 @@ mod tests {
 
         assert_eq!(resp.content.len(), 3);
         match &resp.content[1] {
-            ContentBlock::ServerToolUse { id, name, input } => {
+            ContentBlock::ServerToolUse {
+                id,
+                name,
+                input,
+                caller: _,
+            } => {
                 assert_eq!(id.as_str(), "srvtoolu_r3");
                 assert_eq!(name.as_str(), "tool_search_tool_bm25");
                 assert_eq!(*input, serde_json::json!({"query":"shipping eta"}));
@@ -2333,5 +2578,172 @@ mod tests {
             json.get("defer_loading").is_none(),
             "a static entry (None) must serialise NO defer_loading key, got {json}"
         );
+    }
+
+    #[test]
+    fn mss_u1_nonstream_caller_roundtrip() {
+        let callers = [
+            None,
+            Some(serde_json::json!({"type":"direct","opaque":["α",null]})),
+            Some(
+                serde_json::json!({"type":"code_execution_20250825","tool_id":"srvtoolu_origin_α"}),
+            ),
+            Some(
+                serde_json::json!({"type":"code_execution_20260120","tool_id":"srvtoolu_origin_2026",
+                "opaque":{"unchanged":true}}),
+            ),
+        ];
+        for caller in callers {
+            for kind in ["tool_use", "server_tool_use"] {
+                let mut block = serde_json::json!({"type":kind,"id":"call_exact_α",
+                    "name":"tool_search_tool_bm25","input":{"query":"read"}});
+                if let Some(caller) = caller.clone() {
+                    block["caller"] = caller;
+                }
+                let raw = serde_json::json!({"id":"msg_mss_u1","type":"message","role":"assistant",
+                    "model":"mss-fixture","content":[block],"stop_reason":"end_turn",
+                    "usage":{"input_tokens":3,"output_tokens":0}});
+                let response: MessagesResponse = serde_json::from_value(raw.clone()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(response).unwrap(),
+                    raw,
+                    "MSS_U1_NONSTREAM_EXACT_CALLER"
+                );
+            }
+        }
+        for caller in [
+            serde_json::json!(null),
+            serde_json::json!(7),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!({"type":"future_caller"}),
+            serde_json::json!({"type":"code_execution_20250825"}),
+            serde_json::json!({"type":"code_execution_20260120","tool_id":false}),
+            serde_json::json!({"type":"code_execution_20260120","tool_id":""}),
+        ] {
+            for kind in ["tool_use", "server_tool_use"] {
+                let raw = serde_json::json!({"type":kind,"id":"call_exact","name":"read",
+                    "input":{},"caller":caller});
+                assert!(
+                    serde_json::from_value::<ContentBlock>(raw).is_err(),
+                    "MSS_U1_MALFORMED_CALLER_REJECTED"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mss_u2_nonstream_citations_presence() {
+        use serde_json::json;
+        let citations = vec![
+            json!({"type":"char_location","cited_text":"α","document_index":0,"document_title":null,
+                "start_char_index":0,"end_char_index":1,"file_id":"file_opaque_α","extra":[null,1]}),
+            json!({"type":"page_location","cited_text":"page","document_index":1,"document_title":"PDF",
+                "start_page_number":1,"end_page_number":1,"file_id":null}),
+            json!({"type":"content_block_location","cited_text":"blocks","document_index":2,"document_title":null,
+                "start_block_index":1,"end_block_index":3,"file_id":"file_blocks"}),
+            json!({"type":"web_search_result_location","cited_text":"web","encrypted_index":"opaque_α",
+                "title":null,"url":"https://example.invalid/web","extra":{"exact":true}}),
+            json!({"type":"search_result_location","cited_text":"search","search_result_index":3,
+                "source":"https://example.invalid/source","title":null,"start_block_index":0,"end_block_index":1}),
+        ];
+        for presence in [
+            None,
+            Some(json!(null)),
+            Some(json!([])),
+            Some(json!(citations)),
+        ] {
+            let mut block = json!({"type":"text","text":"exact"});
+            if let Some(presence) = presence {
+                block["citations"] = presence;
+            }
+            let raw = json!({"id":"msg_u2","type":"message","role":"assistant","model":"mss-fixture",
+                "content":[block],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":0}});
+            let response: MessagesResponse = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(response).unwrap(),
+                raw,
+                "MSS_U2_NONSTREAM_PRESENCE_EXACT"
+            );
+        }
+        for citations in [
+            json!(false),
+            json!({}),
+            json!([null]),
+            json!([{"type":"future_citation"}]),
+            json!([{"type":"char_location","cited_text":"bad","document_index":-1,
+                "document_title":null,"start_char_index":0,"end_char_index":1,"file_id":null}]),
+        ] {
+            let block = json!({"type":"text","text":"bad","citations":citations});
+            assert!(
+                serde_json::from_value::<ContentBlock>(block).is_err(),
+                "MSS_U2_MALFORMED_CITATIONS_REJECTED"
+            );
+        }
+    }
+
+    #[test]
+    fn mss_u4_nonstream_stop_metadata_roundtrip() {
+        use serde_json::json;
+        let base = json!({"id":"mss-u4-dto","type":"message","role":"assistant",
+            "model":"test","content":[],"usage":{"input_tokens":1,"output_tokens":2},
+            "stop_reason":"stop_sequence","stop_sequence":"end-α\"",
+            "stop_details":{"type":null,"category":"bounded","explanation":null,
+                "resumable":false,"fallback_has_prefill_claim":true,
+                "opaque":{"missing_sibling":null,"order":[2,1]}}});
+        let decoded: MessagesResponse = serde_json::from_value(base.clone()).unwrap();
+        let encoded = serde_json::to_value(decoded).unwrap();
+        assert_eq!(encoded, base, "MSS_U4_NONSTREAM_EXACT_STOP_METADATA");
+        for field in ["stop_reason", "stop_sequence", "stop_details"] {
+            for state in [
+                None,
+                Some(json!(null)),
+                Some(if field == "stop_details" {
+                    json!({})
+                } else {
+                    json!("")
+                }),
+            ] {
+                let mut raw = base.clone();
+                raw.as_object_mut().unwrap().remove(field);
+                if let Some(value) = state {
+                    raw[field] = value;
+                }
+                let decoded: MessagesResponse = serde_json::from_value(raw.clone()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(decoded).unwrap(),
+                    raw,
+                    "MSS_U4_STOP_FIELD_PRESENCE"
+                );
+            }
+        }
+        for reason in [
+            "end_turn",
+            "max_tokens",
+            "stop_sequence",
+            "tool_use",
+            "pause_turn",
+            "refusal",
+            "model_context_window_exceeded",
+            "future_stop",
+            "compaction",
+        ] {
+            let mut raw = base.clone();
+            raw["stop_reason"] = json!(reason);
+            let decoded: MessagesResponse = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), raw);
+        }
+        for details in [
+            json!(false),
+            json!([]),
+            json!("not-an-object"),
+            json!({"type":1}),
+            json!({"category":[]}),
+            json!({"explanation":true}),
+        ] {
+            let mut raw = base.clone();
+            raw["stop_details"] = details;
+            assert!(serde_json::from_value::<MessagesResponse>(raw).is_err());
+        }
     }
 }

@@ -802,6 +802,7 @@ fn m_assistant(blocks: Vec<crate::messages::ContentBlock>) -> crate::messages::M
 fn m_text(text: &str) -> crate::messages::ContentBlock {
     crate::messages::ContentBlock::Text {
         text: text.to_string(),
+        citations: crate::presence::WirePresence::missing(),
         cache_control: None,
     }
 }
@@ -811,6 +812,7 @@ fn m_tool_use(id: &str) -> crate::messages::ContentBlock {
         id: id.to_string(),
         name: "shell".to_string(),
         input: serde_json::json!({}),
+        caller: None,
         cache_control: None,
     }
 }
@@ -1524,6 +1526,7 @@ fn replay_msg(
 fn rtext(s: &str) -> crate::messages::ContentBlock {
     crate::messages::ContentBlock::Text {
         text: s.to_string(),
+        citations: crate::presence::WirePresence::missing(),
         cache_control: None,
     }
 }

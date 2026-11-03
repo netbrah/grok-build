@@ -211,6 +211,7 @@ windows = { workspace = true }
 [dev-dependencies]
 xai-dirs = { workspace = true }
 xai-grok-status-line = { workspace = true, features = ["test-support"] }
+xai-grok-telemetry = { workspace = true, features = ["test-support"] }
 criterion = { workspace = true }
 # Pre-main unified-log redirect (`test_support::redirect_unified_log_for_tests`).
 ctor = { workspace = true }

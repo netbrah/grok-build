@@ -3062,7 +3062,7 @@ impl JsonlStorageAdapter {
         }
         let authority: NativeGenerationAuthority = serde_json::from_slice(&authority_bytes)
             .map_err(|_| NativeUnavailable::InvalidReference)?;
-        if !matches!(authority.schema_version, 1 | 2)
+        if !matches!(authority.schema_version, 1..=3)
             || authority.high_water == 0
             || authority.lineage.is_empty()
             || authority.transaction.is_empty()

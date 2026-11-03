@@ -1061,7 +1061,7 @@ pub(super) fn native_policy_history(
         record.reader_floor,
         record.limits_revision,
     );
-    if !matches!(profile, (1, 1, 1, 1) | (2, 1, 2, 1)) {
+    if !matches!(profile, (1, 1, 1, 1) | (2, 1, 2, 1) | (3, 1, 3, 2)) {
         return Err(NativeUnavailable::UnsupportedVersion);
     }
     let source_bytes = native_policy_blob(history, &record.source, "source")?;
@@ -1090,6 +1090,24 @@ pub(super) fn native_policy_history(
                 .map_err(|_| NativeUnavailable::InvalidReference)?
                 .into_parts();
             let ledger = serde_json::from_slice::<NativeLedgerV2>(ledger_bytes)
+                .map_err(|_| NativeUnavailable::InvalidReference)?
+                .into_parts();
+            source.0 == *history.source
+                && source.1 == *eligible_member_links
+                && ledger.0 == *history.ledger
+                && ledger.1 == *eligible_member_accounting
+        }
+        (
+            3,
+            NativeIdentityExtension::Revision2 {
+                eligible_member_links,
+                eligible_member_accounting,
+            },
+        ) => {
+            let source = serde_json::from_slice::<NativeSourceV3>(source_bytes)
+                .map_err(|_| NativeUnavailable::InvalidReference)?
+                .into_parts();
+            let ledger = serde_json::from_slice::<NativeLedgerV3>(ledger_bytes)
                 .map_err(|_| NativeUnavailable::InvalidReference)?
                 .into_parts();
             source.0 == *history.source

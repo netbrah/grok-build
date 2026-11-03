@@ -7707,6 +7707,7 @@ async fn persisted_versioned_native_record() {
             }).to_string(), partial_json: None, state: NativeBlockState::ClosedFaithful,
         }],
         usage: std::collections::BTreeMap::from([("input_tokens".into(), serde_json::json!(10)), ("output_tokens".into(), serde_json::json!(0))]),
+        messages_metadata: NativeMessagesCapture::CompatibilityUnrecorded,
         latency_ms: Some(1), http_dispatches: 1, observed_bytes: 100, failed_block: None,
         view_roles: vec![Some((0, "Discovery".into()))],
         view_digests: vec![crate::persistence::native::history_boundary(std::slice::from_ref(&output)).unwrap().digest],
@@ -7782,6 +7783,7 @@ fn u2_native_attempt(
             state: NativeBlockState::ClosedFaithful,
         }],
         usage: std::collections::BTreeMap::from([("input_tokens".into(), serde_json::json!(1))]),
+        messages_metadata: NativeMessagesCapture::CompatibilityUnrecorded,
         latency_ms: Some(1),
         http_dispatches: 1,
         observed_bytes: 200,
@@ -9367,6 +9369,7 @@ fn u3_reference_attempt(
             ("input_tokens".into(), serde_json::json!(11)),
             ("output_tokens".into(), serde_json::json!(7)),
         ]),
+        messages_metadata: xai_grok_sampling_types::conversation::native_search_history::NativeMessagesCapture::CompatibilityUnrecorded,
         latency_ms: Some(1),
         http_dispatches: 1,
         observed_bytes: 100,
@@ -10923,4 +10926,745 @@ async fn native_history_borrowed_handle_cannot_register_owner() {
         "a borrowed handle and caller-authored active flag must never mint this actor's owner capability"
     );
     assert!(h.handle.get_conversation().await.is_empty());
+}
+
+fn mss_u3_response_fixture(
+    query: usize,
+    metadata: usize,
+) -> crate::persistence::native::NativeCheckpoint {
+    use crate::persistence::native::{NativeCheckpoint, digest};
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = NativeCaptureLease::issue(
+        "mss-u3-response".into(),
+        "response".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let mut attempt = mss_u3_observed_attempt(1, 2);
+    let mut checkpoint =
+        NativeCheckpoint::append(None, &lease, &[std::sync::Arc::new(attempt.clone())], &[])
+            .unwrap();
+    let mut raw: serde_json::Value = serde_json::from_str(&attempt.blocks[0].raw).unwrap();
+    raw["input"]["query"] = serde_json::json!("x".repeat(query));
+    attempt.blocks[0].raw = raw.to_string();
+    attempt
+        .usage
+        .insert("opaque".into(), serde_json::json!("x".repeat(metadata)));
+    let NativeMessagesCapture::Observed {
+        observations,
+        finalized,
+        ..
+    } = &mut attempt.messages_metadata
+    else {
+        unreachable!()
+    };
+    let NativeMessagesPresence::Value(serde_json::Value::Object(usage)) =
+        &mut observations[1].usage
+    else {
+        unreachable!()
+    };
+    usage.insert("opaque".into(), serde_json::json!("x".repeat(metadata)));
+    let NativeMessagesPresence::Value(serde_json::Value::Object(usage)) = &mut finalized.usage
+    else {
+        unreachable!()
+    };
+    usage.insert("opaque".into(), serde_json::json!("x".repeat(metadata)));
+    let old = checkpoint.source.ordered_blocks[0].block.clone();
+    checkpoint.blobs.remove(&old.digest);
+    checkpoint.blob_kinds.remove(&old.digest);
+    let bytes = serde_json::to_vec(&raw).unwrap();
+    let reference = NativeBlobRef {
+        kind: "raw_block".into(),
+        byte_len: bytes.len() as u64,
+        digest: digest(&bytes),
+    };
+    checkpoint
+        .blobs
+        .insert(reference.digest.clone(), bytes.into());
+    checkpoint
+        .blob_kinds
+        .insert(reference.digest.clone(), reference.kind.clone());
+    checkpoint.source.ordered_blocks[0].block = reference;
+    let old = checkpoint.record.source.clone();
+    checkpoint.blobs.remove(&old.digest);
+    checkpoint.blob_kinds.remove(&old.digest);
+    let bytes = serde_json::to_vec(&NativeSourceV3::from_parts(
+        checkpoint.source.clone(),
+        Vec::new(),
+    ))
+    .unwrap();
+    checkpoint.record.source = NativeBlobRef {
+        kind: "source".into(),
+        byte_len: bytes.len() as u64,
+        digest: digest(&bytes),
+    };
+    checkpoint.record.lineage.source_digest = checkpoint.record.source.digest.clone();
+    checkpoint
+        .blobs
+        .insert(checkpoint.record.source.digest.clone(), bytes.into());
+    checkpoint
+        .blob_kinds
+        .insert(checkpoint.record.source.digest.clone(), "source".into());
+    checkpoint.ledger.source_digest = checkpoint.record.source.digest.clone();
+    checkpoint.ledger.accounting[0].source_digest = checkpoint.record.source.digest.clone();
+    checkpoint.ledger.usage[0].observed = attempt.usage.clone();
+    checkpoint.ledger.observations[0].digest = digest(&serde_json::to_vec(&attempt).unwrap());
+    let NativeMessagesMetadataState::Revision3 {
+        messages_response_metadata,
+    } = &mut checkpoint.messages_metadata
+    else {
+        unreachable!()
+    };
+    messages_response_metadata[0].capture = attempt.messages_metadata;
+    let old = checkpoint.record.ledger.clone();
+    checkpoint.blobs.remove(&old.digest);
+    checkpoint.blob_kinds.remove(&old.digest);
+    let bytes = serde_json::to_vec(&NativeLedgerV3::from_parts(
+        checkpoint.ledger.clone(),
+        Vec::new(),
+        messages_response_metadata.clone(),
+    ))
+    .unwrap();
+    checkpoint.record.ledger = NativeBlobRef {
+        kind: "ledger".into(),
+        byte_len: bytes.len() as u64,
+        digest: digest(&bytes),
+    };
+    checkpoint
+        .blobs
+        .insert(checkpoint.record.ledger.digest.clone(), bytes.into());
+    checkpoint
+        .blob_kinds
+        .insert(checkpoint.record.ledger.digest.clone(), "ledger".into());
+    mss_u3_reseal_response_fixture(&mut checkpoint);
+    checkpoint
+}
+
+fn mss_u3_reseal_response_fixture(checkpoint: &mut crate::persistence::native::NativeCheckpoint) {
+    for _ in 0..8 {
+        let reservation = checkpoint.reservation().unwrap();
+        let capacity = &mut checkpoint.record.capacity;
+        capacity.insert("source_bytes".into(), reservation.current.source_bytes);
+        capacity.insert("ledger_bytes".into(), reservation.current.ledger_bytes);
+        capacity.insert("control_bytes".into(), checkpoint.bytes.len() as u64);
+        capacity.insert(
+            "reserved_current_bytes".into(),
+            reservation.current.bytes().unwrap(),
+        );
+        capacity.insert(
+            "reserved_staging_bytes".into(),
+            reservation.staging.bytes().unwrap(),
+        );
+        capacity.insert(
+            "reserved_backup_bytes".into(),
+            reservation.backup.bytes().unwrap(),
+        );
+        capacity.insert(
+            "reserved_lineage_bytes".into(),
+            reservation.validate().unwrap(),
+        );
+        let bytes = serde_json::to_vec(&checkpoint.record).unwrap();
+        if bytes.as_slice() == checkpoint.bytes.as_ref() {
+            return;
+        }
+        checkpoint.bytes = bytes.into();
+    }
+    panic!("MSS response fixture capacity must converge");
+}
+
+fn mss_u3_response_encoded_bytes(checkpoint: &crate::persistence::native::NativeCheckpoint) -> u64 {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeMessagesMetadataState;
+    let NativeMessagesMetadataState::Revision3 {
+        messages_response_metadata,
+    } = &checkpoint.messages_metadata
+    else {
+        unreachable!()
+    };
+    serde_json::to_vec(&checkpoint.source.responses[0])
+        .unwrap()
+        .len() as u64
+        + serde_json::to_vec(&checkpoint.source.ordered_blocks[0])
+            .unwrap()
+            .len() as u64
+        + checkpoint.source.ordered_blocks[0].block.byte_len
+        + serde_json::to_vec(&messages_response_metadata[0])
+            .unwrap()
+            .len() as u64
+}
+
+#[test]
+fn mss_u3_metadata_response_bytes_are_inclusive_and_charged() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let mut query = 0usize;
+    let mut fit = None;
+    for _ in 0..8 {
+        let candidate = mss_u3_response_fixture(query, 270_000);
+        let used = mss_u3_response_encoded_bytes(&candidate);
+        if used == NATIVE_RESPONSE_BYTES {
+            fit = Some(candidate);
+            break;
+        }
+        query = usize::try_from(query as i64 + NATIVE_RESPONSE_BYTES as i64 - used as i64).unwrap();
+    }
+    let fit = fit.expect("MSS_U3_RESPONSE_BYTE_FIXTURE_FITS_EXACTLY");
+    assert!(
+        mss_u3_decode(&fit).is_ok(),
+        "MSS_U3_RESPONSE_METADATA_EXACT_BYTE_CAP"
+    );
+    let overflow = mss_u3_response_fixture(query + 1, 270_000);
+    assert_eq!(
+        mss_u3_response_encoded_bytes(&overflow),
+        NATIVE_RESPONSE_BYTES + 1
+    );
+    assert!(
+        matches!(mss_u3_decode(&overflow), Err(NativeUnavailable::Capacity)),
+        "MSS_U3_RESPONSE_METADATA_PLUS_ONE_BYTE"
+    );
+}
+
+#[test]
+fn mss_u3_metadata_v2_migration_keeps_a1_and_unrecorded_prefix() {
+    use crate::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let (_, inputs) = u3_specs_and_inputs();
+    let lease =
+        NativeCaptureLease::issue("mss-u3-v2".into(), "old".into(), 1, 1, NATIVE_SOURCE_BYTES);
+    let old = NativeCheckpoint::append_with_identity(
+        None,
+        &lease,
+        &[std::sync::Arc::new(u3_reference_attempt(&[
+            "alpha__lookup",
+            "zeta__fetch",
+        ]))],
+        &[],
+        Some(&inputs),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            old.record.schema_version,
+            old.record.policy_revision,
+            old.record.reader_floor,
+            old.record.limits_revision
+        ),
+        (2, 1, 2, 1)
+    );
+    let old_read = mss_u3_decode(&old).unwrap();
+    assert!(
+        matches!(
+            old_read.messages_metadata,
+            NativeMessagesMetadataState::LegacyUnrecorded
+        ),
+        "MSS_U3_V2_HAS_NO_METADATA_PROOF"
+    );
+    let lease = NativeCaptureLease::issue(
+        "mss-u3-v2".into(),
+        "fresh".into(),
+        2,
+        2,
+        NATIVE_SOURCE_BYTES,
+    );
+    let next = NativeCheckpoint::append(
+        Some(&old),
+        &lease,
+        &[std::sync::Arc::new(mss_u3_observed_attempt(2, 2))],
+        &[],
+    )
+    .unwrap();
+    let wire = mss_u3_ledger_json(&next);
+    assert_eq!(
+        wire["messages_response_metadata"][0]["capture"],
+        serde_json::json!({"LegacyUnrecorded":{"source_schema":2}}),
+        "MSS_U3_V2_METADATA_REMAINS_UNRECORDED"
+    );
+    assert_eq!(
+        &next.eligible_members().unwrap()[..2],
+        old.eligible_members().unwrap().as_slice()
+    );
+    for (digest, bytes) in &old.blobs {
+        assert_eq!(next.blobs[digest].as_ref(), bytes.as_ref());
+    }
+    assert_eq!(next.ledger.usage[0], old.ledger.usage[0]);
+    assert_eq!(
+        (
+            next.record.schema_version,
+            next.record.policy_revision,
+            next.record.reader_floor,
+            next.record.limits_revision
+        ),
+        (3, 1, 3, 2)
+    );
+    assert!(mss_u3_decode(&next).is_ok());
+}
+
+#[test]
+fn mss_u3_metadata_preflight_refuses_before_copy_and_prefix_is_immutable() {
+    use crate::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = NativeCaptureLease::issue(
+        "mss-u3-preflight".into(),
+        "base".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let attempts: Vec<_> = (1..=4)
+        .map(|attempt| std::sync::Arc::new(mss_u3_observed_attempt(attempt, 4000)))
+        .collect();
+    let previous = NativeCheckpoint::append(None, &lease, &attempts, &[]).unwrap();
+    let original = mss_u3_ledger_json(&previous);
+    let used = mss_u3_independent_members(&original);
+    let observations = (NATIVE_LEDGER_MEMBERS - used - 5 + 1) as usize;
+    let incoming = NativeCaptureLease::issue(
+        "mss-u3-preflight".into(),
+        "overflow".into(),
+        2,
+        2,
+        NATIVE_SOURCE_BYTES,
+    );
+    let before = incoming.charged().unwrap();
+    assert!(matches!(
+        NativeCheckpoint::append(
+            Some(&previous),
+            &incoming,
+            &[std::sync::Arc::new(mss_u3_observed_attempt(
+                5,
+                observations
+            ))],
+            &[]
+        ),
+        Err(NativeUnavailable::Capacity)
+    ));
+    assert_eq!(
+        incoming.charged().unwrap(),
+        before,
+        "MSS_U3_METADATA_PREFLIGHT_BEFORE_COPY"
+    );
+    assert_eq!(mss_u3_ledger_json(&previous), original);
+    let incoming = NativeCaptureLease::issue(
+        "mss-u3-preflight".into(),
+        "prefix".into(),
+        2,
+        2,
+        NATIVE_SOURCE_BYTES,
+    );
+    let mut next = NativeCheckpoint::append(
+        Some(&previous),
+        &incoming,
+        &[std::sync::Arc::new(mss_u3_observed_attempt(5, 2))],
+        &[],
+    )
+    .unwrap();
+    let NativeMessagesMetadataState::Revision3 {
+        messages_response_metadata,
+    } = &mut next.messages_metadata
+    else {
+        unreachable!()
+    };
+    messages_response_metadata[0].capture = NativeMessagesCapture::CompatibilityUnrecorded;
+    assert!(
+        matches!(
+            next.extends(&previous),
+            Err(NativeUnavailable::InvalidReference)
+        ),
+        "MSS_U3_IMMUTABLE_METADATA_PREFIX"
+    );
+}
+
+#[test]
+fn mss_u3_metadata_terminal_copy_prices_the_complete_ledger() {
+    use crate::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = NativeCaptureLease::issue(
+        "mss-u3-copies".into(),
+        "pending".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let mut attempt = mss_u3_observed_attempt(1, 2);
+    attempt.source_stop_reason = Some("tool_use".into());
+    let NativeMessagesCapture::Observed {
+        observations,
+        finalized,
+        ..
+    } = &mut attempt.messages_metadata
+    else {
+        unreachable!()
+    };
+    observations.last_mut().unwrap().stop_reason =
+        NativeMessagesPresence::Value(serde_json::json!("tool_use"));
+    finalized.stop_reason = NativeMessagesPresence::Value(serde_json::json!("tool_use"));
+    let checkpoint =
+        NativeCheckpoint::append(None, &lease, &[std::sync::Arc::new(attempt)], &[]).unwrap();
+    let original = mss_u3_ledger_json(&checkpoint);
+    let mut terminal = original.clone();
+    let group = terminal["groups"][0]["key"].as_str().unwrap().to_owned();
+    terminal["groups"][0]["state"] = serde_json::json!("AbandonedPending");
+    terminal["lifecycle"]["groups"][&group] = serde_json::json!("AbandonedPending");
+    terminal["lifecycle"]["exchanges"]["pending"] = serde_json::json!("Terminal");
+    for name in [
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ] {
+        terminal["usage"][0]["observed"][name] = serde_json::json!(u64::MAX);
+    }
+    terminal["usage"][0]["observed"]["cache_creation"] = serde_json::json!({"ephemeral_5m_input_tokens":u64::MAX,"ephemeral_1h_input_tokens":u64::MAX});
+    terminal["usage"][0]["outcome"] = serde_json::json!({"PartialTerminal":"Indeterminate"});
+    terminal["lifecycle"]["terminal"]["pending:1"] = serde_json::json!({"outcome":"Indeterminate",
+        "last_accepted_response":u64::MAX,"observed_bytes":u64::MAX,"failed_block":u32::MAX});
+    let expected = serde_json::to_vec(&terminal).unwrap().len() as u64;
+    assert_eq!(
+        checkpoint.record.capacity["terminal_ledger_bytes"], expected,
+        "MSS_U3_TERMINAL_METADATA_COPY_BYTES"
+    );
+    let reservation = checkpoint.reservation().unwrap();
+    for role in [
+        &reservation.current,
+        &reservation.staging,
+        &reservation.backup,
+    ] {
+        assert_eq!(
+            role.ledger_bytes,
+            checkpoint.record.capacity["ledger_bytes"] + expected,
+            "MSS_U3_ALL_METADATA_PHYSICAL_COPIES"
+        );
+    }
+    assert_eq!(
+        checkpoint.record.capacity["ledger_members"],
+        mss_u3_independent_members(&terminal),
+        "MSS_U3_READER_METADATA_MEMBER_COUNT"
+    );
+    assert_eq!(
+        terminal["messages_response_metadata"],
+        original["messages_response_metadata"]
+    );
+}
+
+fn mss_u3_observed_attempt(
+    attempt: u64,
+    observations: usize,
+) -> xai_grok_sampling_types::conversation::native_search_history::NativeAttemptEvidence {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let mut legacy = u2_native_attempt(attempt, format!("mss-u3-{attempt}"));
+    legacy.view_roles.clear();
+    legacy.view_digests.clear();
+    legacy
+        .usage
+        .insert("output_tokens".into(), serde_json::json!(0));
+    let mut wire = serde_json::to_value(legacy).unwrap();
+    if wire.get("messages_metadata").is_some() {
+        let mut series = Vec::new();
+        for ordinal in 0..observations {
+            let terminal = ordinal + 1 == observations;
+            series.push(serde_json::json!({"ordinal":ordinal,
+                "kind":if ordinal == 0 { "MessageStart" } else { "MessageDelta" },
+                "terminal":terminal,"usage":{"Value":{"input_tokens":1,"output_tokens":0}},
+                "stop_reason":if terminal { serde_json::json!({"Value":"end_turn"}) }
+                    else if ordinal == 0 { serde_json::json!("Null") } else { serde_json::json!("Missing") },
+                "stop_sequence":"Missing","stop_details":"Missing"}));
+        }
+        wire["messages_metadata"] = serde_json::json!({"Observed":{"observations":series,
+            "finalized":{"usage":{"Value":{"input_tokens":1,"output_tokens":0}},
+                "stop_reason":{"Value":"end_turn"},"stop_sequence":"Missing","stop_details":"Missing",
+                "terminal_observation":observations-1},"coverage":"Complete"}});
+    }
+    serde_json::from_value::<NativeAttemptEvidence>(wire).unwrap()
+}
+
+fn mss_u3_ledger_json(
+    checkpoint: &crate::persistence::native::NativeCheckpoint,
+) -> serde_json::Value {
+    serde_json::from_slice(&checkpoint.blobs[&checkpoint.record.ledger.digest]).unwrap()
+}
+
+fn mss_u3_independent_members(ledger: &serde_json::Value) -> u64 {
+    let mut count = 0u64;
+    for field in [
+        "accounting",
+        "usage",
+        "observations",
+        "transitions",
+        "eligible_member_accounting",
+    ] {
+        count += ledger[field].as_array().map_or(0, Vec::len) as u64;
+    }
+    count += ledger["lifecycle"]["waiting_clients"]
+        .as_array()
+        .unwrap()
+        .len() as u64;
+    count += ledger["lifecycle"]["terminal"].as_object().unwrap().len() as u64;
+    for group in ledger["groups"].as_array().unwrap() {
+        count += group["duplicate_observations"].as_array().unwrap().len() as u64;
+    }
+    for entry in ledger
+        .get("messages_response_metadata")
+        .and_then(serde_json::Value::as_array)
+        .expect("MSS_U3_MEMBER_METADATA_REQUIRED")
+    {
+        count += 1;
+        count += entry["capture"]["Observed"]["observations"]
+            .as_array()
+            .map_or(0, Vec::len) as u64;
+    }
+    count
+}
+
+fn mss_u3_decode(
+    checkpoint: &crate::persistence::native::NativeCheckpoint,
+) -> Result<
+    crate::persistence::native::NativeCheckpoint,
+    xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+> {
+    crate::persistence::native::NativeCheckpoint::decode(checkpoint.bytes.to_vec(), |reference| {
+        checkpoint.blobs.get(&reference.digest).map(|bytes| bytes.to_vec())
+            .ok_or(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::InvalidReference)
+    })
+}
+
+#[test]
+fn mss_u3_metadata_schema3_migration_is_explicit_and_fail_closed() {
+    use crate::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = NativeCaptureLease::issue(
+        "mss-u3-migrate".into(),
+        "old".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let mut old_attempt = u2_native_attempt(1, "old".into());
+    old_attempt.view_roles.clear();
+    old_attempt.view_digests.clear();
+    let old =
+        NativeCheckpoint::append(None, &lease, &[std::sync::Arc::new(old_attempt)], &[]).unwrap();
+    let old_bytes = old.bytes.clone();
+    assert_eq!(
+        (
+            old.record.schema_version,
+            old.record.policy_revision,
+            old.record.reader_floor,
+            old.record.limits_revision
+        ),
+        (1, 1, 1, 1)
+    );
+    let next_lease = NativeCaptureLease::issue(
+        "mss-u3-migrate".into(),
+        "fresh".into(),
+        2,
+        2,
+        NATIVE_SOURCE_BYTES,
+    );
+    let next = NativeCheckpoint::append(
+        Some(&old),
+        &next_lease,
+        &[std::sync::Arc::new(mss_u3_observed_attempt(2, 2))],
+        &[],
+    )
+    .unwrap();
+    let ledger = mss_u3_ledger_json(&next);
+    let metadata = ledger
+        .get("messages_response_metadata")
+        .and_then(serde_json::Value::as_array)
+        .expect("MSS_U3_LEGACY_MIGRATION_METADATA");
+    assert_eq!(metadata.len(), 2);
+    assert_eq!(
+        metadata[0]["capture"],
+        serde_json::json!({"LegacyUnrecorded":{"source_schema":1}})
+    );
+    assert!(metadata[1]["capture"]["Observed"].is_object());
+    assert_eq!(
+        (
+            next.record.schema_version,
+            next.record.policy_revision,
+            next.record.reader_floor,
+            next.record.limits_revision
+        ),
+        (3, 1, 3, 2)
+    );
+    assert_eq!(old.bytes, old_bytes);
+    for (digest, bytes) in &old.blobs {
+        assert_eq!(next.blobs[digest].as_ref(), bytes.as_ref());
+    }
+    assert!(mss_u3_decode(&old).is_ok());
+    assert!(mss_u3_decode(&next).is_ok());
+    for tuple in [(3, 1, 2, 1), (3, 1, 3, 1), (2, 1, 3, 2)] {
+        let mut bad = next.clone();
+        bad.record.schema_version = tuple.0;
+        bad.record.policy_revision = tuple.1;
+        bad.record.reader_floor = tuple.2;
+        bad.record.limits_revision = tuple.3;
+        bad.bytes = serde_json::to_vec(&bad.record).unwrap().into();
+        assert!(matches!(
+            mss_u3_decode(&bad),
+            Err(NativeUnavailable::UnsupportedVersion)
+        ));
+    }
+    for fault in ["missing", "swapped", "foreign-key", "bad-presence"] {
+        let mut bad = next.clone();
+        let mut ledger = mss_u3_ledger_json(&bad);
+        match fault {
+            "missing" => {
+                ledger
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("messages_response_metadata");
+            }
+            "swapped" => {
+                ledger["messages_response_metadata"]
+                    .as_array_mut()
+                    .unwrap()
+                    .swap(0, 1);
+            }
+            "foreign-key" => {
+                ledger["messages_response_metadata"][1]["key"]["lease"] = serde_json::json!(999);
+            }
+            "bad-presence" => {
+                ledger["messages_response_metadata"][1]["capture"]["Observed"]["observations"][0]
+                    ["usage"] = serde_json::json!({"Value":null});
+            }
+            _ => unreachable!(),
+        }
+        let bytes = serde_json::to_vec(&ledger).unwrap();
+        let digest = crate::persistence::native::digest(&bytes);
+        bad.record.ledger.digest = digest.clone();
+        bad.record.ledger.byte_len = bytes.len() as u64;
+        bad.blobs.insert(digest.clone(), bytes.into());
+        bad.blob_kinds.insert(digest, "ledger".into());
+        bad.bytes = serde_json::to_vec(&bad.record).unwrap().into();
+        assert!(mss_u3_decode(&bad).is_err(), "MSS_U3_STRICT_METADATA_CODEC");
+    }
+}
+
+#[test]
+fn mss_u3_metadata_charges_each_observation_and_preserves_prefix() {
+    use crate::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = NativeCaptureLease::issue(
+        "mss-u3-members".into(),
+        "base".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let attempts: Vec<_> = (1..=4)
+        .map(|attempt| std::sync::Arc::new(mss_u3_observed_attempt(attempt, 4000)))
+        .collect();
+    let before = NativeCheckpoint::append(None, &lease, &attempts, &[]).unwrap();
+    let original = mss_u3_ledger_json(&before);
+    let count = mss_u3_independent_members(&original);
+    assert_eq!(
+        original["messages_response_metadata"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert!(count < NATIVE_LEDGER_MEMBERS);
+    let duplicate = NativeCheckpoint::append(Some(&before), &lease, &attempts, &[]).unwrap();
+    assert_eq!(
+        mss_u3_ledger_json(&duplicate)["messages_response_metadata"],
+        original["messages_response_metadata"]
+    );
+    let next_lease = NativeCaptureLease::issue(
+        "mss-u3-members".into(),
+        "fit".into(),
+        2,
+        2,
+        NATIVE_SOURCE_BYTES,
+    );
+    let observations = usize::try_from(NATIVE_LEDGER_MEMBERS - count - 5).unwrap();
+    assert!(observations >= 2);
+    let fit = NativeCheckpoint::append(
+        Some(&before),
+        &next_lease,
+        &[std::sync::Arc::new(mss_u3_observed_attempt(
+            5,
+            observations,
+        ))],
+        &[],
+    )
+    .expect("MSS_U3_METADATA_EXACT_FIT");
+    let fit_ledger = mss_u3_ledger_json(&fit);
+    assert_eq!(
+        mss_u3_independent_members(&fit_ledger),
+        NATIVE_LEDGER_MEMBERS
+    );
+    assert_eq!(
+        fit_ledger["messages_response_metadata"].as_array().unwrap()[..4],
+        original["messages_response_metadata"].as_array().unwrap()[..]
+    );
+    assert!(
+        matches!(
+            NativeCheckpoint::append(
+                Some(&before),
+                &next_lease,
+                &[std::sync::Arc::new(mss_u3_observed_attempt(
+                    5,
+                    observations + 1
+                ))],
+                &[]
+            ),
+            Err(NativeUnavailable::Capacity)
+        ),
+        "MSS_U3_METADATA_PLUS_ONE_REFUSES"
+    );
+    assert_eq!(mss_u3_ledger_json(&before), original);
+}
+
+#[test]
+fn mss_u3_metadata_foreign_key_refuses_at_exact_identity_boundary() {
+    use crate::persistence::native::{NativeCheckpoint, digest};
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = NativeCaptureLease::issue(
+        "mss-u3-key".into(),
+        "mss-u3-key".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let checkpoint = NativeCheckpoint::append(
+        None,
+        &lease,
+        &[std::sync::Arc::new(mss_u3_observed_attempt(1, 2))],
+        &[],
+    )
+    .unwrap();
+    assert!(mss_u3_decode(&checkpoint).is_ok());
+    for field in [
+        "request",
+        "lease",
+        "attempt",
+        "response_occurrence",
+        "continuation",
+    ] {
+        let mut bad = checkpoint.clone();
+        let mut ledger = mss_u3_ledger_json(&bad);
+        let value = &mut ledger["messages_response_metadata"][0]["key"][field];
+        *value = if field == "request" {
+            serde_json::json!("x".repeat(value.as_str().unwrap().len()))
+        } else {
+            serde_json::json!(9)
+        };
+        let bytes = serde_json::to_vec(&ledger).unwrap();
+        assert_eq!(bytes.len() as u64, checkpoint.record.ledger.byte_len);
+        bad.record.ledger.digest = digest(&bytes);
+        bad.blobs
+            .insert(bad.record.ledger.digest.clone(), bytes.into());
+        bad.blob_kinds
+            .insert(bad.record.ledger.digest.clone(), "ledger".into());
+        bad.bytes = serde_json::to_vec(&bad.record).unwrap().into();
+        assert_eq!(bad.bytes.len(), checkpoint.bytes.len());
+        assert!(
+            matches!(
+                mss_u3_decode(&bad),
+                Err(NativeUnavailable::InvalidReference)
+            ),
+            "MSS_U3_EXACT_METADATA_RESPONSE_KEY"
+        );
+    }
 }

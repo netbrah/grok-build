@@ -10,6 +10,7 @@ authors = ["xAI"]
 default = []
 default-bazel = []
 memory-log = []
+test-support = []
 
 [dependencies]
 anyhow = { workspace = true }

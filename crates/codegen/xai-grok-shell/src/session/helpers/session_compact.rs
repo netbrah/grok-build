@@ -662,7 +662,7 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
-                let stream_result =
+            let stream_result =
                 // STABLE-REMINDER-1 (apex-ayl.110): side-call path (no
                 // per-session anchor) — `&mut None`. This request carries
                 // the real session conv-id, so the conv-id keyed entry gate
@@ -806,7 +806,8 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
-            let (mut stream, _metadata) = send_compact_messages_request(&client, request, cancel).await?;
+            let (mut stream, _metadata) =
+                send_compact_messages_request(&client, request, cancel).await?;
             // Collect the streamed response (Messages API event types)
             let mut timing = StreamTiming::new();
             let mut truncated = false;
@@ -854,7 +855,7 @@ pub(crate) async fn generate_session_compact(
                             content.push_str(&text);
                         }
                         xai_grok_sampling_types::messages::MessageStreamEvent::MessageDelta { delta, .. } => {
-                            if let Some(sr) = delta.stop_reason {
+                            if let Some(sr) = delta.stop_reason.as_ref() {
                                 truncated = matches!(
                                     sr,
                                     xai_grok_sampling_types::messages::StopReason::MaxTokens

@@ -399,7 +399,7 @@ async fn persisted_versioned_native_record() {
                 .unwrap_or_default();
             let record: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             assert_eq!(
-                record["schema_version"], 1,
+                record["schema_version"], 3,
                 "W00: real decode -> actor -> disk must retain NativeSearchHistoryV1"
             );
             assert_eq!(
@@ -408,8 +408,8 @@ async fn persisted_versioned_native_record() {
                 "R10 F4: captured completion equals the ordinary typed control"
             );
             assert_eq!(record["policy_revision"], 1);
-            assert_eq!(record["reader_floor"], 1);
-            assert_eq!(record["limits_revision"], 1);
+            assert_eq!(record["reader_floor"], 3);
+            assert_eq!(record["limits_revision"], 2);
             let source = native_blob(session.directory.path(), &record["source"]);
             let active = native_blob(session.directory.path(), &record["active"]);
             let ledger = native_blob(session.directory.path(), &record["ledger"]);
@@ -586,7 +586,7 @@ async fn native_history_failed_attempt_survives_disk_reload() {
             }
             for (record, source, ledger, partial) in disk_observations {
                 assert_eq!(
-                    record["schema_version"], 1,
+                    record["schema_version"], 3,
                     "R6: failed real HTTP attempt must survive the actor/disk handoff"
                 );
                 assert_eq!(source["responses"].as_array().unwrap().len(), 1);
@@ -769,7 +769,7 @@ async fn native_history_cancelled_attempt_keeps_source_only() {
         drop(observed);
         let bytes = std::fs::read(session.directory.path().join("native_history/current.json")).unwrap_or_default();
         let record: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        assert_eq!(record["schema_version"], 1, "R6: UI revocation must not drop valid old-lease source evidence");
+        assert_eq!(record["schema_version"], 3, "R6: UI revocation must not drop valid old-lease source evidence");
         let source = native_blob(session.directory.path(), &record["source"]);
         let active = native_blob(session.directory.path(), &record["active"]);
         let ledger = native_blob(session.directory.path(), &record["ledger"]);
@@ -972,6 +972,8 @@ async fn u2_metadata_candidate(
     observed.source_stop_reason = None;
     observed.stream_complete = false;
     observed.status = NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed);
+    observed.messages_metadata = xai_grok_sampling_types::conversation::native_search_history::NativeMessagesCapture::empty_failed();
+    observed.usage.clear();
     let items = session.actor.chat_state_handle.get_conversation().await;
     let candidate = xai_chat_state::persistence::native::NativeCheckpoint::append(
         Some(&stored),
@@ -1770,7 +1772,7 @@ fn r10_expand_source(checkpoint: &mut R10Checkpoint, target: u64) {
         source
             .eligible_snapshots
             .push(r10_blob_ref("eligible_snapshot", &identity_bytes));
-        let source_bytes = serde_json::to_vec(&source).unwrap();
+        let source_bytes = mss_u3_fixture_source_encoding(&source, &checkpoint.identity);
         let measured = existing
             + schema.len() as u64
             + identity_bytes.len() as u64
@@ -1831,13 +1833,13 @@ fn r10_quota_candidate(
             .ledger
             .transitions
             .push(serde_json::json!({"reason":"capacity fixture","detail":"é\n\"\\transition:"}));
-        let overhead = serde_json::to_vec(&checkpoint.ledger).unwrap().len() as u64;
+        let overhead = mss_u3_fixture_ledger_encoding(&checkpoint).len() as u64;
         checkpoint.ledger.transitions.last_mut().unwrap()["detail"] = serde_json::json!(format!(
             "é\n\"\\transition:{}",
             "x".repeat((target - existing - overhead) as usize)
         ));
     }
-    let ledger = serde_json::to_vec(&checkpoint.ledger).unwrap();
+    let ledger = mss_u3_fixture_ledger_encoding(&checkpoint);
     checkpoint.record.ledger = r10_put_blob(&mut checkpoint, "ledger", ledger);
     if let Some(target) = ledger_bytes {
         assert_eq!(r10_partition_bytes(&checkpoint, "ledger"), target);
@@ -1920,7 +1922,8 @@ fn r10_seal_reader_fixture(
                 .groups
                 .iter()
                 .map(|group| group.duplicate_observations.len())
-                .sum::<usize>();
+                .sum::<usize>()
+            + mss_u3_fixture_extra_members(checkpoint);
         let capacity = std::collections::BTreeMap::from([
             ("source_bytes".into(), source),
             (
@@ -2105,7 +2108,7 @@ fn r10_disk_control_reservation(
         }
     }
     let authority = NativeGenerationAuthority {
-        schema_version: NATIVE_SCHEMA_VERSION,
+        schema_version: checkpoint.record.schema_version,
         lineage: checkpoint.record.lineage.id.clone(),
         high_water: checkpoint.record.high_water,
         checkpoint: r10_blob_ref("checkpoint", &checkpoint.bytes),
@@ -4134,7 +4137,26 @@ async fn r18_unknown_primary_cell(
     use crate::session::storage::StorageAdapter;
     use xai_grok_sampling_types::conversation::native_search_history::*;
     let mut expected_usage = serde_json::Map::new();
-    for frame in &frames {
+    let strict = matches!(
+        case,
+        "unknown-delta" | "unknown-block-prefix" | "unknown-block-native" | "unknown-event"
+    );
+    let admitted = !matches!(
+        case,
+        "unknown-delta" | "unknown-block-prefix" | "unknown-event"
+    );
+    let consumed = match case {
+        "unknown-delta" => 3,
+        "unknown-block-prefix" | "unknown-event" => 1,
+        "unknown-block-native" => 15,
+        _ => frames.len(),
+    };
+    let partial_reason = if strict {
+        NativeUnavailable::Failed
+    } else {
+        NativeUnavailable::Fidelity
+    };
+    for frame in frames.iter().take(consumed) {
         let usage = match frame["type"].as_str() {
             Some("message_start") => &frame["message"]["usage"],
             Some("message_delta") => &frame["usage"],
@@ -4184,11 +4206,118 @@ async fn r18_unknown_primary_cell(
             assert!(failed.contains("future_stop"));
         }
     }
+    if strict {
+        assert_eq!(ordinary.len(), 1);
+        assert_eq!(ordinary[0]["failed"]["kind"], json!("Serialization"));
+        assert_eq!(ordinary[0]["failed"]["is_retryable"], false);
+        {
+            let events = session.observed.lock().unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, xai_grok_sampler::SamplingEvent::Failed { .. }))
+                    .count(),
+                1
+            );
+            assert!(!events.iter().any(|event| matches!(
+                event,
+                xai_grok_sampler::SamplingEvent::Completed { .. }
+                    | xai_grok_sampler::SamplingEvent::Retrying { .. }
+            )));
+            let attempts: Vec<_> = events
+                .iter()
+                .enumerate()
+                .filter_map(|(position, event)| match event {
+                    xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                        evidence: NativeEvidenceEvent::Attempt(evidence),
+                        ..
+                    } => Some((position, evidence)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(attempts.len(), 1);
+            let (position, attempt) = attempts[0];
+            assert_eq!(
+                attempt.admitted, admitted,
+                "AM14 admission follows the consumed prefix"
+            );
+            assert!(!attempt.stream_complete);
+            assert_eq!(
+                attempt.status,
+                NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed)
+            );
+            assert!(attempt.view_roles.is_empty() && attempt.view_digests.is_empty());
+            if !admitted {
+                assert!(
+                    attempt.blocks.is_empty(),
+                    "AM14 unseen native frames cannot force admission"
+                );
+            }
+            assert_eq!(attempt.usage["output_tokens"], 0);
+            assert_eq!(
+                attempt.usage,
+                expected_usage
+                    .clone()
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            );
+            assert_eq!(attempt.http_dispatches, 1);
+            let terminal = events
+                .iter()
+                .position(|event| matches!(event, xai_grok_sampler::SamplingEvent::Failed { .. }))
+                .unwrap();
+            let end = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                            evidence: NativeEvidenceEvent::End,
+                            ..
+                        }
+                    )
+                })
+                .unwrap();
+            assert!(position < terminal && terminal < end);
+        }
+        if !admitted {
+            let live = session
+                .actor
+                .chat_state_handle
+                .read_native_history()
+                .await
+                .unwrap();
+            assert!(
+                live.checkpoint.is_none(),
+                "AM14 before-admission failure publishes no checkpoint"
+            );
+            let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+                session.directory.path().to_path_buf(),
+            );
+            let info = session.actor.session_info.clone();
+            assert!(
+                adapter
+                    .read_native_history(&info)
+                    .await
+                    .unwrap()
+                    .checkpoint
+                    .is_none()
+            );
+            let full = adapter.load_session(&info).await.unwrap();
+            let light = adapter.load_session_without_updates(&info).await.unwrap();
+            assert_eq!(
+                serde_json::to_value(&full.chat_history).unwrap(),
+                serde_json::to_value(&light.chat_history).unwrap()
+            );
+            assert_eq!(server.messages_request_count(), 1);
+            return (Value::Null, Vec::new(), Vec::new());
+        }
+    }
     let directory = session.directory.path();
     let bytes = std::fs::read(directory.join("native_history/current.json")).unwrap_or_default();
     let record: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     assert_eq!(
-        record["schema_version"], 1,
+        record["schema_version"], 3,
         "R19: admitted capture error must retain a sealed partial envelope on disk for {case}"
     );
     let source = native_blob(directory, &record["source"]);
@@ -4198,7 +4327,7 @@ async fn r18_unknown_primary_cell(
     assert_eq!(responses.len(), 1);
     assert_eq!(
         responses[0]["status"],
-        json!({"PartialTerminal":"Fidelity"})
+        serde_json::to_value(NativeResponseStatus::PartialTerminal(partial_reason)).unwrap()
     );
     assert_eq!(responses[0]["stream_complete"], false);
     assert_eq!(responses[0]["provider_response_id"], "msg_native_history");
@@ -4225,6 +4354,21 @@ async fn r18_unknown_primary_cell(
             Value::Null
         });
     }
+    if case == "unknown-block-native" {
+        assert!(
+            raw_blocks
+                == vec![
+                    json!({"type":"text","text":"before"}),
+                    json!({"type":"thinking","thinking":"step by step","signature":"signed"}),
+                    json!({"type":"server_tool_use","id":"srvtoolu_native_history","name":"tool_search_tool_regex","input":{"query":"account"}}),
+                    json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_native_history",
+                "content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"read_file"}]}}),
+                    json!({"type":"text","text":"after"})
+                ],
+            "AM14 exact post-native safe prefix"
+        );
+        assert!(partials.iter().all(Value::is_null));
+    }
     {
         let events = session.observed.lock().unwrap();
         let attempts: Vec<_> = events
@@ -4247,7 +4391,7 @@ async fn r18_unknown_primary_cell(
         assert!(evidence.admitted);
         assert_eq!(
             evidence.status,
-            NativeResponseStatus::PartialTerminal(NativeUnavailable::Fidelity)
+            NativeResponseStatus::PartialTerminal(partial_reason)
         );
         assert!(!evidence.stream_complete);
         assert!(evidence.view_roles.is_empty() && evidence.view_digests.is_empty());
@@ -4589,14 +4733,14 @@ async fn r18_ordinary_turn_matrix() {
             json!({"type":"content_block_start","index":9,"content_block":{"type":kind,"content":[]}}),
             json!({"type":"content_block_stop","index":9}),
         ]);
-        r18_unknown_primary_cell(case, frames, None).await;
+        r18_unknown_primary_cell(case, frames, Some("serialization error: ")).await;
     }
     let mut frames = native_history_frames();
     frames.insert(1, json!({"type":"future_event","value":"liveness"}));
-    r18_unknown_primary_cell("unknown-event", frames, None).await;
+    r18_unknown_primary_cell("unknown-event", frames, Some("serialization error: ")).await;
     let mut frames = native_history_frames();
     frames.insert(3, json!({"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://example.invalid/evidence"}}}));
-    r18_unknown_primary_cell("unknown-delta", frames, None).await;
+    r18_unknown_primary_cell("unknown-delta", frames, Some("serialization error: ")).await;
     let mut frames = native_history_frames();
     let terminal = frames.len() - 2;
     frames[terminal]["delta"]["stop_reason"] = json!("future_stop");
@@ -7475,7 +7619,7 @@ async fn rejected_native_primary_has_no_active_links_and_next_capture_survives()
                     "primary decision remains held after real source ACK"
                 );
                 let (_, source, active, ledger) = u5a_disk_parts(&session);
-                assert_eq!(source["schema_version"], 2);
+                assert_eq!(source["schema_version"], 3);
                 assert!(
                     active["view_links"].as_array().unwrap().is_empty(),
                     "U5a source ACK must not publish active links before the primary decision"
@@ -9138,7 +9282,7 @@ pub(crate) async fn native_late_a_first_b_scenario(case: &str) -> Value {
         .unwrap()
         .unwrap();
     let before = u5a_disk_parts(&session);
-    assert_eq!(before.1["schema_version"], 2);
+    assert_eq!(before.1["schema_version"], 3);
     assert!(
         !before.1["eligible_member_links"]
             .as_array()
@@ -9570,7 +9714,7 @@ pub(crate) async fn native_projection_disk_fixture() -> NativeProjectionDiskFixt
         .unwrap()
         .unwrap();
     let parts = u5a_disk_parts(&session);
-    assert_eq!(parts.1["schema_version"], 2);
+    assert_eq!(parts.1["schema_version"], 3);
     assert!(
         !parts.1["eligible_member_links"]
             .as_array()
@@ -9880,6 +10024,7 @@ pub(crate) async fn native_counted_encoder_checkpoint(
                 status: NativeResponseStatus::Accepted,
                 blocks,
                 usage: std::collections::BTreeMap::new(),
+                messages_metadata: xai_grok_sampling_types::conversation::native_search_history::NativeMessagesCapture::CompatibilityUnrecorded,
                 latency_ms: Some(1),
                 http_dispatches: 1,
                 observed_bytes,
@@ -11970,4 +12115,1302 @@ async fn owning_primary_live_pending_plan_is_ready() {
             );
         })
         .await;
+}
+
+async fn mss_u3_reader_fixture() -> (
+    U5aPrimarySession,
+    MockInferenceServer,
+    xai_chat_state::persistence::native::NativeCheckpoint,
+    xai_grok_sampling_types::ConversationRequest,
+    xai_chat_state::NativeHistoryOwnerGuard,
+) {
+    use crate::session::storage::StorageAdapter;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let server = MockInferenceServer::start().await.unwrap();
+    server.enqueue_response(
+        "/v1/messages",
+        native_history_script(u5a_frames("end_turn", 0)),
+    );
+    let session = U5aPrimarySession::new(&server).await;
+    session.release_decision.add_permits(1);
+    session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user("mss v3 reader source"))
+        .await;
+    let outcome = session
+        .actor
+        .process_conversation_turn_with_recovery(
+            "mss-v3-source",
+            None,
+            None,
+            None,
+            &mut length_salvage::LengthSalvage::new(None),
+            &mut Default::default(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, TurnOutcome::Completed { .. }));
+    let (respond_to, reply) = tokio::sync::oneshot::channel();
+    session
+        .chat_proxy
+        .send(PersistenceMsg::FlushAndAck { respond_to })
+        .unwrap();
+    tokio::time::timeout(NATIVE_TIMEOUT, reply)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+        session.directory.path().to_path_buf(),
+    );
+    let full = adapter
+        .load_session(&session.actor.session_info)
+        .await
+        .unwrap();
+    let light = adapter
+        .load_session_without_updates(&session.actor.session_info)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&full.chat_history).unwrap(),
+        serde_json::to_value(&light.chat_history).unwrap()
+    );
+    let checkpoint = adapter
+        .read_native_history(&session.actor.session_info)
+        .await
+        .unwrap()
+        .checkpoint
+        .unwrap();
+    checkpoint.matches_history(&full.chat_history).unwrap();
+    let binding = session
+        .actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    let domain = NativeReplayDomain {
+        backend: binding.config.api_backend.clone(),
+        dialect: NativeReplayDialect::Messages,
+        model: binding.config.model.clone(),
+        row: binding.config.model.clone(),
+        provider: "offline".into(),
+        deployment: "loopback".into(),
+        deployment_revision: "1".into(),
+        endpoint: format!("{}/messages", server.url()),
+        principal: "nonsecret-fixture".into(),
+    };
+    session
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let owner = session
+        .actor
+        .chat_state_handle
+        .register_native_history_owner(
+            session.actor.session_id_string(),
+            "mss-v3-bound".into(),
+            domain,
+            NativeProjectionOwner::OwningPrimary,
+            session.actor.session_turn_active.clone(),
+        )
+        .await
+        .unwrap();
+    let (prepared, _) = session.actor.prepare_native_tool_candidates_timed().await;
+    let bundle = session.actor.prepared_tool_bundle(&prepared);
+    let projection = super::BridgeDeclarationProjection::prepared(bundle, Default::default());
+    let candidates = projection
+        .candidates()
+        .with_history_entry(xai_chat_state::NativeHistoryEntry::captured(
+            NativeHistoryRequirement::Selected,
+            xai_chat_state::NativeHistoryEntryIntent::OwningPrimary(owner.token()),
+        ))
+        .unwrap();
+    let (mut request, _) = session
+        .actor
+        .chat_state_handle
+        .build_request_with_binding(
+            candidates,
+            None,
+            false,
+            None,
+            session.actor.session_id_string(),
+            "mss-v3-bound".into(),
+        )
+        .await
+        .unwrap();
+    request.items = session.actor.chat_state_handle.get_conversation().await;
+    checkpoint.matches_history(&request.items).unwrap();
+    assert_eq!(server.messages_request_count(), 1);
+    (session, server, checkpoint.as_ref().clone(), request, owner)
+}
+
+fn mss_u3_policy_core(
+    checkpoint: &R10Checkpoint,
+    request: &xai_grok_sampling_types::ConversationRequest,
+    domain: &xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain,
+) -> Result<
+    xai_grok_sampling_types::conversation::native_search_history::NativeHistoryCore,
+    xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRefusal,
+> {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    use xai_grok_sampling_types::conversation::projection::{
+        Boundary, DiscoveryOrigin, NativeProjectionInputs, NativePureHistory, TargetRoute,
+    };
+    let authorship = checkpoint
+        .source
+        .ordered_blocks
+        .iter()
+        .map(|block| (block.coordinates.occurrence, NativeIdAuthorship::Provider))
+        .collect();
+    let selected: Vec<_> = checkpoint
+        .source
+        .ordered_blocks
+        .iter()
+        .map(|block| block.coordinates.clone())
+        .collect();
+    let history = NativePureHistory {
+        record: &checkpoint.record,
+        source: &checkpoint.source,
+        ledger: &checkpoint.ledger,
+        identity: &checkpoint.identity,
+        blobs: &checkpoint.blobs,
+        authorship: &authorship,
+    };
+    let admission = request.search_admission.unwrap();
+    let route = TargetRoute::new(
+        xai_grok_sampling_types::ApiBackend::Messages,
+        Boundary::Vertex,
+        admission,
+    );
+    prepare_native_history_core(
+        &history,
+        &NativeProjectionInputs {
+            target_model_id: &domain.model,
+            target: &route,
+            tools: &request.tools,
+            current: request.native_eligible_inputs.as_deref(),
+            selected: &selected,
+            origin_domains: &Default::default(),
+            pending: &Default::default(),
+            prior_f: None,
+        },
+        |group| {
+            let result = checkpoint
+                .source
+                .ordered_blocks
+                .iter()
+                .find(|block| block.coordinates == group.members[1])
+                .unwrap();
+            let raw: Value =
+                serde_json::from_slice(&checkpoint.blobs[&result.block.digest]).unwrap();
+            let shape = NativeReplayShape {
+                family: NativeReplayFamily::MessagesServer,
+                keyless_server: false,
+                output_id_present: false,
+                completed: true,
+                result_error: false,
+                referenced_members: native_candidate_references(&raw).unwrap().len() as u64,
+            };
+            (
+                DiscoveryOrigin {
+                    boundary: Boundary::Vertex,
+                    owner_model_id: Some(domain.model.clone()),
+                },
+                NativeQualification {
+                    source: Some(domain.clone()),
+                    target: Some(domain.clone()),
+                    request: Some(domain.clone()),
+                    original_admission: admission,
+                    shape: shape.clone(),
+                    receipt: Some(NativeShapeReceipt {
+                        target: domain.clone(),
+                        shape,
+                        receipt_id: "offline-shape-only".into(),
+                    }),
+                    intact_membership: true,
+                    current_backing: true,
+                    faithful_identity: true,
+                },
+            )
+        },
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mss_u3_v3_capture_passes_policy_plan_and_projection_readers() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    use xai_grok_sampling_types::conversation::projection::{Boundary, TargetRoute};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (session, server, checkpoint, request, owner) = mss_u3_reader_fixture().await;
+            assert_eq!(
+                (
+                    checkpoint.record.schema_version,
+                    checkpoint.record.policy_revision,
+                    checkpoint.record.reader_floor,
+                    checkpoint.record.limits_revision
+                ),
+                (3, 1, 3, 2)
+            );
+            let capture = request
+                .native_bound_preparation
+                .as_ref()
+                .unwrap()
+                .context()
+                .unwrap()
+                .capture()
+                .clone();
+            let core = mss_u3_policy_core(&checkpoint, &request, &capture.target)
+                .expect("MSS_U3_V3_POLICY_READER");
+            assert!(
+                !core.decision.groups.is_empty(),
+                "MSS_U3_REAL_POLICY_GROUPS"
+            );
+            assert!(
+                core.decision
+                    .groups
+                    .iter()
+                    .all(|group| group.action == NativeHistoryAction::Keep),
+                "MSS_U3_POLICY_UNCHANGED_KEEP"
+            );
+            let context = NativeHistoryRequestContext::captured(
+                NativeHistoryRequirement::Selected,
+                capture,
+                NativeHistoryWriteAuthority::SendOnly,
+            );
+            let carrier = native_shared_carrier(&request);
+            let plan = native_checked_shared_plan(
+                &checkpoint,
+                &request,
+                context.clone(),
+                core,
+                carrier.clone(),
+            )
+            .expect("MSS_U3_V3_PLAN_READER");
+            assert_eq!(
+                validate_native_history_plan(&context, Some(&plan), &carrier),
+                Ok(NativeHistoryReady::SendOnly)
+            );
+            let route = TargetRoute::new(
+                xai_grok_sampling_types::ApiBackend::Messages,
+                Boundary::Vertex,
+                request.search_admission.unwrap(),
+            );
+            let projected = checkpoint
+                .prepare_projection(
+                    request.native_bound_preparation.as_ref().unwrap(),
+                    &request,
+                    &route,
+                )
+                .expect("MSS_U3_V3_PROJECTION_PREPARE");
+            projected
+                .write
+                .validate()
+                .expect("MSS_U3_V3_PROJECTION_VALIDATES");
+            let original: NativeLedgerV3 =
+                serde_json::from_slice(&checkpoint.blobs[&checkpoint.record.ledger.digest])
+                    .unwrap();
+            let written: NativeLedgerV3 = serde_json::from_slice(
+                &projected.write.checkpoint.blobs[&projected.write.checkpoint.record.ledger.digest],
+            )
+            .expect("MSS_U3_PROJECTION_LEDGER_V3");
+            assert_eq!(
+                written.messages_response_metadata, original.messages_response_metadata,
+                "MSS_U3_PROJECTION_METADATA_UNCHANGED"
+            );
+            assert_eq!(server.messages_request_count(), 1);
+            drop(owner);
+            session
+                .actor
+                .session_turn_active
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mss_u3_v3_mixed_tuples_refuse_at_policy_and_plan_readers() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (session, server, checkpoint, request, owner) = mss_u3_reader_fixture().await;
+            let capture = request
+                .native_bound_preparation
+                .as_ref()
+                .unwrap()
+                .context()
+                .unwrap()
+                .capture()
+                .clone();
+            let domain = capture.target.clone();
+            let core =
+                mss_u3_policy_core(&checkpoint, &request, &domain).expect("MSS_U3_GENUINE_V3_CORE");
+            let context = NativeHistoryRequestContext::captured(
+                NativeHistoryRequirement::Selected,
+                capture,
+                NativeHistoryWriteAuthority::SendOnly,
+            );
+            let carrier = native_shared_carrier(&request);
+            for tuple in [(3, 1, 2, 1), (3, 1, 3, 1), (2, 1, 3, 2)] {
+                let mut changed = checkpoint.clone();
+                changed.record.schema_version = tuple.0;
+                changed.record.policy_revision = tuple.1;
+                changed.record.reader_floor = tuple.2;
+                changed.record.limits_revision = tuple.3;
+                assert_eq!(
+                    mss_u3_policy_core(&changed, &request, &domain)
+                        .unwrap_err()
+                        .reason,
+                    NativeUnavailable::UnsupportedVersion,
+                    "MSS_U3_POLICY_MIXED_TUPLE_REFUSES"
+                );
+                let mut capture = context.capture().clone();
+                capture.versions.schema = tuple.0;
+                capture.versions.policy = tuple.1;
+                capture.versions.reader = tuple.2;
+                capture.versions.limits = tuple.3;
+                let changed_context = NativeHistoryRequestContext::captured(
+                    context.requirement(),
+                    capture,
+                    context.authority().clone(),
+                );
+                assert!(
+                    matches!(
+                        native_checked_shared_plan(
+                            &changed,
+                            &request,
+                            changed_context,
+                            core.clone(),
+                            carrier.clone()
+                        ),
+                        Err(NativePlanRefusal::UnsupportedVersion)
+                    ),
+                    "MSS_U3_PLAN_MIXED_TUPLE_REFUSES"
+                );
+            }
+            let mut stripped = checkpoint.clone();
+            let NativeIdentityExtension::Revision2 {
+                eligible_member_accounting,
+                ..
+            } = &checkpoint.identity
+            else {
+                unreachable!()
+            };
+            let bytes = serde_json::to_vec(&NativeLedgerV2::from_parts(
+                checkpoint.ledger.clone(),
+                eligible_member_accounting.clone(),
+            ))
+            .unwrap();
+            stripped.record.ledger.byte_len = bytes.len() as u64;
+            stripped.record.ledger.digest = xai_chat_state::persistence::native::digest(&bytes);
+            stripped
+                .blobs
+                .insert(stripped.record.ledger.digest.clone(), bytes.into());
+            assert_eq!(
+                mss_u3_policy_core(&stripped, &request, &domain)
+                    .unwrap_err()
+                    .reason,
+                NativeUnavailable::InvalidReference,
+                "MSS_U3_POLICY_REQUIRES_V3_LEDGER"
+            );
+            assert_eq!(server.messages_request_count(), 1);
+            drop(owner);
+            session
+                .actor
+                .session_turn_active
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+}
+
+fn mss_u3_fixture_source_encoding(
+    source: &xai_grok_sampling_types::conversation::native_search_history::NativeSource,
+    identity: &xai_grok_sampling_types::conversation::native_search_history::NativeIdentityExtension,
+) -> Vec<u8> {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    match identity {
+        NativeIdentityExtension::Revision1Unknown => serde_json::to_vec(source).unwrap(),
+        NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            ..
+        } => {
+            if source.schema_version == 3 {
+                serde_json::to_vec(&NativeSourceV3::from_parts(
+                    source.clone(),
+                    eligible_member_links.clone(),
+                ))
+                .unwrap()
+            } else {
+                serde_json::to_vec(&NativeSourceV2::from_parts(
+                    source.clone(),
+                    eligible_member_links.clone(),
+                ))
+                .unwrap()
+            }
+        }
+    }
+}
+
+fn mss_u3_fixture_ledger_encoding(checkpoint: &R10Checkpoint) -> Vec<u8> {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    match (&checkpoint.identity, &checkpoint.messages_metadata) {
+        (
+            NativeIdentityExtension::Revision2 {
+                eligible_member_accounting,
+                ..
+            },
+            NativeMessagesMetadataState::Revision3 {
+                messages_response_metadata,
+            },
+        ) => serde_json::to_vec(&NativeLedgerV3::from_parts(
+            checkpoint.ledger.clone(),
+            eligible_member_accounting.clone(),
+            messages_response_metadata.clone(),
+        ))
+        .unwrap(),
+        (
+            NativeIdentityExtension::Revision2 {
+                eligible_member_accounting,
+                ..
+            },
+            NativeMessagesMetadataState::LegacyUnrecorded,
+        ) => serde_json::to_vec(&NativeLedgerV2::from_parts(
+            checkpoint.ledger.clone(),
+            eligible_member_accounting.clone(),
+        ))
+        .unwrap(),
+        (
+            NativeIdentityExtension::Revision1Unknown,
+            NativeMessagesMetadataState::LegacyUnrecorded,
+        ) => serde_json::to_vec(&checkpoint.ledger).unwrap(),
+        _ => panic!("MSS fixture profile must be coherent"),
+    }
+}
+
+fn mss_u3_fixture_extra_members(checkpoint: &R10Checkpoint) -> usize {
+    let wire: Value =
+        serde_json::from_slice(&checkpoint.blobs[&checkpoint.record.ledger.digest]).unwrap();
+    let witnesses = wire
+        .get("eligible_member_accounting")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let metadata = wire
+        .get("messages_response_metadata")
+        .and_then(Value::as_array)
+        .map_or(0, |rows| {
+            rows.len()
+                + rows
+                    .iter()
+                    .map(|row| {
+                        row["capture"]["Observed"]["observations"]
+                            .as_array()
+                            .map_or(0, Vec::len)
+                    })
+                    .sum::<usize>()
+        });
+    witnesses + metadata
+}
+
+fn mss_u3_disk_usage_frames() -> Vec<Value> {
+    let mut frames = native_history_frames();
+    frames[0]["message"]["usage"]["server_tool_use"] =
+        json!({"web_search_requests":1,"web_fetch_requests":2});
+    let terminal = frames.len() - 2;
+    frames.splice(terminal..terminal, [
+        json!({"type":"message_delta","delta":{},"usage":{"output_tokens":2,"server_tool_use":{"web_search_requests":3}}}),
+        json!({"type":"message_delta","delta":{},"usage":{"output_tokens":4,"server_tool_use":{"web_fetch_requests":4}}}),
+    ]);
+    frames
+}
+
+async fn mss_u3_wait_native_end(session: &NativeHistorySession) {
+    loop {
+        let notified = session.native_end_processed.notified();
+        if session
+            .native_ended
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            break;
+        }
+        tokio::time::timeout(NATIVE_TIMEOUT, notified)
+            .await
+            .unwrap();
+    }
+    r14_flush_native_session(session).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mss_u3_metadata_failed_partial_disk_roundtrip() {
+    tokio::task::LocalSet::new().run_until(async {
+        use crate::session::storage::StorageAdapter;
+        for case in ["complete", "post-admission-failed", "pre-admission-failed", "eof"] {
+            let mut frames = mss_u3_disk_usage_frames();
+            if case == "post-admission-failed" {
+                frames.truncate(frames.len() - 2);
+                frames.push(json!({"type":"message_delta","delta":{},"usage":{"server_tool_use":{"web_search_requests":999}}}));
+            } else if case == "pre-admission-failed" {
+                frames.truncate(1);
+                frames.push(json!({"type":"message_delta","delta":{},"usage":{"server_tool_use":{"web_search_requests":999}}}));
+            } else if case == "eof" { frames.truncate(frames.len() - 2); }
+            let server = MockInferenceServer::start().await.unwrap();
+            server.enqueue_response("/v1/messages", native_history_script(frames));
+            let session = NativeHistorySession::new(&server).await;
+            let outcome = r18_primary_outcome(&session, "mss-u3-disk").await;
+            mss_u3_wait_native_end(&session).await;
+            let live = session.actor.chat_state_handle.read_native_history().await.unwrap();
+            let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+                session.directory.path().to_path_buf());
+            let info = session.actor.session_info.clone();
+            let reload = adapter.read_native_history(&info).await.unwrap();
+            if case == "pre-admission-failed" {
+                assert!(outcome.get("failed").is_some());
+                assert!(live.checkpoint.is_none() && reload.checkpoint.is_none());
+                continue;
+            }
+            let live = live.checkpoint.expect("MSS_U3_ACTUAL_ADMITTED_PARENT");
+            let reload = reload.checkpoint.unwrap();
+            assert_eq!(live.bytes, reload.bytes);
+            let record: Value = serde_json::from_slice(&live.bytes).unwrap();
+            let source = native_blob(session.directory.path(), &record["source"]);
+            let ledger = native_blob(session.directory.path(), &record["ledger"]);
+            assert_eq!(source["responses"].as_array().unwrap().len(), 1);
+            assert_eq!(ledger["usage"].as_array().unwrap().len(), 1);
+            let metadata = ledger.get("messages_response_metadata").and_then(Value::as_array)
+                .expect("MSS_U3_PERSISTED_METADATA_REQUIRED");
+            assert_eq!(metadata.len(), 1);
+            let usage = &ledger["usage"][0];
+            assert_eq!(metadata[0]["key"], json!({"request":usage["request"],"lease":usage["lease"],
+                "attempt":usage["attempt"],"response_occurrence":usage["response_occurrence"],
+                "continuation":usage["continuation"]}));
+            assert_eq!((record["schema_version"].clone(), record["policy_revision"].clone(),
+                record["reader_floor"].clone(), record["limits_revision"].clone()),
+                (json!(3), json!(1), json!(3), json!(2)));
+            let captured = &metadata[0]["capture"]["Observed"];
+            assert!(captured.is_object());
+            let finalized = &captured["finalized"]["usage"]["Value"];
+            assert_eq!(finalized["server_tool_use"], json!({"web_search_requests":3,"web_fetch_requests":4}));
+            if case == "complete" {
+                assert!(outcome.get("completed").is_some());
+                assert_eq!(captured["coverage"], "Complete");
+                assert_eq!(finalized["output_tokens"], 7);
+                assert_eq!(captured["observations"].as_array().unwrap().len(), 4);
+            } else {
+                assert!(outcome.get("failed").is_some());
+                assert!(captured["coverage"].get("Partial").is_some());
+                assert_eq!(finalized["output_tokens"], 4);
+                assert_eq!(captured["observations"].as_array().unwrap().len(), 3);
+                assert_eq!(captured["finalized"]["terminal_observation"], json!(null));
+                assert!(source["responses"][0]["status"].get("PartialTerminal").is_some());
+            }
+            let full = adapter.load_session(&info).await.unwrap();
+            let light = adapter.load_session_without_updates(&info).await.unwrap();
+            assert_eq!(serde_json::to_value(&full.chat_history).unwrap(),
+                serde_json::to_value(&light.chat_history).unwrap());
+            reload.matches_history(&full.chat_history).unwrap();
+            assert_eq!(server.messages_request_count(), 1);
+        }
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mss_u3_metadata_foreign_key_from_real_capture_refuses() {
+    use xai_chat_state::persistence::native::{NativeCheckpoint, digest};
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (session, server, checkpoint, request, owner) = mss_u3_reader_fixture().await;
+            checkpoint.matches_history(&request.items).unwrap();
+            for field in [
+                "request",
+                "lease",
+                "attempt",
+                "response_occurrence",
+                "continuation",
+            ] {
+                let mut bad = checkpoint.clone();
+                let mut ledger: Value =
+                    serde_json::from_slice(&bad.blobs[&bad.record.ledger.digest]).unwrap();
+                let value = &mut ledger["messages_response_metadata"][0]["key"][field];
+                *value = if field == "request" {
+                    json!("x".repeat(value.as_str().unwrap().len()))
+                } else {
+                    json!(9)
+                };
+                let bytes = serde_json::to_vec(&ledger).unwrap();
+                assert_eq!(bytes.len() as u64, checkpoint.record.ledger.byte_len);
+                bad.record.ledger.digest = digest(&bytes);
+                bad.blobs
+                    .insert(bad.record.ledger.digest.clone(), bytes.into());
+                bad.blob_kinds
+                    .insert(bad.record.ledger.digest.clone(), "ledger".into());
+                bad.bytes = serde_json::to_vec(&bad.record).unwrap().into();
+                assert_eq!(bad.bytes.len(), checkpoint.bytes.len());
+                let decoded = NativeCheckpoint::decode(bad.bytes.to_vec(), |reference| {
+                    bad.blobs
+                        .get(&reference.digest)
+                        .map(|bytes| bytes.to_vec())
+                        .ok_or(NativeUnavailable::InvalidReference)
+                });
+                assert!(
+                    matches!(decoded, Err(NativeUnavailable::InvalidReference)),
+                    "MSS_U3_REAL_CAPTURE_METADATA_RESPONSE_KEY"
+                );
+            }
+            assert_eq!(server.messages_request_count(), 1);
+            drop(owner);
+            session
+                .actor
+                .session_turn_active
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+}
+
+const MSS_U4_PROTECTED_SELECTOR: &str = "session::acp_session::native_history_policy_tests::mss_u4_protected_metadata_same_occurrence_survives_disk_and_logs";
+const MSS_U4_PROTECTED_ROOT_ENV: &str = "MSS_U4_PROTECTED_ROOT";
+
+#[derive(Clone)]
+struct MssU4DiagnosticBytes(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for MssU4DiagnosticBytes {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut output = self
+            .0
+            .lock()
+            .map_err(|_| std::io::Error::other("MSS_U4_DIAGNOSTIC_LOCK"))?;
+        if bytes.len() > 1_048_576usize.saturating_sub(output.len()) {
+            return Err(std::io::Error::other("MSS_U4_DIAGNOSTIC_BOUND"));
+        }
+        output.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn mss_u4_protected_children() {
+    use tokio::io::AsyncReadExt;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let root = tempfile::tempdir_in(std::env::temp_dir()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        for mode in ["ordinary", "sampling"] {
+            let home = tempfile::tempdir_in(root.path()).unwrap();
+            let scope = xai_tty_utils::ProcessScope::new();
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([MSS_U4_PROTECTED_SELECTOR, "--exact", "--nocapture"])
+                .env_clear()
+                .env("HOME", home.path())
+                .env("GROK_HOME", home.path().join("grok"))
+                .env("XDG_CONFIG_HOME", home.path().join("config"))
+                .env("TMPDIR", root.path())
+                .env(MSS_U4_PROTECTED_ROOT_ENV, root.path())
+                .env("MSS_U4_PROTECTED_MODE", mode)
+                .env("RUST_MIN_STACK", "67108864")
+                .env(
+                    "GROK_LOG_SAMPLING",
+                    if mode == "sampling" { "1" } else { "0" },
+                )
+                .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+                .kill_on_drop(true)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            for name in ["GROK_SHELL_BUNDLE_RG_PATH", "GROK_TOOLS_BUNDLE_RG_PATH"] {
+                if let Some(path) = std::env::var_os(name) {
+                    command.env(name, path);
+                }
+            }
+            let (mut child, group) = scope.spawn(command).expect("MSS_U4_CHILD_ENROLLED");
+            let mut stdout = child.stdout.take().unwrap().take(1_048_577);
+            let mut stderr = child.stderr.take().unwrap().take(1_048_577);
+            let mut output = Vec::new();
+            let mut errors = Vec::new();
+            let result = tokio::time::timeout(Duration::from_secs(120), async {
+                tokio::join!(
+                    child.wait(),
+                    stdout.read_to_end(&mut output),
+                    stderr.read_to_end(&mut errors)
+                )
+            })
+            .await;
+            let (status, read_output, read_errors) = match result {
+                Ok(result) => result,
+                Err(_) => {
+                    scope.kill_all();
+                    tokio::time::timeout(Duration::from_secs(10), child.wait())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    panic!("MSS_U4_CHILD_DEADLINE");
+                }
+            };
+            read_output.unwrap();
+            read_errors.unwrap();
+            let status = status.unwrap();
+            drop(group);
+            assert_eq!(scope.live_count(), 0, "MSS_U4_CHILD_REAPED");
+            assert!(
+                output.len() <= 1_048_576 && errors.len() <= 1_048_576,
+                "MSS_U4_CHILD_OUTPUT_BOUND"
+            );
+            let output_text = String::from_utf8_lossy(&output);
+            let error_text = String::from_utf8_lossy(&errors);
+            assert!(
+                output_text.contains("running 1 test"),
+                "MSS_U4_CHILD_EXACT_SELECTION"
+            );
+            assert_eq!(
+                output_text.matches("MSS_U4_CHILD_ASSERTIONS_BEGIN").count(),
+                1,
+                "MSS_U4_CHILD_ASSERTION_LIVENESS"
+            );
+            println!(
+                "MSS_U4_CHILD_RECEIPT {}",
+                json!({"mode":mode,"exit":status.code(),
+                "stdout_sha256":xai_chat_state::persistence::native::digest(&output),
+                "stderr_sha256":xai_chat_state::persistence::native::digest(&errors),
+                "exact_child":true,"environment_cleared":true,"temporary_home":true})
+            );
+            if !status.success() && error_text.contains("MSS_U4_SAME_OCCURRENCE_DIAGNOSTIC_MASK") {
+                panic!("MSS_U4_SAME_OCCURRENCE_DIAGNOSTIC_MASK");
+            }
+            assert!(status.success(), "MSS_U4_PROTECTED_CHILD_FAILED");
+            assert_eq!(
+                output_text
+                    .matches("MSS_U4_CHILD_ASSERTIONS_PASSED")
+                    .count(),
+                1,
+                "MSS_U4_CHILD_COMPLETED_ASSERTIONS"
+            );
+        }
+    });
+}
+
+async fn mss_u4_fragmented_source(frames: Vec<Value>) -> (String, tokio::task::JoinHandle<Value>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let body = frames
+        .iter()
+        .map(|frame| format!("data: {frame}\n\n"))
+        .collect::<String>();
+    assert!(body.len() < 1_048_576);
+    let task = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(30), async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            let header_end = loop {
+                let mut bytes = [0u8; 4096];
+                let read = socket.read(&mut bytes).await.unwrap();
+                assert!(read > 0, "MSS_U4_HTTP_REQUEST_PRESENT");
+                received.extend_from_slice(&bytes[..read]);
+                assert!(received.len() < 2_097_152, "MSS_U4_HTTP_REQUEST_BOUND");
+                if let Some(end) = received.windows(4).position(|part| part == b"\r\n\r\n") { break end + 4; }
+                assert!(received.len() < 32_768, "MSS_U4_HTTP_HEADER_BOUND");
+            };
+            let headers = std::str::from_utf8(&received[..header_end]).unwrap();
+            assert!(headers.starts_with("POST /v1/messages "), "MSS_U4_REAL_MESSAGES_ENDPOINT");
+            let length = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
+            }).expect("MSS_U4_HTTP_CONTENT_LENGTH");
+            assert!(length < 2_097_152, "MSS_U4_HTTP_REQUEST_BOUND");
+            while received.len() < header_end + length {
+                let mut bytes = [0u8; 4096];
+                let read = socket.read(&mut bytes).await.unwrap();
+                assert!(read > 0);
+                received.extend_from_slice(&bytes[..read]);
+            }
+            let request: Value = serde_json::from_slice(&received[header_end..header_end+length]).unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
+            for fragment in body.as_bytes().chunks(3) {
+                socket.write_all(format!("{:x}\r\n", fragment.len()).as_bytes()).await.unwrap();
+                socket.write_all(fragment).await.unwrap();
+                socket.write_all(b"\r\n").await.unwrap();
+            }
+            socket.write_all(b"0\r\n\r\n").await.unwrap();
+            socket.shutdown().await.unwrap();
+            request
+        }).await.expect("MSS_U4_FRAGMENTED_SERVER_DEADLINE")
+    });
+    (base_url, task)
+}
+
+async fn mss_u4_bind_fragmented_actor(actor: &Arc<SessionActor>, base_url: &str, model: &str) {
+    let mut entry = entry_with_search_flag(model, model == "u5a");
+    entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    entry.api_base_url = Some(base_url.into());
+    entry.api_key = Some("mss-u4-synthetic".into());
+    actor.models_manager.insert_test_entry(model, entry);
+    let mut binding = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    binding.config.base_url = base_url.into();
+    binding.config.model = model.into();
+    binding.config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    binding.config.max_retries = Some(0);
+    binding.credentials.api_key = Some("mss-u4-synthetic".into());
+    actor
+        .chat_state_handle
+        .install_transport_binding(binding)
+        .await
+        .unwrap();
+    actor
+        .sampler_handle
+        .update_config(xai_grok_sampler::SamplerConfig {
+            base_url: base_url.into(),
+            model: model.into(),
+            api_key: Some("mss-u4-synthetic".into()),
+            api_backend: xai_grok_sampler::ApiBackend::Messages,
+            max_completion_tokens: Some(4096),
+            max_retries: Some(0),
+            ..Default::default()
+        });
+}
+
+fn mss_u4_private_access(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let root = std::env::var_os(MSS_U4_PROTECTED_ROOT_ENV).unwrap();
+        let root_owner = std::fs::symlink_metadata(root).unwrap().uid();
+        let metadata = std::fs::symlink_metadata(path).unwrap();
+        assert!(!metadata.file_type().is_symlink(), "MSS_U4_PA1_NO_LINK");
+        assert_eq!(metadata.uid(), root_owner, "MSS_U4_PA1_OWNER");
+        assert_eq!(
+            metadata.permissions().mode() & 0o777,
+            if metadata.is_dir() { 0o700 } else { 0o600 },
+            "MSS_U4_PA1_PRIVATE_MODE"
+        );
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(path).unwrap() {
+                mss_u4_private_access(&entry.unwrap().path());
+            }
+        }
+    }
+}
+
+async fn mss_u4_protected_checkpoint(
+    actor: &Arc<SessionActor>,
+    directory: &std::path::Path,
+    frames: &[Value],
+    complete: bool,
+) -> (String, String) {
+    use crate::session::storage::StorageAdapter;
+    let live = actor
+        .chat_state_handle
+        .read_native_history()
+        .await
+        .unwrap()
+        .checkpoint
+        .expect("MSS_U4_ACTUAL_ADMITTED_CHECKPOINT");
+    let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+        directory.to_path_buf(),
+    );
+    let reload = adapter
+        .read_native_history(&actor.session_info)
+        .await
+        .unwrap()
+        .checkpoint
+        .unwrap();
+    assert!(live.bytes == reload.bytes, "MSS_U4_ACKNOWLEDGED_DISK_BYTES");
+    assert!(
+        live.source == reload.source && live.ledger == reload.ledger,
+        "MSS_U4_ACTOR_ADAPTER_SOURCE_LEDGER"
+    );
+    assert!(
+        live.messages_metadata == reload.messages_metadata,
+        "MSS_U4_PROTECTED_METADATA_READBACK"
+    );
+    assert_eq!(
+        (
+            reload.record.schema_version,
+            reload.record.policy_revision,
+            reload.record.reader_floor,
+            reload.record.limits_revision
+        ),
+        (3, 1, 3, 2)
+    );
+    assert_eq!(reload.source.responses.len(), 1);
+    assert_eq!(reload.ledger.usage.len(), 1);
+    assert!(
+        serde_json::to_value(&reload.source.responses[0]).unwrap()["provider_response_id"]
+            == frames[0]["message"]["id"],
+        "MSS_U4_SAME_HTTP_RESPONSE_OCCURRENCE"
+    );
+    let entries = match &reload.messages_metadata {
+        xai_grok_sampling_types::conversation::native_search_history::NativeMessagesMetadataState::Revision3 {
+            messages_response_metadata,
+        } => messages_response_metadata,
+        xai_grok_sampling_types::conversation::native_search_history::NativeMessagesMetadataState::LegacyUnrecorded =>
+            panic!("MSS_U4_REQUIRED_METADATA_LEDGER"),
+    };
+    let metadata = serde_json::to_value(entries).unwrap();
+    let entries = metadata.as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    let usage = serde_json::to_value(&reload.ledger.usage[0]).unwrap();
+    assert!(
+        entries[0]["key"]
+            == json!({"request":usage["request"],"lease":usage["lease"],
+        "attempt":usage["attempt"],"response_occurrence":usage["response_occurrence"],
+        "continuation":usage["continuation"]}),
+        "MSS_U4_SAME_REQUEST_LEASE_ATTEMPT_RESPONSE_KEY"
+    );
+    let capture = &entries[0]["capture"]["Observed"];
+    let observations = capture["observations"].as_array().unwrap();
+    assert_eq!(observations.len(), if complete { 3 } else { 2 });
+    assert!(
+        observations[0]["stop_details"] == json!({"Value":frames[0]["message"]["stop_details"]}),
+        "MSS_U4_ORIGINAL_PROTECTED_START_OBSERVATION"
+    );
+    let terminal = frames.len() - 2;
+    let expected = if complete {
+        &frames[terminal]["delta"]["stop_details"]
+    } else {
+        &frames[0]["message"]["stop_details"]
+    };
+    assert!(
+        capture["finalized"]["stop_details"] == json!({"Value":expected}),
+        "MSS_U4_ORIGINAL_PROTECTED_TERMINAL_REPLACEMENT"
+    );
+    assert!(
+        capture["finalized"]["usage"]["Value"]["output_tokens"]
+            == json!(if complete { 7 } else { 2 })
+    );
+    if complete {
+        assert!(capture["coverage"] == "Complete");
+        assert!(
+            !reload.active.view_links.is_empty(),
+            "MSS_U4_CONFIRMED_ACTIVE_MAPPINGS"
+        );
+    } else {
+        assert!(capture["coverage"].get("Partial").is_some());
+        assert!(
+            capture["finalized"]["terminal_observation"].is_null(),
+            "MSS_U4_REJECTED_FRAME_NOT_OBSERVED"
+        );
+    }
+    for reference in [
+        &reload.record.source,
+        &reload.record.active,
+        &reload.record.ledger,
+    ] {
+        let bytes = reload
+            .blobs
+            .get(&reference.digest)
+            .expect("MSS_U4_RELOADED_REAL_BLOB");
+        assert!(
+            xai_chat_state::persistence::native::digest(bytes) == reference.digest,
+            "MSS_U4_REAL_BLOB_DIGEST"
+        );
+        assert_eq!(bytes.len() as u64, reference.byte_len);
+    }
+    let ledger_bytes = reload.blobs.get(&reload.record.ledger.digest).unwrap();
+    assert!(
+        std::str::from_utf8(ledger_bytes)
+            .unwrap()
+            .contains("MSS_STOP_EXTENSION_SENTINEL"),
+        "MSS_U4_AUTHORIZED_ORIGINAL_METADATA_RETAINED"
+    );
+    let full = adapter.load_session(&actor.session_info).await.unwrap();
+    let light = adapter
+        .load_session_without_updates(&actor.session_info)
+        .await
+        .unwrap();
+    assert!(
+        serde_json::to_value(&full.chat_history).unwrap()
+            == serde_json::to_value(&light.chat_history).unwrap(),
+        "MSS_U4_FULL_LIGHT_RELOAD_EQUAL"
+    );
+    reload.matches_history(&full.chat_history).unwrap();
+    mss_u4_private_access(directory);
+    (
+        reload.record.source.digest.clone(),
+        reload.record.ledger.digest.clone(),
+    )
+}
+
+fn mss_u4_protected_frames(case: &str, mode: &str) -> Vec<Value> {
+    let mut frames = u5a_frames("end_turn", 0);
+    frames[0]["message"]["id"] = json!(format!("mss-u4-{mode}-{case}"));
+    frames[0]["message"]["stop_details"] = json!({"type":null,"category":"start",
+        "explanation":"MSS_ORDINARY_DIAG_SENTINEL","fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL"});
+    let terminal = frames.len() - 2;
+    frames[terminal]["delta"]["stop_reason"] = json!("stop_sequence");
+    frames[terminal]["delta"]["stop_sequence"] = json!("ordinary-end");
+    frames[terminal]["delta"]["stop_details"] = json!({"type":"terminal","category":null,
+        "explanation":"MSS_ORDINARY_DIAG_SENTINEL","fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL",
+        "resumable":false,"fallback_has_prefill_claim":true,"opaque":{"order":[2,1],"null":null}});
+    if case == "later-rejected" {
+        frames[terminal]["usage"] = json!({});
+    }
+    frames.insert(
+        terminal,
+        json!({"type":"message_delta","delta":{"stop_details":null},
+        "usage":{"output_tokens":2}}),
+    );
+    frames
+}
+
+async fn mss_u4_protected_occurrence(frames: Vec<Value>, complete: bool) -> (String, String) {
+    let server = MockInferenceServer::start().await.unwrap();
+    let (base_url, fragmented) = mss_u4_fragmented_source(frames.clone()).await;
+    let digests = if complete {
+        let mut session = U5aPrimarySession::new(&server).await;
+        mss_u4_bind_fragmented_actor(&session.actor, &base_url, "u5a").await;
+        session.release_decision.add_permits(1);
+        session
+            .actor
+            .chat_state_handle
+            .push_user_message_and_ack(ConversationItem::user("mss-u4-protected-source"))
+            .await;
+        let outcome = session
+            .actor
+            .process_conversation_turn_with_recovery(
+                "mss-u4-protected-source",
+                None,
+                None,
+                None,
+                &mut length_salvage::LengthSalvage::new(None),
+                &mut Default::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, TurnOutcome::Completed { .. }),
+            "MSS_U4_ORDINARY_COMPLETE"
+        );
+        tokio::time::timeout(NATIVE_TIMEOUT, session.source_acks.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (respond_to, reply) = tokio::sync::oneshot::channel();
+        session
+            .chat_proxy
+            .send(PersistenceMsg::FlushAndAck { respond_to })
+            .unwrap();
+        tokio::time::timeout(NATIVE_TIMEOUT, reply)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            session.executions.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "MSS_U4_SERVER_CALL_IS_NOT_CLIENT_DISPATCH"
+        );
+        mss_u4_protected_checkpoint(&session.actor, session.directory.path(), &frames, true).await
+    } else {
+        let session = NativeHistorySession::new(&server).await;
+        mss_u4_bind_fragmented_actor(&session.actor, &base_url, "test").await;
+        session.actor.attach_non_interactive.set(true);
+        session
+            .actor
+            .chat_state_handle
+            .push_user_message_and_ack(ConversationItem::user("mss-u4-protected-source"))
+            .await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(60),
+            session.actor.process_conversation_turn_with_recovery(
+                "mss-u4-protected-source",
+                None,
+                None,
+                None,
+                &mut length_salvage::LengthSalvage::new(None),
+                &mut Default::default(),
+            ),
+        )
+        .await
+        .expect("MSS_U4_PRIMARY_DEADLINE");
+        let outcome = match result {
+            Err(error) => json!({"failed":error}),
+            Ok(_) => Value::Null,
+        };
+        assert!(
+            outcome.get("failed").is_some(),
+            "MSS_U4_REJECTED_KNOWN_FRAME_FAILS"
+        );
+        mss_u3_wait_native_end(&session).await;
+        assert!(session.observed.lock().unwrap().iter().any(|event| matches!(event,
+            xai_grok_sampler::SamplingEvent::Failed { error, .. }
+                if error.kind == xai_grok_sampler::SamplingErrorKind::Serialization && !error.is_retryable)),
+            "MSS_U4_REAL_NONRETRYABLE_PARSE_FAILURE");
+        mss_u4_protected_checkpoint(&session.actor, session.directory.path(), &frames, false).await
+    };
+    let request = tokio::time::timeout(NATIVE_TIMEOUT, fragmented)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["content"]
+                .to_string()
+                .contains("mss-u4-protected-source")),
+        "MSS_U4_REAL_SUBMITTED_REQUEST"
+    );
+    assert_eq!(
+        server.messages_request_count(),
+        0,
+        "MSS_U4_NO_UNRELATED_MOCK_OCCURRENCE"
+    );
+    digests
+}
+
+#[test]
+fn mss_u4_protected_metadata_same_occurrence_survives_disk_and_logs() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let mode = match std::env::var("MSS_U4_PROTECTED_MODE") {
+        Ok(mode) => mode,
+        Err(_) => {
+            mss_u4_protected_children();
+            return;
+        }
+    };
+    assert!(matches!(mode.as_str(), "ordinary" | "sampling"));
+    assert_eq!(
+        std::env::var_os("TMPDIR").unwrap(),
+        std::env::var_os(MSS_U4_PROTECTED_ROOT_ENV).unwrap(),
+        "MSS_U4_CHILD_PA1_ROOT"
+    );
+    mss_u4_private_access(std::path::Path::new(
+        &std::env::var_os(MSS_U4_PROTECTED_ROOT_ENV).unwrap(),
+    ));
+    println!("MSS_U4_CHILD_ASSERTIONS_BEGIN");
+    for case in ["success", "later-rejected"] {
+        let output = MssU4DiagnosticBytes(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let writer = output.clone();
+        let fmt = tracing_subscriber::fmt::layer()
+            .json()
+            .without_time()
+            .with_ansi(false)
+            .with_current_span(false)
+            .with_target(false)
+            .with_writer(move || writer.clone());
+        let dispatch = if mode == "sampling" {
+            tracing::Dispatch::new(
+                tracing_subscriber::registry()
+                    .with(fmt)
+                    .with(xai_grok_telemetry::sampling_log::layer()),
+            )
+        } else {
+            tracing::Dispatch::new(tracing_subscriber::registry().with(fmt))
+        };
+        let frames = mss_u4_protected_frames(case, &mode);
+        let (source_digest, ledger_digest) = tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!(target: "sampling_log", "mss_u4_occurrence", mss_u4_case = case);
+            let _entered = span.enter();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(
+                tokio::task::LocalSet::new().run_until(mss_u4_protected_occurrence(
+                    frames.clone(),
+                    case == "success",
+                )),
+            )
+        });
+        drop(dispatch);
+        let ordinary = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
+        let sampling = if mode == "sampling" {
+            assert!(
+                xai_grok_telemetry::sampling_log::flush_sampling_log_for_tests(),
+                "MSS_U4_TA1_REAL_FLUSH"
+            );
+            let home = std::path::PathBuf::from(std::env::var("GROK_HOME").unwrap());
+            let file = home.join("logs").join("sampling.jsonl");
+            let metadata = std::fs::metadata(&file).expect("MSS_U4_REAL_ENABLED_SAMPLING_FILE");
+            assert!(
+                metadata.len() > 0 && metadata.len() <= 1_048_576,
+                "MSS_U4_SAMPLING_OUTPUT_BOUND"
+            );
+            let text = std::fs::read_to_string(&file).unwrap();
+            mss_u4_private_access(&home);
+            Some(text)
+        } else {
+            None
+        };
+        for text in std::iter::once(&ordinary).chain(sampling.iter()) {
+            assert!(
+                !text.contains("MSS_STOP_EXTENSION_"),
+                "MSS_U4_SAME_OCCURRENCE_DIAGNOSTIC_MASK"
+            );
+            let records: Vec<Value> = text
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .filter(|record: &Value| {
+                    record["spans"]
+                        .as_array()
+                        .is_some_and(|spans| spans.iter().any(|span| span["mss_u4_case"] == case))
+                })
+                .collect();
+            assert!(
+                records
+                    .iter()
+                    .any(|record| record["fields"]["event"] == "client_new"),
+                "MSS_U4_AUTHENTIC_CLIENT_NEW"
+            );
+            let data: Vec<&str> = records
+                .iter()
+                .filter(|record| record["fields"]["event"] == "sse_chunk")
+                .map(|record| {
+                    assert!(record["level"] == "INFO" && record["fields"]["backend"] == "messages");
+                    record["fields"]["data"].as_str().unwrap()
+                })
+                .collect();
+            let mut expected_frames = frames.clone();
+            expected_frames[0]["message"]["stop_details"]["fallback_credit_token"] =
+                json!("[REDACTED_STOP_EXTENSION]");
+            let terminal = frames.len() - 2;
+            expected_frames[terminal]["delta"]["stop_details"]["fallback_credit_token"] =
+                json!("[REDACTED_STOP_EXTENSION]");
+            if case == "later-rejected" {
+                expected_frames.pop();
+            }
+            let expected: Vec<String> = expected_frames.iter().map(Value::to_string).collect();
+            assert!(
+                data.iter().copied().eq(expected.iter().map(String::as_str)),
+                "MSS_U4_WHOLE_NONSECRET_SSE_PRESERVATION"
+            );
+        }
+        if mode == "ordinary" && case == "later-rejected" {
+            let records: Vec<Value> = ordinary
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert!(
+                records
+                    .iter()
+                    .any(|record| record["fields"]["raw_data"].is_string()
+                        && record["fields"]["error"]
+                            .as_str()
+                            .is_some_and(|error| error.contains("output_tokens"))),
+                "MSS_U4_REAL_ORDINARY_PARSE_ERROR"
+            );
+        }
+        println!(
+            "MSS_U4_CASE_PROOF {}",
+            json!({"mode":mode,"case":case,"source_sha256":source_digest,
+            "ledger_sha256":ledger_digest,"actor_issued_lease":true,"same_occurrence":true,
+            "protected_roundtrip":true,"diagnostics_masked":true,"ordinary_preserved":true,
+            "sampling_flushed":mode == "sampling","request_fragment_bytes":3})
+        );
+    }
+    println!("MSS_U4_CHILD_ASSERTIONS_PASSED");
 }

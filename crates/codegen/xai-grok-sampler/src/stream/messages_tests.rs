@@ -22,10 +22,13 @@ fn message_start() -> MessageStreamEvent {
             role: "assistant".into(),
             content: vec![],
             model: "messages-compatible-model".into(),
-            stop_reason: None,
+            stop_reason: WirePresence::null(),
+            stop_sequence: WirePresence::missing(),
             usage: MessagesUsage {
                 input_tokens: 10,
                 output_tokens: 0,
+                server_tool_use: Default::default(),
+                extra: Default::default(),
                 cache_creation_input_tokens: WirePresence::missing(),
                 cache_read_input_tokens: WirePresence::missing(),
                 output_tokens_details: WirePresence::missing(),
@@ -51,9 +54,10 @@ fn message_start() -> MessageStreamEvent {
 /// The refusal stop-details value used by the G16-G19 terminal-replacement proofs.
 fn refusal_stop_details(explanation: &str) -> StopDetails {
     StopDetails {
-        r#type: Some("refusal".to_owned()),
-        category: Some("frontier_llm".to_owned()),
-        explanation: Some(explanation.to_owned()),
+        r#type: WirePresence::value("refusal".to_owned()),
+        category: WirePresence::value("frontier_llm".to_owned()),
+        explanation: WirePresence::value(explanation.to_owned()),
+        extra: Default::default(),
     }
 }
 
@@ -66,10 +70,13 @@ fn message_start_with_stop_details(stop_details: WirePresence<StopDetails>) -> M
             role: "assistant".into(),
             content: vec![],
             model: "messages-compatible-model".into(),
-            stop_reason: None,
+            stop_reason: WirePresence::null(),
+            stop_sequence: WirePresence::missing(),
             usage: MessagesUsage {
                 input_tokens: 10,
                 output_tokens: 0,
+                server_tool_use: Default::default(),
+                extra: Default::default(),
                 cache_creation_input_tokens: WirePresence::missing(),
                 cache_read_input_tokens: WirePresence::missing(),
                 output_tokens_details: WirePresence::missing(),
@@ -85,13 +92,15 @@ fn message_start_with_stop_details(stop_details: WirePresence<StopDetails>) -> M
 fn message_delta_with_stop_details(stop_details: WirePresence<StopDetails>) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
-            stop_reason: Some(messages::StopReason::EndTurn),
-            stop_sequence: None,
+            stop_reason: WirePresence::value(messages::StopReason::EndTurn),
+            stop_sequence: WirePresence::missing(),
             stop_details,
             container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: 1,
+            server_tool_use: Default::default(),
+            extra: Default::default(),
             input_tokens: WirePresence::missing(),
             cache_read_input_tokens: WirePresence::missing(),
             cache_creation_input_tokens: WirePresence::missing(),
@@ -109,10 +118,13 @@ fn message_start_with_container(container: WirePresence<serde_json::Value>) -> M
             role: "assistant".into(),
             content: vec![],
             model: "messages-compatible-model".into(),
-            stop_reason: None,
+            stop_reason: WirePresence::null(),
+            stop_sequence: WirePresence::missing(),
             usage: MessagesUsage {
                 input_tokens: 10,
                 output_tokens: 0,
+                server_tool_use: Default::default(),
+                extra: Default::default(),
                 cache_creation_input_tokens: WirePresence::missing(),
                 cache_read_input_tokens: WirePresence::missing(),
                 output_tokens_details: WirePresence::missing(),
@@ -128,13 +140,15 @@ fn message_start_with_container(container: WirePresence<serde_json::Value>) -> M
 fn message_delta_with_container(container: WirePresence<serde_json::Value>) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
-            stop_reason: Some(messages::StopReason::EndTurn),
-            stop_sequence: None,
+            stop_reason: WirePresence::value(messages::StopReason::EndTurn),
+            stop_sequence: WirePresence::missing(),
             stop_details: WirePresence::missing(),
             container,
         },
         usage: MessageDeltaUsage {
             output_tokens: 1,
+            server_tool_use: Default::default(),
+            extra: Default::default(),
             input_tokens: WirePresence::missing(),
             cache_read_input_tokens: WirePresence::missing(),
             cache_creation_input_tokens: WirePresence::missing(),
@@ -148,6 +162,7 @@ fn text_block_start(index: u32) -> MessageStreamEvent {
         index,
         content_block: ContentBlock::Text {
             text: String::new(),
+            citations: xai_grok_sampling_types::presence::WirePresence::missing(),
             cache_control: None,
         },
     }
@@ -167,13 +182,15 @@ fn block_stop(index: u32) -> MessageStreamEvent {
 fn message_delta_with_stop(stop: messages::StopReason) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
-            stop_reason: Some(stop),
-            stop_sequence: None,
+            stop_reason: WirePresence::value(stop),
+            stop_sequence: WirePresence::missing(),
             stop_details: WirePresence::missing(),
             container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: 5,
+            server_tool_use: Default::default(),
+            extra: Default::default(),
             input_tokens: WirePresence::value(10),
             cache_read_input_tokens: WirePresence::missing(),
             cache_creation_input_tokens: WirePresence::missing(),
@@ -186,17 +203,20 @@ fn message_delta_with_stop(stop: messages::StopReason) -> MessageStreamEvent {
 fn message_delta_refusal_with_explanation(explanation: &str) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
-            stop_reason: Some(messages::StopReason::Refusal),
-            stop_sequence: None,
+            stop_reason: WirePresence::value(messages::StopReason::Refusal),
+            stop_sequence: WirePresence::missing(),
             stop_details: WirePresence::value(StopDetails {
-                r#type: Some("refusal".to_string()),
-                category: Some("frontier_llm".to_string()),
-                explanation: Some(explanation.to_string()),
+                r#type: WirePresence::value("refusal".to_string()),
+                category: WirePresence::value("frontier_llm".to_string()),
+                explanation: WirePresence::value(explanation.to_string()),
+                extra: Default::default(),
             }),
             container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: 0,
+            server_tool_use: Default::default(),
+            extra: Default::default(),
             input_tokens: WirePresence::value(10),
             cache_read_input_tokens: WirePresence::missing(),
             cache_creation_input_tokens: WirePresence::missing(),
@@ -416,6 +436,7 @@ async fn tool_use_block_assembles_into_tool_call() {
             name: "do_thing".into(),
             input: serde_json::json!({}),
             // Set: a parser matching only the absent case must fail here.
+            caller: None,
             cache_control: Some(xai_grok_sampling_types::messages::CacheControl::ephemeral()),
         },
     };
@@ -635,6 +656,7 @@ async fn max_tokens_with_tool_use_keeps_length_stop() {
             id: "call_cut".into(),
             name: "do_thing".into(),
             input: serde_json::json!({}),
+            caller: None,
             cache_control: None,
         },
     };
@@ -674,6 +696,7 @@ async fn max_tokens_tool_use_without_arg_deltas_collects_empty_arguments() {
             id: "call_no_args".into(),
             name: "do_thing".into(),
             input: serde_json::json!({}),
+            caller: None,
             cache_control: None,
         },
     };
@@ -750,6 +773,7 @@ async fn refusal_with_completed_tools_keeps_refusal_terminal() {
             id: "call_refused".into(),
             name: "do_thing".into(),
             input: serde_json::json!({}),
+            caller: None,
             cache_control: None,
         },
     };
@@ -794,13 +818,15 @@ async fn refusal_with_completed_tools_keeps_refusal_terminal() {
 async fn terminal_stop_reason_absent_is_stream_protocol_error() {
     let terminal_no_stop = MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
-            stop_reason: None,
-            stop_sequence: None,
+            stop_reason: WirePresence::null(),
+            stop_sequence: WirePresence::missing(),
             stop_details: WirePresence::missing(),
             container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: 5,
+            server_tool_use: Default::default(),
+            extra: Default::default(),
             input_tokens: WirePresence::value(10),
             cache_read_input_tokens: WirePresence::missing(),
             cache_creation_input_tokens: WirePresence::missing(),
@@ -830,6 +856,7 @@ async fn context_full_with_completed_tools_keeps_context_full_terminal() {
             id: "call_full".into(),
             name: "do_thing".into(),
             input: serde_json::json!({}),
+            caller: None,
             cache_control: None,
         },
     };
@@ -901,6 +928,7 @@ async fn max_tokens_with_open_final_tool_block_completes() {
             id: "call_open".into(),
             name: "do_thing".into(),
             input: serde_json::json!({}),
+            caller: None,
             cache_control: None,
         },
     };
@@ -948,6 +976,7 @@ async fn carve_out_rejects_overlapping_open_blocks() {
             id: "call_a".into(),
             name: "do_thing".into(),
             input: serde_json::json!({}),
+            caller: None,
             cache_control: None,
         },
     };
@@ -957,6 +986,7 @@ async fn carve_out_rejects_overlapping_open_blocks() {
             id: "call_b".into(),
             name: "do_thing".into(),
             input: serde_json::json!({}),
+            caller: None,
             cache_control: None,
         },
     };
@@ -1080,10 +1110,13 @@ fn message_start_with_cache(
             role: "assistant".into(),
             content: vec![],
             model: "messages-compatible-model".into(),
-            stop_reason: None,
+            stop_reason: WirePresence::null(),
+            stop_sequence: WirePresence::missing(),
             usage: MessagesUsage {
                 input_tokens: input,
                 output_tokens: 0,
+                server_tool_use: Default::default(),
+                extra: Default::default(),
                 cache_creation_input_tokens: WirePresence::value(cache_creation),
                 cache_read_input_tokens: WirePresence::value(cache_read),
                 output_tokens_details: WirePresence::missing(),
@@ -1103,13 +1136,15 @@ fn message_delta_with_cache(
 ) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
-            stop_reason: Some(messages::StopReason::EndTurn),
-            stop_sequence: None,
+            stop_reason: WirePresence::value(messages::StopReason::EndTurn),
+            stop_sequence: WirePresence::missing(),
             stop_details: WirePresence::missing(),
             container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: output,
+            server_tool_use: Default::default(),
+            extra: Default::default(),
             input_tokens: input,
             cache_read_input_tokens: cache_read,
             cache_creation_input_tokens: cache_creation,
@@ -1214,13 +1249,18 @@ fn message_start_with_thinking(input: u32, thinking_tokens: u32) -> MessageStrea
             role: "assistant".into(),
             content: vec![],
             model: "messages-compatible-model".into(),
-            stop_reason: None,
+            stop_reason: WirePresence::null(),
+            stop_sequence: WirePresence::missing(),
             usage: MessagesUsage {
                 input_tokens: input,
                 output_tokens: 0,
+                server_tool_use: Default::default(),
+                extra: Default::default(),
                 cache_creation_input_tokens: WirePresence::missing(),
                 cache_read_input_tokens: WirePresence::missing(),
-                output_tokens_details: WirePresence::value(OutputTokensDetails { thinking_tokens }),
+                output_tokens_details: WirePresence::value(OutputTokensDetails {
+                    thinking_tokens: WirePresence::value(thinking_tokens),
+                }),
                 cache_creation: WirePresence::missing(),
             },
             container: WirePresence::missing(),
@@ -1235,13 +1275,15 @@ fn message_delta_with_thinking(
 ) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
-            stop_reason: Some(messages::StopReason::EndTurn),
-            stop_sequence: None,
+            stop_reason: WirePresence::value(messages::StopReason::EndTurn),
+            stop_sequence: WirePresence::missing(),
             stop_details: WirePresence::missing(),
             container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: output,
+            server_tool_use: Default::default(),
+            extra: Default::default(),
             input_tokens: WirePresence::missing(),
             cache_read_input_tokens: WirePresence::missing(),
             cache_creation_input_tokens: WirePresence::missing(),
@@ -1290,7 +1332,7 @@ async fn thinking_tokens_delta_overrides_message_start() {
         message_delta_with_thinking(
             7,
             WirePresence::value(OutputTokensDetails {
-                thinking_tokens: 40,
+                thinking_tokens: xai_grok_sampling_types::presence::WirePresence::value(40),
             }),
         ),
         MessageStreamEvent::MessageStop,
@@ -1360,6 +1402,7 @@ fn tool_use_start(index: u32, id: &str, name: &str) -> MessageStreamEvent {
             id: id.into(),
             name: name.into(),
             input: serde_json::json!({}),
+            caller: None,
             cache_control: None,
         },
     }
@@ -1415,7 +1458,7 @@ fn assert_failed_stream_error(evs: &[SamplingEvent], error_type: &str, phrase: &
 ///
 /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_content_block_kinds (re-expressed, transform half; the serde half mapping the unknown kind to the phantom variant is the sampling-types R1 test unknown_content_block_kind_opens_phantom_block; grok deviates from HY's Ping mapping per the D3 ruling)
 #[tokio::test]
-async fn unknown_kind_phantom_block_stream_completes() {
+async fn unknown_typed_block_stream_fails_without_phantom_success() {
     let phantom_start = MessageStreamEvent::ContentBlockStart {
         index: 1,
         content_block: ContentBlock::Unknown {
@@ -1433,19 +1476,49 @@ async fn unknown_kind_phantom_block_stream_completes() {
         Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
         Ok(MessageStreamEvent::MessageStop),
     ];
-    let raw = stream::iter(events).boxed();
-    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
-
-    match evs.last().unwrap() {
-        SamplingEvent::Completed { response, .. } => {
-            assert_eq!(
-                response.assistant().map(|a| a.content.as_ref()),
-                Some("real"),
-                "phantom deltas are swallowed; only the text block survives"
-            );
-        }
-        other => panic!("expected Completed (D3 phantom-open), got {other:?}"),
-    }
+    let evs = collect(stream_messages(
+        stream::iter(events).boxed(),
+        None,
+        rid(),
+        Duration::from_secs(60),
+    ))
+    .await;
+    let failures: Vec<_> = evs
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::Failed { error, .. } => Some(error),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0].kind,
+        crate::events::SamplingErrorKind::Serialization
+    );
+    assert!(!failures[0].is_retryable && failures[0].message.contains("brand_new_block"));
+    assert!(
+        !evs.iter()
+            .any(|event| matches!(event, SamplingEvent::Completed { .. }))
+    );
+    let known = vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "real")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let evs = collect(stream_messages(
+        stream::iter(known).boxed(),
+        None,
+        rid(),
+        Duration::from_secs(60),
+    ))
+    .await;
+    assert!(
+        matches!(evs.last(), Some(SamplingEvent::Completed { response, .. })
+        if response.assistant().map(|item| item.content.as_ref()) == Some("real"))
+    );
 }
 
 /// A delta on an index that never received a start is true wire corruption:
@@ -1857,6 +1930,7 @@ fn tool_use_start_with_input(
             id: id.into(),
             name: name.into(),
             input,
+            caller: None,
             cache_control: None,
         },
     }
@@ -2314,7 +2388,7 @@ async fn usage_overlay_output_tokens_details_missing_null_value() {
         (
             "value",
             WirePresence::value(OutputTokensDetails {
-                thinking_tokens: 44,
+                thinking_tokens: xai_grok_sampling_types::presence::WirePresence::value(44),
             }),
             44,
         ),
@@ -2344,10 +2418,13 @@ async fn usage_delta_output_tokens_replaces_not_accumulates() {
             role: "assistant".into(),
             content: vec![],
             model: "messages-compatible-model".into(),
-            stop_reason: None,
+            stop_reason: WirePresence::null(),
+            stop_sequence: WirePresence::missing(),
             usage: MessagesUsage {
                 input_tokens: 10,
                 output_tokens: 1,
+                server_tool_use: Default::default(),
+                extra: Default::default(),
                 cache_creation_input_tokens: WirePresence::missing(),
                 cache_read_input_tokens: WirePresence::missing(),
                 output_tokens_details: WirePresence::missing(),
@@ -2392,16 +2469,21 @@ fn message_start_with_ttl_split(
             role: "assistant".into(),
             content: vec![],
             model: "messages-compatible-model".into(),
-            stop_reason: None,
+            stop_reason: WirePresence::null(),
+            stop_sequence: WirePresence::missing(),
             usage: MessagesUsage {
                 input_tokens: input,
                 output_tokens: 0,
+                server_tool_use: Default::default(),
+                extra: Default::default(),
                 cache_creation_input_tokens: WirePresence::value(cache_creation),
                 cache_read_input_tokens: WirePresence::missing(),
                 output_tokens_details: WirePresence::missing(),
                 cache_creation: WirePresence::value(CacheCreation {
-                    ephemeral_5m_input_tokens: ephemeral_5m,
-                    ephemeral_1h_input_tokens: ephemeral_1h,
+                    ephemeral_5m_input_tokens:
+                        xai_grok_sampling_types::presence::WirePresence::value(ephemeral_5m),
+                    ephemeral_1h_input_tokens:
+                        xai_grok_sampling_types::presence::WirePresence::value(ephemeral_1h),
                 }),
             },
             container: WirePresence::missing(),
@@ -2561,6 +2643,7 @@ fn server_tool_use_start(index: u32) -> MessageStreamEvent {
             id: "srvtoolu_test_01".into(),
             name: "tool_search_tool_bm25".into(),
             input: serde_json::json!({}),
+            caller: None,
         },
     }
 }
@@ -2901,6 +2984,7 @@ async fn messages_native_display_preserves_discovery_and_ordinary_calls() {
                     id: "authoritative-search".into(),
                     name: name.into(),
                     input: serde_json::json!({"query": "authoritative", "limit": 2}),
+                    caller: None,
                 },
             },
             MessageStreamEvent::ContentBlockDelta {
@@ -3192,5 +3276,278 @@ fn native_history_parent_pause_fixture_matches_transport() {
         actual,
         native_history_parent_pause_frames(),
         "R10 F4: actor transport uses the exact unchanged parent pause fixture"
+    );
+}
+
+fn mss_u5_schema_frames() -> Vec<serde_json::Value> {
+    use serde_json::json;
+    vec![
+        json!({"type":"message_start","message":{"id":"mss-u5","type":"message",
+            "role":"assistant","model":"test","content":[],"stop_reason":null,
+            "usage":{"input_tokens":3,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":3,"content_block":{"type":"text","text":"safe"}}),
+        json!({"type":"content_block_stop","index":3}),
+        json!({"type":"content_block_start","index":7,"content_block":{"type":"server_tool_use",
+            "id":"srvtoolu_mss5","name":"tool_search_tool_bm25","input":{"query":"read"},
+            "caller":{"type":"direct","opaque":{"order":[2,1]}}}}),
+        json!({"type":"content_block_stop","index":7}),
+        json!({"type":"content_block_start","index":9,"content_block":{"type":"tool_search_tool_result",
+            "tool_use_id":"srvtoolu_mss5","content":{"type":"tool_search_tool_search_result","tool_references":[]}}}),
+        json!({"type":"content_block_stop","index":9}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
+        json!({"type":"message_stop"}),
+    ]
+}
+
+fn mss_u5_unknown_cases() -> Vec<(&'static str, usize, serde_json::Value)> {
+    use serde_json::json;
+    vec![
+        ("top", 1, json!({"type":"future_event","value":"liveness"})),
+        (
+            "block",
+            1,
+            json!({"type":"content_block_start","index":2,
+            "content_block":{"type":"future_block","opaque":"not-liveness"}}),
+        ),
+        (
+            "delta",
+            2,
+            json!({"type":"content_block_delta","index":3,
+            "delta":{"type":"future_delta","text":"not-liveness"}}),
+        ),
+        (
+            "singular",
+            2,
+            json!({"type":"content_block_delta","index":3,
+            "delta":{"type":"citation_delta","citation":{"type":"char_location","cited_text":"x",
+                "document_index":0,"document_title":null,"start_char_index":0,"end_char_index":1}}}),
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn mss_u5_unknown_semantics_fail_on_public_and_tracked_paths() {
+    for (case, position, unknown) in mss_u5_unknown_cases() {
+        for tracked in [false, true] {
+            let mut wire = mss_u5_schema_frames();
+            wire.insert(position, unknown.clone());
+            let parsed: Vec<_> = wire
+                .iter()
+                .map(|frame| crate::client::parse_messages_stream_event(&frame.to_string()))
+                .collect();
+            let mut capture = crate::messages_continuation::AttemptCapture::default();
+            let output = if tracked {
+                collect(stream_messages_tracked(
+                    stream::iter(parsed).boxed(),
+                    None,
+                    rid(),
+                    Duration::from_secs(10),
+                    Some(&mut capture),
+                ))
+                .await
+            } else {
+                collect(stream_messages(
+                    stream::iter(
+                        parsed
+                            .into_iter()
+                            .map(|frame| frame.map(|frame| frame.event)),
+                    )
+                    .boxed(),
+                    None,
+                    rid(),
+                    Duration::from_secs(10),
+                ))
+                .await
+            };
+            let failures: Vec<_> = output
+                .iter()
+                .filter_map(|event| match event {
+                    SamplingEvent::Failed { error, .. } => Some(error),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                failures.len(),
+                1,
+                "MSS_U5_PUBLIC_UNKNOWN_FAILED case={case} tracked={tracked}"
+            );
+            assert_eq!(
+                failures[0].kind,
+                crate::events::SamplingErrorKind::Serialization,
+                "MSS_U5_UNKNOWN_SERIALIZATION_CLASS case={case} tracked={tracked}"
+            );
+            assert!(!failures[0].is_retryable, "MSS_U5_UNKNOWN_NONRETRYABLE");
+            assert!(
+                !output
+                    .iter()
+                    .any(|event| matches!(event, SamplingEvent::Completed { .. })),
+                "MSS_U5_UNKNOWN_NO_COMPLETED"
+            );
+            if tracked {
+                assert!(
+                    capture.completed.is_none(),
+                    "MSS_U5_UNKNOWN_NO_FAITHFUL_SUFFIX"
+                );
+            }
+        }
+    }
+    let mut typed: Vec<_> = mss_u5_schema_frames()
+        .iter()
+        .map(|frame| serde_json::from_value::<MessageStreamEvent>(frame.clone()).unwrap())
+        .collect();
+    typed.insert(
+        1,
+        MessageStreamEvent::ContentBlockStart {
+            index: 2,
+            content_block: ContentBlock::Unknown {
+                kind: "future_typed_block".into(),
+            },
+        },
+    );
+    typed.insert(2, MessageStreamEvent::ContentBlockStop { index: 2 });
+    let output = collect(stream_messages(
+        stream::iter(typed.into_iter().map(Ok)).boxed(),
+        None,
+        rid(),
+        Duration::from_secs(10),
+    ))
+    .await;
+    let failures: Vec<_> = output
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::Failed { error, .. } => Some(error),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failures.len(), 1, "MSS_U5_TABLE_TYPED_UNKNOWN_FAILED");
+    assert_eq!(
+        failures[0].kind,
+        crate::events::SamplingErrorKind::Serialization
+    );
+    assert!(!failures[0].is_retryable);
+    assert!(
+        !output
+            .iter()
+            .any(|event| matches!(event, SamplingEvent::Completed { .. })),
+        "MSS_U5_TABLE_TYPED_UNKNOWN_NO_COMPLETED"
+    );
+}
+
+#[tokio::test]
+async fn mss_u5_direct_typed_unknown_cannot_complete() {
+    let mut events: Vec<_> = mss_u5_schema_frames()
+        .iter()
+        .map(|frame| serde_json::from_value::<MessageStreamEvent>(frame.clone()).unwrap())
+        .collect();
+    events.insert(
+        1,
+        MessageStreamEvent::ContentBlockStart {
+            index: 2,
+            content_block: ContentBlock::Unknown {
+                kind: "future_typed_block".into(),
+            },
+        },
+    );
+    events.insert(2, MessageStreamEvent::ContentBlockStop { index: 2 });
+    let output = collect(stream_messages(
+        stream::iter(events.into_iter().map(Ok)).boxed(),
+        None,
+        rid(),
+        Duration::from_secs(10),
+    ))
+    .await;
+    let failures: Vec<_> = output
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::Failed { error, .. } => Some(error),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failures.len(), 1, "MSS_U5_TYPED_UNKNOWN_FAILED");
+    assert_eq!(
+        failures[0].kind,
+        crate::events::SamplingErrorKind::Serialization
+    );
+    assert!(!failures[0].is_retryable);
+    assert!(
+        !output
+            .iter()
+            .any(|event| matches!(event, SamplingEvent::Completed { .. })),
+        "MSS_U5_TYPED_UNKNOWN_NO_COMPLETED"
+    );
+}
+
+#[tokio::test]
+async fn mss_u5_tracked_unknown_capture_is_unavailable() {
+    for (_, position, unknown) in mss_u5_unknown_cases() {
+        let mut wire = mss_u5_schema_frames();
+        wire.insert(position, unknown);
+        let parsed: Vec<_> = wire
+            .iter()
+            .map(|frame| crate::client::parse_messages_stream_event(&frame.to_string()))
+            .collect();
+        let mut capture = crate::messages_continuation::AttemptCapture::default();
+        let output = collect(stream_messages_tracked(
+            stream::iter(parsed).boxed(),
+            None,
+            rid(),
+            Duration::from_secs(10),
+            Some(&mut capture),
+        ))
+        .await;
+        assert!(
+            capture.completed.is_none(),
+            "MSS_U5_TRACKED_PRESERVATION_UNAVAILABLE"
+        );
+        assert!(
+            !output
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::Completed { .. })),
+            "MSS_U5_TRACKED_PRESERVATION_NO_COMPLETED"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mss_u5_ping_does_not_reset_meaningful_idle() {
+    let ping: MessageStreamEvent = serde_json::from_str(r#"{"type":"ping"}"#).unwrap();
+    assert!(
+        matches!(
+            crate::stream_classify::message_event_class(&ping),
+            crate::span_timing::ItemClass::Other
+        ),
+        "MSS_U5_PING_CLASSIFIER_NOT_PROGRESS"
+    );
+    // Ready events exercise the real meaningful-content deadline without a sleep or a fake clock.
+    let events = vec![
+        Ok(message_start()),
+        Ok(ping),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let output = collect(stream_messages(
+        stream::iter(events).boxed(),
+        None,
+        rid(),
+        Duration::ZERO,
+    ))
+    .await;
+    let failures: Vec<_> = output
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::Failed { error, .. } => Some(error),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failures.len(), 1, "MSS_U5_PING_MEANINGFUL_IDLE_EXPIRES");
+    assert_eq!(
+        failures[0].kind,
+        crate::events::SamplingErrorKind::IdleTimeout
+    );
+    assert!(
+        !output
+            .iter()
+            .any(|event| matches!(event, SamplingEvent::Completed { .. })),
+        "MSS_U5_PING_IDLE_NO_COMPLETED"
     );
 }

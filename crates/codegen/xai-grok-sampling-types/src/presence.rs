@@ -993,10 +993,13 @@ mod presence_goldens {
             "value state byte pin"
         );
         let details = v.stop_details.as_ref().expect("stop_details must be Value");
-        assert_eq!(details.r#type.as_deref(), Some("refusal"));
-        assert_eq!(details.category.as_deref(), Some("frontier_llm"));
+        assert_eq!(details.r#type.as_ref().map(String::as_str), Some("refusal"));
         assert_eq!(
-            details.explanation.as_deref(),
+            details.category.as_ref().map(String::as_str),
+            Some("frontier_llm")
+        );
+        assert_eq!(
+            details.explanation.as_ref().map(String::as_str),
             Some("This request was blocked.")
         );
     }
@@ -1059,10 +1062,13 @@ mod presence_goldens {
             "value state byte pin"
         );
         let details = v.stop_details.as_ref().expect("stop_details must be Value");
-        assert_eq!(details.r#type.as_deref(), Some("refusal"));
-        assert_eq!(details.category.as_deref(), Some("frontier_llm"));
+        assert_eq!(details.r#type.as_ref().map(String::as_str), Some("refusal"));
         assert_eq!(
-            details.explanation.as_deref(),
+            details.category.as_ref().map(String::as_str),
+            Some("frontier_llm")
+        );
+        assert_eq!(
+            details.explanation.as_ref().map(String::as_str),
             Some("This request was blocked.")
         );
     }
@@ -1122,7 +1128,9 @@ mod presence_goldens {
         );
         assert_eq!(
             v.usage.output_tokens_details.as_ref(),
-            Some(&OutputTokensDetails { thinking_tokens: 9 })
+            Some(&OutputTokensDetails {
+                thinking_tokens: crate::presence::WirePresence::value(9)
+            })
         );
     }
 
@@ -1154,8 +1162,8 @@ mod presence_goldens {
         assert_eq!(
             v.usage.cache_creation.as_ref(),
             Some(&CacheCreation {
-                ephemeral_5m_input_tokens: 3,
-                ephemeral_1h_input_tokens: 0,
+                ephemeral_5m_input_tokens: crate::presence::WirePresence::value(3),
+                ephemeral_1h_input_tokens: crate::presence::WirePresence::value(0),
             })
         );
     }
@@ -1296,7 +1304,9 @@ mod presence_goldens {
         );
         assert_eq!(
             v.output_tokens_details.as_ref(),
-            Some(&OutputTokensDetails { thinking_tokens: 9 })
+            Some(&OutputTokensDetails {
+                thinking_tokens: crate::presence::WirePresence::value(9)
+            })
         );
     }
 
@@ -1870,106 +1880,84 @@ mod presence_goldens {
     }
 
     // ------------------------------------------------------------------
-    // 56a (CITATIONS-1) RECORDED-ABSENT source gate: the output
-    // `TextBlock.citations` wire surface (frozen spec r23 L106 row Q5) is
-    // recorded ABSENT at base b745593 (registry entry CITATIONS-1,
-    // grok/plans/citations/citations-registry.md). Fails if 56b or any
-    // refactor adds the surface without flipping the registry entry
-    // `modeled_by` in the same commit (46-series truth-table discipline).
-    // ------------------------------------------------------------------
-
-    /// Brace-delimited body starting at the last `{` of `marker` — the
-    /// `struct_body` idiom generalized to enum/variant bodies (the 46c
-    /// machinery only reaches `pub struct`; 56a T4 source gate).
-    fn brace_body_after<'a>(src: &'a str, marker: &str) -> Option<&'a str> {
-        let start = src.find(marker)?;
-        let rest = &src[start + marker.len() - 1..];
-        let mut depth = 0i32;
-        for (idx, byte) in rest.bytes().enumerate() {
-            match byte {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(&rest[..=idx]);
-                    }
-                }
-                _ => {}
+    // CITATIONS-1 keeps its original selector and now pins positive response coverage.
+    #[test]
+    fn citations_surface_recorded_absent_pins_56() {
+        use crate::messages::{ContentBlock, MessageStreamEvent};
+        let citations = vec![
+            serde_json::json!({"type":"char_location","cited_text":"char","document_index":0,
+                "document_title":null,"start_char_index":0,"end_char_index":1,"file_id":"opaque_file"}),
+            serde_json::json!({"type":"page_location","cited_text":"page","document_index":1,
+                "document_title":null,"start_page_number":1,"end_page_number":1,"file_id":null}),
+            serde_json::json!({"type":"content_block_location","cited_text":"block","document_index":2,
+                "document_title":"doc","start_block_index":0,"end_block_index":1,"file_id":"file_blocks"}),
+            serde_json::json!({"type":"web_search_result_location","cited_text":"web","encrypted_index":"opaque_α",
+                "title":null,"url":"https://example.invalid/web","extra":[null,1]}),
+            serde_json::json!({"type":"search_result_location","cited_text":"search","search_result_index":3,
+                "source":"https://example.invalid/source","title":null,"start_block_index":0,"end_block_index":1}),
+        ];
+        for state in [
+            None,
+            Some(serde_json::json!(null)),
+            Some(serde_json::json!([])),
+            Some(serde_json::json!(citations)),
+        ] {
+            let mut raw = serde_json::json!({"type":"text","text":"exact"});
+            if let Some(state) = state {
+                raw["citations"] = state;
+            }
+            let typed: ContentBlock = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(serde_json::to_value(typed).unwrap(), raw);
+        }
+        for index in [3, 11] {
+            for citation in &citations {
+                let raw = serde_json::json!({"type":"content_block_delta","index":index,
+                    "delta":{"type":"citations_delta","citation":citation}});
+                let event: MessageStreamEvent = serde_json::from_value(raw.clone()).unwrap();
+                assert_eq!(serde_json::to_value(event).unwrap(), raw);
             }
         }
-        None
     }
 
     #[test]
-    fn citations_surface_recorded_absent_pins_56() {
-        let src = include_str!("messages.rs");
-
-        // (i) `ContentBlock::Text` body = { text, cache_control } only:
-        // no `citations` member (46c R18 / ledger 13:48Z OQ-4).
-        let enum_body = brace_body_after(src, "pub enum ContentBlock {")
-            .expect("RECORDED-ABSENT pin: ContentBlock enum must be brace-delimited");
-        let text_body = brace_body_after(enum_body, "    Text {")
-            .expect("RECORDED-ABSENT pin: ContentBlock::Text variant must be brace-delimited");
-        assert!(
-            !text_body
-                .lines()
-                .any(|line| line.trim_start().starts_with("citations:")),
-            "RECORDED-ABSENT (56a): ContentBlock::Text must not gain a `citations` member \
-             until registry entry CITATIONS-1 flips modeled_by in the same commit (56b)"
-        );
-
-        // (ii) `KNOWN_DELTA_SUBTYPES` = exactly the 4 quoted literals;
-        // no `citation_delta` row (the R1 forward-compat table is 56b's to change).
-        let known_marker = "const KNOWN_DELTA_SUBTYPES: &[&str] = &[";
-        let known_start = src
-            .find(known_marker)
-            .expect("RECORDED-ABSENT pin: KNOWN_DELTA_SUBTYPES must exist");
-        let known_rest = &src[known_start + known_marker.len()..];
-        let known_body = &known_rest[..known_rest
-            .find("];")
-            .expect("RECORDED-ABSENT pin: array must be closed")];
-        let entries: Vec<&str> = known_body
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect();
-        assert_eq!(
-            entries,
-            [
-                "\"text_delta\",",
-                "\"input_json_delta\",",
-                "\"thinking_delta\",",
-                "\"signature_delta\",",
-            ],
-            "RECORDED-ABSENT (56a): KNOWN_DELTA_SUBTYPES must stay exactly the 4 quoted \
-             literals (no `citation_delta`) until registry entry CITATIONS-1 flips \
-             modeled_by in the same commit (56b)"
-        );
-
-        // (iii) No `TextCitation` type anywhere in the wire module.
-        assert!(
-            !src.contains("TextCitation"),
-            "RECORDED-ABSENT (56a): `TextCitation` must not appear in messages.rs until \
-             registry entry CITATIONS-1 flips modeled_by in the same commit (56b)"
-        );
-
-        // (iv) `StreamDelta` = exactly 4 tagged variants; no citation variant.
-        let sd_body = brace_body_after(src, "pub enum StreamDelta {")
-            .expect("RECORDED-ABSENT pin: StreamDelta enum must be brace-delimited");
-        let variant_count = sd_body
-            .lines()
-            .filter(|line| {
-                let trimmed = line.trim();
-                trimmed.chars().next().is_some_and(|c: char| c.is_ascii_uppercase())
-                    && trimmed.contains(" { ")
-                    && trimmed.ends_with("},")
-            })
-            .count();
-        assert_eq!(
-            variant_count, 4,
-            "RECORDED-ABSENT (56a): StreamDelta must stay exactly 4 variants (no citation \
-             variant) until registry entry CITATIONS-1 flips modeled_by in the same \
-             commit (56b)"
-        );
+    fn mss_u3_nested_usage_members_preserve_presence() {
+        use crate::messages::MessagesUsage;
+        for (outer, member) in [
+            ("output_tokens_details", "thinking_tokens"),
+            ("cache_creation", "ephemeral_5m_input_tokens"),
+            ("cache_creation", "ephemeral_1h_input_tokens"),
+        ] {
+            for state in [
+                None,
+                Some(serde_json::json!(null)),
+                Some(serde_json::json!(0)),
+                Some(serde_json::json!(9)),
+            ] {
+                let mut nested = serde_json::json!({});
+                if let Some(state) = state {
+                    nested[member] = state;
+                }
+                let mut raw = serde_json::json!({"input_tokens":0,"output_tokens":0});
+                raw[outer] = nested;
+                let typed: MessagesUsage =
+                    serde_json::from_value(raw.clone()).expect("MSS_U3_NESTED_USAGE_PRESENCE");
+                assert_eq!(
+                    serde_json::to_value(typed).unwrap(),
+                    raw,
+                    "MSS_U3_NESTED_NO_SYNTHETIC_ZERO"
+                );
+            }
+            for value in [
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!("1"),
+                serde_json::json!(false),
+            ] {
+                let mut raw = serde_json::json!({"input_tokens":0,"output_tokens":0});
+                raw[outer] = serde_json::json!({});
+                raw[outer][member] = value;
+                assert!(serde_json::from_value::<MessagesUsage>(raw).is_err());
+            }
+        }
     }
 }

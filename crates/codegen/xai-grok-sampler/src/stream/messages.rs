@@ -29,6 +29,7 @@ fn stream_delta_type(delta: &messages::StreamDelta) -> &'static str {
         messages::StreamDelta::InputJsonDelta { .. } => "input_json_delta",
         messages::StreamDelta::ThinkingDelta { .. } => "thinking_delta",
         messages::StreamDelta::SignatureDelta { .. } => "signature_delta",
+        messages::StreamDelta::CitationsDelta { .. } => "citations_delta",
     }
 }
 
@@ -299,14 +300,14 @@ pub(crate) fn stream_messages_tracked<'a>(
                             .copied()
                             .unwrap_or(0);
                     if let Some(cc) = message.usage.cache_creation.as_ref() {
-                        final_cache_creation_5m_input_tokens = cc.ephemeral_5m_input_tokens;
-                        final_cache_creation_1h_input_tokens = cc.ephemeral_1h_input_tokens;
+                        final_cache_creation_5m_input_tokens = cc.ephemeral_5m_input_tokens.as_ref().copied().unwrap_or(0);
+                        final_cache_creation_1h_input_tokens = cc.ephemeral_1h_input_tokens.as_ref().copied().unwrap_or(0);
                     }
                     final_reasoning_tokens = message
                         .usage
                         .output_tokens_details
                         .as_ref()
-                        .map(|d| d.thinking_tokens)
+                        .and_then(|details| details.thinking_tokens.as_ref()).copied()
                         .unwrap_or(0);
                     // L107/L108 (Q6/Q7): preserve the exact start state; the
                     // terminal delta REPLACES both (container = non-null replace,
@@ -447,7 +448,7 @@ pub(crate) fn stream_messages_tracked<'a>(
                             arguments_delta: None,
                         };
                     }
-                    ContentBlock::ServerToolUse { id, name, input, .. } => {
+                    ContentBlock::ServerToolUse { id, name, input, caller } => {
                         // apex-xk51 (R1/R2): the provider's hosted-tool-search
                         // CALL. Register the index (R2: its later
                         // `input_json_delta` / `content_block_stop` must not
@@ -464,12 +465,15 @@ pub(crate) fn stream_messages_tracked<'a>(
                         } else {
                             None
                         };
-                        let raw = serde_json::json!({
+                        let mut raw = serde_json::json!({
                             "type": "server_tool_use",
                             "id": id,
                             "name": name,
                             "input": input,
                         });
+                        if let Some(caller) = caller {
+                            raw["caller"] = serde_json::json!(caller);
+                        }
                         blocks.insert(
                             index,
                             BlockState {
@@ -537,6 +541,15 @@ pub(crate) fn stream_messages_tracked<'a>(
                         | ContentBlock::ToolResult { .. }
                         | ContentBlock::ToolReference { .. }
                         | ContentBlock::Unknown { .. } => {
+                            if let ContentBlock::Unknown { kind } = &content_block {
+                                let kind = kind.chars().take(128).collect::<String>();
+                                yield SamplingEvent::Failed {
+                                    request_id: request_id.clone(),
+                                    error: SamplingErrorInfo::from(&SamplingError::serialization_message(
+                                        format!("unsupported Messages block kind {kind:?}"))),
+                                };
+                                return;
+                            }
                             let block_type = match content_block {
                                 ContentBlock::Unknown { .. } => BlockType::Unknown,
                                 _ => BlockType::Inert,
@@ -565,6 +578,19 @@ pub(crate) fn stream_messages_tracked<'a>(
                 MessageStreamEvent::ContentBlockDelta { index, delta } => {
                     if terminal_delta_seen {
                         block_event_after_terminal = true;
+                    }
+                    if matches!(&delta, StreamDelta::CitationsDelta { .. })
+                        && (terminal_delta_seen || blocks.get(&index)
+                            .is_some_and(|state| state.block_type != BlockType::Text)) {
+                        yield SamplingEvent::Failed {
+                            request_id: request_id.clone(),
+                            error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                                error_type: "invalid_citation_index".to_owned(),
+                                message: format!("citations_delta requires an open text index {index}"),
+                                code: None,
+                            }),
+                        };
+                        return;
                     }
                     let delta_type = stream_delta_type(&delta);
                     if let Some(v) =
@@ -600,6 +626,7 @@ pub(crate) fn stream_messages_tracked<'a>(
                             // are swallowed, never fatal.
                         } else {
                         match delta {
+                            StreamDelta::CitationsDelta { .. } => {}
                             StreamDelta::ThinkingDelta { thinking } => {
                                 if !thinking.is_empty() {
                                     state.thinking_acc.push_str(&thinking);
@@ -804,28 +831,16 @@ pub(crate) fn stream_messages_tracked<'a>(
                 MessageStreamEvent::MessageDelta { delta, usage } => {
                     // L110 (Q9): terminal replacement — the delta's whole state
                     // (Missing/Null/Value) replaces the start value; never overlays.
-                    final_stop_details = delta.stop_details.clone();
                     // L105 (Q4): a non-null delta container replaces the start
                     // value; omission or null retains the exact start state.
                     if let Some(container) = delta.container.as_ref() {
                         final_container = WirePresence::value(container.clone());
                     }
-                    // Keep the exact wire string so consumers can echo it.
-                    final_raw_stop_reason = delta
-                        .stop_reason
-                        .as_ref()
-                        .map(messages::StopReason::wire_str);
-                    // L4282 (46b R3): capture the raw wire terminal for the
-                    // post-loop unknown-value check (the projection below is
-                    // lossy: an unrecognized value projects to Stop)
-                    final_wire_stop_reason = delta.stop_reason.clone();
-                    // The matched stop sequence arrives on the same terminal delta (present only on a `stop_sequence` stop); carry it verbatim
-                    if delta.stop_sequence.is_some() {
-                        final_stop_sequence = delta.stop_sequence.clone();
-                    }
-                    // A delta carrying a stop_reason IS the terminal delta
-                    // (grammar: one terminal per stream — spec L1976-1978)
-                    if let Some(sr) = delta.stop_reason {
+                    if let Some(sr) = delta.stop_reason.as_ref() {
+                        final_stop_details = delta.stop_details.clone();
+                        final_raw_stop_reason = Some(sr.wire_str());
+                        final_wire_stop_reason = Some(sr.clone());
+                        final_stop_sequence = delta.stop_sequence.as_ref().cloned();
                         terminal_delta_seen = true;
                         // The public wrapper supplies no capture and retains the fatal pause path.
                         if capture.is_none() || !matches!(&sr, messages::StopReason::PauseTurn) {
@@ -907,8 +922,9 @@ pub(crate) fn stream_messages_tracked<'a>(
                     }
                     // Override the message_start value when the terminal delta
                     // carries its own decomposition (preserve otherwise).
-                    if let Some(details) = usage.output_tokens_details.as_ref() {
-                        final_reasoning_tokens = details.thinking_tokens;
+                    if let Some(thinking) = usage.output_tokens_details.as_ref()
+                        .and_then(|details| details.thinking_tokens.as_ref()) {
+                        final_reasoning_tokens = *thinking;
                     }
                 }
 
@@ -1186,7 +1202,7 @@ pub(crate) fn stream_messages_tracked<'a>(
             cost_usd_ticks: None,
             message_chunks_emitted: message_chunk_count,
             doom_loop_signals: Vec::new(),
-            stop_message: final_stop_details.as_ref().and_then(|d| d.explanation.clone()),
+            stop_message: final_stop_details.as_ref().and_then(|d| d.explanation.as_ref().cloned()),
             message_id: final_message_id,
             raw_stop_reason: final_raw_stop_reason,
             stop_sequence: final_stop_sequence,

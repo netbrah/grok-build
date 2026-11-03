@@ -496,6 +496,7 @@ pub(crate) fn repair_trailing_assistant(messages: &mut Vec<crate::messages::Mess
         role: MessageRole::User,
         content: MessageContent::Blocks(vec![ContentBlock::Text {
             text: sentinel.to_string(),
+            citations: crate::presence::WirePresence::missing(),
             cache_control: None,
         }]),
     });
@@ -545,6 +546,7 @@ fn mark_message_cache_breakpoint_with(
             let text = std::mem::take(text);
             msg.content = MessageContent::Blocks(vec![ContentBlock::Text {
                 text,
+                citations: crate::presence::WirePresence::missing(),
                 cache_control: Some(marker),
             }]);
             true
@@ -1126,6 +1128,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             .iter()
             .map(|part| match part {
                 ContentPart::Text { text } => ContentBlock::Text {
+                    citations: crate::presence::WirePresence::missing(),
                     text: text.as_ref().to_owned(),
                     cache_control: None,
                 },
@@ -1138,6 +1141,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                     },
                     Err(text) => ContentBlock::Text {
                         text,
+                        citations: crate::presence::WirePresence::missing(),
                         cache_control: None,
                     },
                 },
@@ -1212,6 +1216,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 if !a.content.is_empty() {
                     pending_assistant.push(ContentBlock::Text {
                         text: a.content.as_ref().to_owned(),
+                        citations: crate::presence::WirePresence::missing(),
                         cache_control: None,
                     });
                 }
@@ -1222,6 +1227,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                         id: sanitize_tool_call_id(&tc.id),
                         name: tc.name.clone(),
                         input,
+                        caller: None,
                         cache_control: None,
                     });
                 }
@@ -1234,6 +1240,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 } else {
                     let mut blocks = vec![ContentBlock::Text {
                         text: t.content.as_ref().to_owned(),
+                        citations: crate::presence::WirePresence::missing(),
                         cache_control: None,
                     }];
                     for img in &t.images {
@@ -1251,6 +1258,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                                 Err(text) => {
                                     blocks.push(ContentBlock::Text {
                                         text,
+                                        citations: crate::presence::WirePresence::missing(),
                                         cache_control: None,
                                     });
                                 }
@@ -1276,6 +1284,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 pending_user_class = None;
                 pending_assistant.push(ContentBlock::Text {
                     text: b.text_summary(),
+                    citations: crate::presence::WirePresence::missing(),
                     cache_control: None,
                 });
             }
@@ -1304,6 +1313,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 if no_current_tool_surface {
                     pending_assistant.push(ContentBlock::Text {
                         text: item.text_summary(),
+                        citations: crate::presence::WirePresence::missing(),
                         cache_control: None,
                     });
                     continue;
@@ -1345,6 +1355,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                                         .cloned()
                                         .unwrap_or_default()
                                         .into(),
+                                    caller: None,
                                     cache_control: None,
                                 },
                             ),
@@ -1355,6 +1366,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                                 );
                                 pending_assistant.push(ContentBlock::Text {
                                     text: item.text_summary(),
+                                    citations: crate::presence::WirePresence::missing(),
                                     cache_control: None,
                                 });
                             }
@@ -1419,6 +1431,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                                 );
                                 pending_assistant.push(ContentBlock::Text {
                                     text: item.text_summary(),
+                                    citations: crate::presence::WirePresence::missing(),
                                     cache_control: None,
                                 });
                             }
@@ -1485,6 +1498,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 role: MessageRole::User,
                 content: MessageContent::Blocks(vec![ContentBlock::Text {
                     text: "[Continue]".to_string(),
+                    citations: crate::presence::WirePresence::missing(),
                     cache_control: None,
                 }]),
             },

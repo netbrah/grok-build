@@ -149,6 +149,7 @@ impl NativeRequestGuard {
             status: NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed),
             blocks: Vec::new(),
             usage: std::collections::BTreeMap::new(),
+            messages_metadata: NativeMessagesCapture::empty_failed(),
             latency_ms: None,
             http_dispatches: 0,
             observed_bytes: 0,
@@ -1541,6 +1542,25 @@ mod tests {
 
     async fn assert_native_passive_tolerates(frames: Vec<serde_json::Value>, case: &str) {
         use xai_grok_sampling_types::conversation::native_search_history::*;
+        let strict = matches!(
+            case,
+            "citations_delta"
+                | "future_delta"
+                | "future_event"
+                | "future_block"
+                | "web_search_tool_result"
+        );
+        let fault = frames
+            .iter()
+            .position(|frame| {
+                frame["type"] == case
+                    || frame["content_block"]["type"] == case
+                    || frame["delta"]["type"] == case
+            })
+            .expect("AM14 named raw fault frame");
+        assert!(matches!(fault, 1 | 2 | 6), "AM14 declared fault ordinal");
+        let admitted = fault == 6;
+        let expected_usage = frames[0]["message"]["usage"].as_object().unwrap().clone();
         let server = xai_grok_test_support::MockInferenceServer::start()
             .await
             .unwrap();
@@ -1589,10 +1609,11 @@ mod tests {
         )
         .await
         .unwrap()
-        .result
-        .expect("D3 unleased control completes")
-        .0;
-        while received.try_recv().is_ok() {}
+        .result;
+        let mut ordinary_events = Vec::new();
+        while let Ok(event) = received.try_recv() {
+            ordinary_events.push(event);
+        }
         let id = RequestId::random();
         let lease = NativeCaptureLease::issue(
             "r17-tolerated".into(),
@@ -1625,6 +1646,141 @@ mod tests {
                 break;
             }
         }
+        if strict {
+            for result in [&ordinary, &captured.result] {
+                let error = result
+                    .as_ref()
+                    .expect_err("AM14 strict unknown shape fails");
+                assert!(matches!(error, SamplingError::Serialization(_)));
+                assert!(!error.is_retryable());
+            }
+            let visible = |events: &[SamplingEvent]| {
+                events.iter().filter_map(|event| match event {
+                SamplingEvent::FirstToken { .. } => Some(serde_json::json!({"first_token":true})),
+                SamplingEvent::ChannelToken { channel, text, chunk_index, .. } =>
+                    Some(serde_json::json!({"channel":channel,"text":text,"chunk_index":chunk_index})),
+                SamplingEvent::ToolCallDelta { tool_index, id, name, arguments_delta, .. } =>
+                    Some(serde_json::json!({"tool_index":tool_index,"id":id,"name":name,"arguments_delta":arguments_delta})),
+                SamplingEvent::ResponseStarted { message_id, model, input_tokens,
+                    cache_read_input_tokens, cache_creation_input_tokens, .. } =>
+                    Some(serde_json::json!({"message_id":message_id,"model":model,"input_tokens":input_tokens,
+                        "cache_read_input_tokens":cache_read_input_tokens,"cache_creation_input_tokens":cache_creation_input_tokens})),
+                SamplingEvent::ReasoningCompleted { signature, .. } => Some(serde_json::json!({"signature":signature})),
+                SamplingEvent::MessagesToolSearchDisplay { item, .. } => Some(serde_json::json!({"discovery":item.raw()})),
+                SamplingEvent::Failed { error, .. } => Some(serde_json::json!({"failed":error})),
+                SamplingEvent::Completed { .. } => Some(serde_json::json!({"completed":true})),
+                _ => None,
+            }).collect::<Vec<_>>()
+            };
+            assert_eq!(
+                visible(&observed),
+                visible(&ordinary_events),
+                "AM14 ordinary prefix and error unchanged"
+            );
+            for events in [&ordinary_events, &observed] {
+                let failures: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        SamplingEvent::Failed { error, .. } => Some(error),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(failures.len(), 1);
+                assert_eq!(
+                    failures[0].kind,
+                    crate::events::SamplingErrorKind::Serialization
+                );
+                assert!(!failures[0].is_retryable);
+                assert!(!events.iter().any(|event| matches!(
+                    event,
+                    SamplingEvent::Completed { .. } | SamplingEvent::Retrying { .. }
+                )));
+            }
+            let attempts = native_attempts(&observed);
+            assert_eq!(attempts.len(), 1);
+            let attempt = attempts[0];
+            assert_eq!(
+                attempt.admitted, admitted,
+                "AM14 admission follows the consumed prefix"
+            );
+            assert!(!attempt.stream_complete);
+            assert_eq!(
+                attempt.status,
+                NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed)
+            );
+            assert!(attempt.view_roles.is_empty() && attempt.view_digests.is_empty());
+            if admitted {
+                assert!(
+                    attempt
+                        .blocks
+                        .iter()
+                        .map(|block| serde_json::from_str::<serde_json::Value>(&block.raw).unwrap())
+                        .collect::<Vec<_>>()
+                        == vec![
+                            serde_json::json!({"type":"text","text":"before"}),
+                            serde_json::json!({"type":"server_tool_use","id":"srvtoolu_repeat",
+                        "name":"tool_search_tool_regex","input":{"query":"account"}})
+                        ],
+                    "AM14 post-native failure retains the exact safe prefix"
+                );
+            } else {
+                assert!(
+                    attempt.blocks.is_empty(),
+                    "AM14 unseen native frame cannot force admission"
+                );
+            }
+            assert_eq!(attempt.http_dispatches, 1);
+            assert_eq!(attempt.usage["input_tokens"], 10);
+            assert_eq!(attempt.usage["output_tokens"], 0);
+            assert_eq!(
+                attempt.usage,
+                expected_usage
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                "AM14 exact start usage; unseen terminal counters are not observed"
+            );
+            let metadata = serde_json::to_value(&attempt.messages_metadata).unwrap();
+            assert_eq!(
+                metadata["Observed"]["observations"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(metadata["Observed"]["coverage"].get("Partial").is_some());
+            let evidence = observed
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        SamplingEvent::NativeAttemptEvidence {
+                            evidence: NativeEvidenceEvent::Attempt(_),
+                            ..
+                        }
+                    )
+                })
+                .unwrap();
+            let terminal = observed
+                .iter()
+                .position(|event| matches!(event, SamplingEvent::Failed { .. }))
+                .unwrap();
+            let end = observed
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        SamplingEvent::NativeAttemptEvidence {
+                            evidence: NativeEvidenceEvent::End,
+                            ..
+                        }
+                    )
+                })
+                .unwrap();
+            assert!(evidence < terminal && terminal < end);
+            assert_eq!(server.messages_request_count(), 2);
+            return;
+        }
+        let ordinary = ordinary.expect("D3 unleased control completes").0;
         assert!(
             captured.result.is_ok(),
             "R16 Opus-F1: passive capture must preserve D3 completion for {case}; error={:?}",

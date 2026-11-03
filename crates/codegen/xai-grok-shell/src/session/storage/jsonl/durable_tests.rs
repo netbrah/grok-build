@@ -1238,8 +1238,8 @@ async fn native_projection_corrupt_head_or_image_never_uses_backup() {
                             .join(format!("{}.json", commit.checkpoint.digest));
                         let mut checkpoint: serde_json::Value =
                             serde_json::from_slice(&std::fs::read(&original).unwrap()).unwrap();
-                        checkpoint["schema_version"] = 3.into();
-                        checkpoint["reader_floor"] = 3.into();
+                        checkpoint["schema_version"] = 4.into();
+                        checkpoint["reader_floor"] = 4.into();
                         checkpoint["limits_revision"] = 2.into();
                         let bytes = serde_json::to_vec(&checkpoint).unwrap();
                         commit.checkpoint.digest = digest(&bytes);

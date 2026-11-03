@@ -69,6 +69,16 @@ where
     Box::new(TargetFilterLayer::new(fmt_layer, TARGET))
 }
 
+#[cfg(feature = "test-support")]
+pub fn flush_sampling_log_for_tests() -> bool {
+    let guard = GUARD
+        .get()
+        .and_then(|slot| slot.lock().ok().and_then(|mut guard| guard.take()));
+    let present = guard.is_some();
+    drop(guard);
+    present
+}
+
 #[cfg(test)]
 mod tests {
     use tracing::Instrument;

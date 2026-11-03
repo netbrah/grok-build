@@ -10,6 +10,10 @@ use xai_grok_sampling_types::{ConversationResponse, SamplingError};
 
 use crate::metrics::InferenceLatencyStats;
 
+use xai_grok_sampling_types::conversation::native_search_history::{
+    NativeMessagesFinalized, NativeMessagesObservation, NativeUnavailable,
+};
+
 pub(crate) struct MessagesStreamFrame {
     pub(crate) event: MessageStreamEvent,
     raw: Option<Value>,
@@ -119,6 +123,25 @@ impl CapturedBlock {
     fn native_delta_growth(&self, delta: &StreamDelta) -> Result<u64, CaptureError> {
         use xai_grok_sampling_types::conversation::native_search_history::*;
         let (fragment, extra) = match delta {
+            StreamDelta::CitationsDelta { citation } => {
+                let bytes = native_encoded_len(citation, NATIVE_BLOCK_BYTES)
+                    .map_err(|_| CaptureError::LimitExceeded)?;
+                let (extra, removed) = match self.raw.get("citations") {
+                    None => (b",\"citations\":[]".len() as u64, 0),
+                    Some(Value::Null) => (2, 4),
+                    Some(Value::Array(values)) => {
+                        if values.len() >= MAX_MESSAGES_REQUEST_ITEMS {
+                            return Err(CaptureError::LimitExceeded);
+                        }
+                        (u64::from(!values.is_empty()), 0)
+                    }
+                    Some(_) => return Err(CaptureError::InvalidStream),
+                };
+                return bytes
+                    .checked_add(extra)
+                    .and_then(|size| size.checked_sub(removed))
+                    .ok_or(CaptureError::LimitExceeded);
+            }
             StreamDelta::TextDelta { text } => (text.as_str(), 0),
             StreamDelta::ThinkingDelta { thinking } => (thinking.as_str(), 0),
             StreamDelta::SignatureDelta { signature } => (
@@ -133,7 +156,6 @@ impl CapturedBlock {
                 partial_json.as_str(),
                 u64::from(self.raw_json.is_empty() && !partial_json.is_empty()) * 2,
             ),
-            _ => return Ok(0),
         };
         native_encoded_len(&fragment, NATIVE_BLOCK_BYTES)
             .map_err(|_| CaptureError::LimitExceeded)?
@@ -202,6 +224,26 @@ impl CapturedBlock {
     fn native_delta_sizes(&self, delta: &StreamDelta) -> Result<NativeCaptureSizes, CaptureError> {
         use xai_grok_sampling_types::conversation::native_search_history::*;
         let envelope = match delta {
+            StreamDelta::CitationsDelta { citation } => {
+                let bytes = native_encoded_json_string_len(citation, NATIVE_RESPONSE_BYTES)
+                    .map_err(|_| CaptureError::LimitExceeded)?;
+                let (extra, removed) = match self.raw.get("citations") {
+                    None => (
+                        native_encoded_len(&",\"citations\":[]", NATIVE_RESPONSE_BYTES)
+                            .map_err(|_| CaptureError::LimitExceeded)?
+                            - 2,
+                        0,
+                    ),
+                    Some(Value::Null) => (2, 4),
+                    Some(Value::Array(values)) => (u64::from(!values.is_empty()), 0),
+                    Some(_) => return Err(CaptureError::InvalidStream),
+                };
+                bytes
+                    .checked_sub(2)
+                    .and_then(|size| size.checked_add(extra))
+                    .and_then(|size| size.checked_sub(removed))
+                    .ok_or(CaptureError::LimitExceeded)?
+            }
             StreamDelta::InputJsonDelta { partial_json } => {
                 let bytes = native_encoded_len(partial_json, NATIVE_RESPONSE_BYTES)
                     .map_err(|_| CaptureError::LimitExceeded)?;
@@ -278,6 +320,11 @@ impl CapturedBlock {
             return Err(CaptureError::LimitExceeded);
         }
         let growth = match delta {
+            StreamDelta::CitationsDelta { citation } => usize::try_from(
+                native_encoded_len(citation, NATIVE_BLOCK_BYTES)
+                    .map_err(|_| CaptureError::LimitExceeded)?,
+            )
+            .map_err(|_| CaptureError::LimitExceeded)?,
             StreamDelta::TextDelta { text } => text.len(),
             StreamDelta::ThinkingDelta { thinking } => thinking.len(),
             StreamDelta::SignatureDelta { signature } => signature.len(),
@@ -293,7 +340,6 @@ impl CapturedBlock {
                 }
                 partial_json.len()
             }
-            _ => 0,
         };
         lease
             .reserve(
@@ -339,6 +385,34 @@ impl CapturedBlock {
             self.reserve_native_delta(delta, lease)?;
         }
         match (&mut self.typed, delta) {
+            (ContentBlock::Text { citations, .. }, StreamDelta::CitationsDelta { citation }) => {
+                if citations
+                    .as_ref()
+                    .is_some_and(|values| values.len() >= MAX_MESSAGES_REQUEST_ITEMS)
+                {
+                    return Err(CaptureError::LimitExceeded);
+                }
+                let raw_citation = raw_delta
+                    .get("citation")
+                    .ok_or(CaptureError::UnfaithfulDelta)?;
+                let mut values = std::mem::take(citations).into_value().unwrap_or_default();
+                values.push(citation.clone());
+                *citations = xai_grok_sampling_types::presence::WirePresence::value(values);
+                let object = self
+                    .raw
+                    .as_object_mut()
+                    .ok_or(CaptureError::UnfaithfulDelta)?;
+                let raw_citations = object
+                    .entry("citations")
+                    .or_insert_with(|| serde_json::json!([]));
+                if raw_citations.is_null() {
+                    *raw_citations = serde_json::json!([]);
+                }
+                raw_citations
+                    .as_array_mut()
+                    .ok_or(CaptureError::UnfaithfulDelta)?
+                    .push(raw_citation.clone());
+            }
             (ContentBlock::Text { text, .. }, StreamDelta::TextDelta { text: fragment }) => {
                 text.push_str(fragment);
                 self.append_raw_string(
@@ -450,6 +524,11 @@ pub(crate) struct AttemptCapture {
     native_stop: Option<String>,
     native_paused: bool,
     native_usage: std::collections::BTreeMap<String, Value>,
+    messages_observations: Vec<NativeMessagesObservation>,
+    messages_finalized: NativeMessagesFinalized,
+    messages_observation_bytes: u64,
+    messages_reserved_bytes: u64,
+    messages_failure: Option<NativeUnavailable>,
     native_coordinates: Vec<u32>,
     native_failure_block: Option<u32>,
     native_starts: u64,
@@ -484,6 +563,7 @@ struct NativeMetadataSizes {
     id: u64,
     stop: u64,
     usage: u64,
+    messages: u64,
 }
 
 impl AttemptCapture {
@@ -537,74 +617,140 @@ impl AttemptCapture {
         Ok(())
     }
 
-    fn native_usage_replacement_size(
-        &self,
-        category: &str,
-        value: &Value,
+    fn messages_capture_len(
+        count: u64,
+        bytes: u64,
+        finalized: u64,
+        limit: u64,
     ) -> Result<u64, CaptureError> {
         use xai_grok_sampling_types::conversation::native_search_history::*;
-        let size = |value: &Value| {
-            native_encoded_len(value, NATIVE_RESPONSE_BYTES)
-                .map_err(|_| CaptureError::LimitExceeded)
+        let empty = NativeMessagesFinalized::default();
+        let capture = NativeMessagesCapture::Observed {
+            observations: Vec::new(),
+            finalized: empty.clone().into(),
+            coverage: NativeMessagesCoverage::Partial {
+                reason: NativeUnavailable::ConflictingObservation,
+            },
         };
-        let current = native_encoded_len(&self.native_usage, NATIVE_RESPONSE_BYTES)
-            .map_err(|_| CaptureError::LimitExceeded)?;
-        let previous = self.native_usage.get(category);
-        let old = previous.map(size).transpose()?.unwrap_or(0);
-        let mut replacement = size(value)?;
-        if category == "cache_creation"
-            && let Some(old_map) = previous.and_then(Value::as_object)
-            && let Some(new_map) = value.as_object()
-        {
-            replacement = old;
-            let mut count = old_map.len();
-            for (key, value) in new_map {
-                let old_value = old_map.get(key);
-                let remove = old_value.map(size).transpose()?.unwrap_or(0);
-                let key_bytes = if old_value.is_none() {
-                    let bytes = native_encoded_len(key, NATIVE_RESPONSE_BYTES)
-                        .map_err(|_| CaptureError::LimitExceeded)?;
-                    let cost = bytes + 1 + u64::from(count > 0);
-                    count += 1;
-                    cost
-                } else {
-                    0
-                };
-                replacement = replacement
-                    .checked_sub(remove)
-                    .and_then(|n| n.checked_add(key_bytes))
-                    .and_then(|n| n.checked_add(size(value).ok()?))
-                    .ok_or(CaptureError::LimitExceeded)?;
-            }
-        }
-        let key_bytes = if previous.is_none() {
-            native_encoded_len(&category, NATIVE_RESPONSE_BYTES)
-                .map_err(|_| CaptureError::LimitExceeded)?
-                + 1
-                + u64::from(!self.native_usage.is_empty())
-        } else {
-            0
-        };
-        current
-            .checked_sub(old)
-            .and_then(|n| n.checked_add(replacement))
-            .and_then(|n| n.checked_add(key_bytes))
-            .filter(|n| *n <= NATIVE_RESPONSE_BYTES)
+        native_encoded_len(&capture, limit)
+            .map_err(|_| CaptureError::LimitExceeded)?
+            .checked_sub(
+                native_encoded_len(&empty, limit).map_err(|_| CaptureError::LimitExceeded)?,
+            )
+            .and_then(|size| size.checked_add(finalized))
+            .and_then(|size| size.checked_add(bytes))
+            .and_then(|size| size.checked_add(count.saturating_sub(1)))
+            .filter(|size| *size <= limit)
             .ok_or(CaptureError::LimitExceeded)
+    }
+
+    fn messages_sizes(
+        &self,
+        kind: xai_grok_sampling_types::conversation::native_search_history::NativeMessagesObservationKind,
+        envelope: &Value,
+    ) -> Result<(NativeMetadataSizes, u64, u64, u64), CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let limit = if self.is_passive() {
+            NATIVE_RESPONSE_BYTES
+        } else {
+            MAX_ENCODED_MESSAGES_REQUEST_BYTES
+        };
+        let ordinal = self.messages_observations.len() as u64;
+        if ordinal >= NATIVE_MESSAGES_METADATA_OBSERVATIONS {
+            return Err(CaptureError::LimitExceeded);
+        }
+        let observation =
+            NativeMessagesObservation::envelope_encoded_len(ordinal, kind, envelope, limit)
+                .map_err(|_| CaptureError::LimitExceeded)?;
+        let finalized = self
+            .messages_finalized
+            .preview_encoded_len(ordinal, kind, envelope, limit)
+            .map_err(|reason| {
+                if reason == NativeUnavailable::Capacity {
+                    CaptureError::LimitExceeded
+                } else {
+                    CaptureError::InvalidStream
+                }
+            })?;
+        let usage = self
+            .messages_finalized
+            .preview_usage_encoded_len(kind, envelope, limit)
+            .map_err(|_| CaptureError::LimitExceeded)?;
+        let series = self
+            .messages_observation_bytes
+            .checked_add(observation)
+            .ok_or(CaptureError::LimitExceeded)?;
+        let actual = Self::messages_capture_len(ordinal + 1, series, finalized, limit)?;
+        let terminal = serde_json::json!({"stop_reason":"model_context_window_exceeded","stop_sequence":"",
+            "stop_details":null,"usage":{"input_tokens":u64::MAX,"output_tokens":u64::MAX,
+                "thinking_tokens":u64::MAX,"cache_read_input_tokens":u64::MAX,"cache_creation_input_tokens":u64::MAX,
+                "output_tokens_details":{"thinking_tokens":u64::MAX}}});
+        let terminal_observation = NativeMessagesObservation::envelope_encoded_len(
+            u64::MAX,
+            NativeMessagesObservationKind::MessageDelta,
+            &terminal,
+            limit,
+        )
+        .map_err(|_| CaptureError::LimitExceeded)?;
+        let terminal_finalized = self
+            .messages_finalized
+            .preview_encoded_len(
+                u64::MAX,
+                NativeMessagesObservationKind::MessageDelta,
+                &terminal,
+                limit,
+            )
+            .map_err(|_| CaptureError::LimitExceeded)?;
+        let future = if self.is_passive() {
+            Self::messages_capture_len(
+                ordinal + 2,
+                series
+                    .checked_add(terminal_observation)
+                    .ok_or(CaptureError::LimitExceeded)?,
+                finalized.max(terminal_finalized),
+                limit,
+            )?
+        } else {
+            actual
+        };
+        let mut metadata = self.native_metadata_sizes()?;
+        metadata.usage = usage;
+        metadata.messages = future;
+        if kind != NativeMessagesObservationKind::MessageDelta {
+            metadata.id = native_encoded_len(&envelope.get("id"), limit)
+                .map_err(|_| CaptureError::LimitExceeded)?;
+        }
+        let stops = if kind == NativeMessagesObservationKind::MessageDelta {
+            envelope.get("delta").unwrap_or(envelope)
+        } else {
+            envelope
+        };
+        if let Some(stop) = stops.get("stop_reason").filter(|value| value.is_string()) {
+            metadata.stop =
+                native_encoded_len(stop, limit).map_err(|_| CaptureError::LimitExceeded)?;
+        }
+        let retained = self
+            .retained_wire_bytes
+            .checked_add(actual)
+            .and_then(|bytes| bytes.checked_add(usage))
+            .and_then(|bytes| bytes.checked_add(metadata.id))
+            .and_then(|bytes| bytes.checked_add(metadata.stop))
+            .ok_or(CaptureError::LimitExceeded)?;
+        if retained > MAX_ENCODED_MESSAGES_REQUEST_BYTES {
+            return Err(CaptureError::LimitExceeded);
+        }
+        Ok((metadata, observation, finalized, actual))
     }
 
     fn observe_native_metadata(&mut self, frame: &MessagesStreamFrame) -> Result<(), CaptureError> {
         use xai_grok_sampling_types::conversation::native_search_history::*;
-        if self.native.is_none() {
-            return Ok(());
-        }
         if let MessageStreamEvent::MessageDelta { delta, .. } = &frame.event {
             self.native_paused |= matches!(
-                delta.stop_reason,
+                delta.stop_reason.as_ref(),
                 Some(xai_grok_sampling_types::messages::StopReason::PauseTurn)
             );
         }
-        if !self.native_generation_funded {
+        if self.native.is_some() && !self.native_generation_funded {
             return Ok(());
         }
         if let MessageStreamEvent::ContentBlockStart { index, .. } = &frame.event {
@@ -622,79 +768,123 @@ impl AttemptCapture {
         if let MessageStreamEvent::ContentBlockStart { .. } = &frame.event {
             self.native_admitted |= raw
                 .get("content_block")
-                .and_then(|b| b.get("type"))
+                .and_then(|block| block.get("type"))
                 .and_then(Value::as_str)
                 .and_then(xai_grok_sampling_types::tool_search::ToolSearchKind::from_item_type)
                 .is_some();
         }
-        let usage = match &frame.event {
+        let (kind, envelope) = match &frame.event {
             MessageStreamEvent::MessageStart { .. } => {
                 self.native_started = true;
-                if let Some(id) = raw.get("message").and_then(|message| message.get("id")) {
-                    let size = native_encoded_len(id, NATIVE_RESPONSE_BYTES)
-                        .map_err(|_| CaptureError::LimitExceeded)?;
-                    let mut metadata = self.native_metadata_sizes()?;
-                    metadata.id = size;
-                    self.reserve_native_response(None, metadata)?;
-                    self.native_reserve(size)?;
-                    self.native_id = Some(id.clone());
-                }
-                raw.get("message").and_then(|message| message.get("usage"))
+                (
+                    NativeMessagesObservationKind::MessageStart,
+                    raw.get("message").ok_or(CaptureError::InvalidStream)?,
+                )
             }
-            MessageStreamEvent::MessageDelta { delta, .. } => {
-                if let Some(stop) = &delta.stop_reason {
-                    if !matches!(
-                        stop,
-                        xai_grok_sampling_types::messages::StopReason::Unknown(_)
-                    ) || !self.passive_exhausted()
-                    {
-                        let stop = stop.wire_str();
-                        let mut metadata = self.native_metadata_sizes()?;
-                        metadata.stop = native_encoded_len(&stop, NATIVE_RESPONSE_BYTES)
-                            .map_err(|_| CaptureError::LimitExceeded)?;
-                        self.reserve_native_response(None, metadata)?;
-                        self.native_stop = Some(stop);
-                    }
-                }
-                raw.get("usage")
+            MessageStreamEvent::MessageDelta { .. } => {
+                (NativeMessagesObservationKind::MessageDelta, raw)
             }
-            _ => None,
+            _ => return Ok(()),
         };
-        if let Some(usage) = usage.and_then(Value::as_object) {
-            for (category, value) in usage {
-                let size = native_encoded_len(value, NATIVE_RESPONSE_BYTES)
-                    .map_err(|_| CaptureError::LimitExceeded)?;
-                let mut metadata = self.native_metadata_sizes()?;
-                metadata.usage = self.native_usage_replacement_size(category, value)?;
-                self.reserve_native_response(None, metadata)?;
-                if !self.passive_exhausted() {
-                    self.native_reserve(size + category.len() as u64)?;
-                }
-                if category == "cache_creation"
-                    && let Some(old) = self
-                        .native_usage
-                        .get_mut(category)
-                        .and_then(Value::as_object_mut)
-                    && let Some(new) = value.as_object()
-                {
-                    old.extend(new.iter().map(|(key, value)| (key.clone(), value.clone())));
-                } else {
-                    self.native_usage.insert(category.clone(), value.clone());
-                }
-            }
+        if self.messages_failure.is_some() {
+            return Ok(());
         }
+        let measured = self.messages_sizes(kind, envelope);
+        let (metadata, observation_bytes, finalized_bytes, actual) = match measured {
+            Ok(measured) => measured,
+            Err(error) => {
+                self.messages_failure = Some(if error == CaptureError::LimitExceeded {
+                    NativeUnavailable::Capacity
+                } else {
+                    NativeUnavailable::Fidelity
+                });
+                return Err(error);
+            }
+        };
+        let physical = observation_bytes
+            .checked_add(finalized_bytes)
+            .and_then(|bytes| bytes.checked_add(metadata.usage))
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or(CaptureError::LimitExceeded)?;
+        let funded = !self.passive_exhausted()
+            && self.reserve_native_response(None, metadata).is_ok()
+            && self.native_reserve(physical).is_ok();
+        if !funded {
+            let mut current = metadata;
+            current.messages = actual;
+            let required = self
+                .native_response_reservation(None, current)?
+                .checked_add(physical)
+                .ok_or(CaptureError::LimitExceeded)?;
+            let capacity_only = self
+                .failure
+                .is_none_or(|error| error == CaptureError::LimitExceeded)
+                && self.native.as_ref().is_some_and(|lease| {
+                    matches!(lease.reserve(0), Ok(()) | Err(NativeUnavailable::Capacity))
+                });
+            if !capacity_only || required > self.native_reserved_response_bytes {
+                self.messages_failure = Some(NativeUnavailable::Capacity);
+                return Err(CaptureError::LimitExceeded);
+            }
+            // Keep the current envelope only within the prepaid terminal footprint.
+            self.failure = Some(CaptureError::LimitExceeded);
+            self.messages_failure = Some(NativeUnavailable::Capacity);
+        }
+        if funded {
+            self.messages_reserved_bytes = self.messages_reserved_bytes.max(metadata.messages);
+        }
+        let ordinal = self.messages_observations.len() as u64;
+        let observation = NativeMessagesObservation::from_envelope(ordinal, kind, envelope);
+        self.messages_finalized
+            .apply(&observation)
+            .map_err(|_| CaptureError::InvalidStream)?;
+        self.messages_observation_bytes = self
+            .messages_observation_bytes
+            .checked_add(observation_bytes)
+            .ok_or(CaptureError::LimitExceeded)?;
+        self.messages_observations.push(observation);
+        if kind == NativeMessagesObservationKind::MessageStart {
+            self.native_id = envelope.get("id").cloned();
+        }
+        if let Some(stop) = self
+            .messages_finalized
+            .stop_reason
+            .value()
+            .and_then(Value::as_str)
+        {
+            self.native_stop = Some(stop.to_owned());
+        }
+        self.native_usage = match self.messages_finalized.usage.value() {
+            Some(Value::Object(usage)) => usage.clone().into_iter().collect(),
+            None => Default::default(),
+            Some(_) => return Err(CaptureError::InvalidStream),
+        };
         Ok(())
     }
 
     fn native_metadata_sizes(&self) -> Result<NativeMetadataSizes, CaptureError> {
         use xai_grok_sampling_types::conversation::native_search_history::*;
+        let limit = if self.is_passive() {
+            NATIVE_RESPONSE_BYTES
+        } else {
+            MAX_ENCODED_MESSAGES_REQUEST_BYTES
+        };
+        let finalized = native_encoded_len(&self.messages_finalized, limit)
+            .map_err(|_| CaptureError::LimitExceeded)?;
         Ok(NativeMetadataSizes {
-            id: native_encoded_len(&self.native_id, NATIVE_RESPONSE_BYTES)
+            id: native_encoded_len(&self.native_id, limit)
                 .map_err(|_| CaptureError::LimitExceeded)?,
-            stop: native_encoded_len(&self.native_stop, NATIVE_RESPONSE_BYTES)
+            stop: native_encoded_len(&self.native_stop, limit)
                 .map_err(|_| CaptureError::LimitExceeded)?,
-            usage: native_encoded_len(&self.native_usage, NATIVE_RESPONSE_BYTES)
+            usage: native_encoded_len(&self.native_usage, limit)
                 .map_err(|_| CaptureError::LimitExceeded)?,
+            messages: Self::messages_capture_len(
+                self.messages_observations.len() as u64,
+                self.messages_observation_bytes,
+                finalized,
+                limit,
+            )?
+            .max(self.messages_reserved_bytes),
         })
     }
 
@@ -703,9 +893,27 @@ impl AttemptCapture {
         replacement: Option<(u32, NativeCaptureSizes)>,
         metadata: NativeMetadataSizes,
     ) -> Result<(), CaptureError> {
-        use xai_grok_sampling_types::conversation::native_search_history::*;
         let Some(lease) = &self.native else {
             return Ok(());
+        };
+        let reserved = self.native_response_reservation(replacement, metadata)?;
+        if reserved > self.native_reserved_response_bytes {
+            lease
+                .reserve(reserved - self.native_reserved_response_bytes)
+                .map_err(|_| CaptureError::LimitExceeded)?;
+            self.native_reserved_response_bytes = reserved;
+        }
+        Ok(())
+    }
+
+    fn native_response_reservation(
+        &self,
+        replacement: Option<(u32, NativeCaptureSizes)>,
+        metadata: NativeMetadataSizes,
+    ) -> Result<u64, CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let Some(lease) = &self.native else {
+            return Ok(0);
         };
         fn len<T: serde::Serialize>(value: &T) -> Result<u64, CaptureError> {
             xai_grok_sampling_types::conversation::native_search_history::native_encoded_len(
@@ -736,6 +944,13 @@ impl AttemptCapture {
             status,
             blocks: Vec::new(),
             usage: Default::default(),
+            messages_metadata: NativeMessagesCapture::Observed {
+                observations: Vec::new(),
+                finalized: NativeMessagesFinalized::default().into(),
+                coverage: NativeMessagesCoverage::Partial {
+                    reason: NativeUnavailable::ConflictingObservation,
+                },
+            },
             latency_ms: Some(u64::MAX),
             http_dispatches: u64::MAX,
             observed_bytes: u64::MAX,
@@ -743,7 +958,11 @@ impl AttemptCapture {
             view_roles: Vec::new(),
             view_digests: Vec::new(),
         };
-        let mut envelope = len(&header)? + metadata.id.max(4) - 4 + stop - 4 + usage - 2;
+        let mut envelope = len(&header)? + metadata.id.max(4) - 4 + stop - 4 + usage - 2
+            + metadata
+                .messages
+                .checked_sub(len(&header.messages_metadata)?)
+                .ok_or(CaptureError::LimitExceeded)?;
         let response = NativeResponseBoundary {
             occurrence: u64::MAX,
             request: lease.request().into(),
@@ -757,7 +976,7 @@ impl AttemptCapture {
             stream_complete: false,
             status,
         };
-        let mut stored = len(&response)? + metadata.id.max(4) - 4 + stop - 4;
+        let mut stored = len(&response)? + metadata.id.max(4) - 4 + stop - 4 + metadata.messages;
         let digest = "0".repeat(64);
         let view_bytes = len(&Some((u64::MAX, "Discovery")))? + len(&digest)?;
         let reference = |kind: &str| NativeBlobRef {
@@ -847,17 +1066,12 @@ impl AttemptCapture {
             .checked_add(envelope)
             .and_then(|bytes| bytes.checked_add(len(&accounting).ok()? + usage - 2 + stop - 4))
             .and_then(|bytes| bytes.checked_add(len(&terminal).ok()?))
+            .and_then(|bytes| bytes.checked_add(metadata.messages.checked_mul(3)?))
             .ok_or(CaptureError::LimitExceeded)?;
         if stored > NATIVE_RESPONSE_BYTES || envelope > NATIVE_RESPONSE_BYTES {
             return Err(CaptureError::LimitExceeded);
         }
-        if reserved > self.native_reserved_response_bytes {
-            lease
-                .reserve(reserved - self.native_reserved_response_bytes)
-                .map_err(|_| CaptureError::LimitExceeded)?;
-            self.native_reserved_response_bytes = reserved;
-        }
-        Ok(())
+        Ok(reserved)
     }
 
     pub(crate) fn seal_native(
@@ -1013,6 +1227,26 @@ impl AttemptCapture {
             status,
             blocks,
             usage: std::mem::take(&mut self.native_usage),
+            messages_metadata: NativeMessagesCapture::Observed {
+                observations: std::mem::take(&mut self.messages_observations),
+                finalized: std::mem::take(&mut self.messages_finalized).into(),
+                coverage: if stream_complete
+                    && status == NativeResponseStatus::Accepted
+                    && self.messages_failure.is_none()
+                {
+                    NativeMessagesCoverage::Complete
+                } else {
+                    NativeMessagesCoverage::Partial {
+                        reason: match status {
+                            NativeResponseStatus::PartialTerminal(reason) => reason,
+                            NativeResponseStatus::Collecting => NativeUnavailable::Incomplete,
+                            NativeResponseStatus::Accepted => {
+                                self.messages_failure.unwrap_or(NativeUnavailable::Failed)
+                            }
+                        },
+                    }
+                },
+            },
             latency_ms: Some(latency_ms),
             http_dispatches: u64::from(dispatched),
             observed_bytes: self.retained_wire_bytes,
@@ -1045,7 +1279,8 @@ impl AttemptCapture {
             MessageStreamEvent::MessageStart { message } => {
                 if self.phase != CapturePhase::BeforeStart
                     || !message.content.is_empty()
-                    || message.stop_reason.is_some()
+                    || message.stop_reason.as_ref().is_some()
+                    || message.container.as_ref().is_some()
                     || message.role != "assistant"
                     || message.r#type != "message"
                 {
@@ -1117,6 +1352,13 @@ impl AttemptCapture {
                 if raw_delta != &serialized {
                     return Err(CaptureError::UnfaithfulDelta);
                 }
+                if matches!(delta, StreamDelta::CitationsDelta { .. })
+                    && !self.blocks.get(index).is_some_and(|block| {
+                        !block.closed && matches!(&block.typed, ContentBlock::Text { .. })
+                    })
+                {
+                    return Err(CaptureError::InvalidStream);
+                }
                 if self.is_passive() {
                     self.native_failure_block = Some(*index);
                     let block = self.blocks.get(index).ok_or(CaptureError::InvalidStream)?;
@@ -1165,11 +1407,12 @@ impl AttemptCapture {
             }
             MessageStreamEvent::MessageDelta { delta, .. } => {
                 if self.phase != CapturePhase::Content
+                    || delta.container.as_ref().is_some()
                     || self.blocks.values().any(|block| !block.closed)
                 {
                     return Err(CaptureError::InvalidStream);
                 }
-                if let Some(reason) = &delta.stop_reason {
+                if let Some(reason) = delta.stop_reason.as_ref() {
                     if matches!(
                         reason,
                         xai_grok_sampling_types::messages::StopReason::Unknown(_)
@@ -2106,6 +2349,935 @@ mod tests {
         assert!(
             empty.unwrap().content.is_empty(),
             "zero-block pause still has a completed attempt"
+        );
+    }
+
+    fn mss_u1_server_fixture(caller: Option<Value>, fragmented: bool) -> (Vec<Value>, Vec<Value>) {
+        let input = json!({"query":"read α", "opaque":{"parts":["a", "b"]}});
+        let mut search = json!({"type":"server_tool_use","id":"srvtoolu_mss_u1",
+            "name":"tool_search_tool_bm25","input":input});
+        if let Some(caller) = caller {
+            search["caller"] = caller;
+        }
+        let result = json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_mss_u1",
+            "content":{"type":"tool_search_tool_search_result",
+                "tool_references":[{"type":"tool_reference","tool_name":"fs__read_file"}]}});
+        let expected = vec![search.clone(), result.clone()];
+        if fragmented {
+            search["input"] = json!({});
+        }
+        let mut wire = vec![start(), block(3, search)];
+        if fragmented {
+            wire.push(delta(
+                3,
+                json!({"type":"input_json_delta","partial_json":"{\"query\":\"read "}),
+            ));
+            wire.push(delta(
+                3,
+                json!({"type":"input_json_delta",
+                "partial_json":"α\",\"opaque\":{\"parts\":[\"a\",\"b\"]}}"}),
+            ));
+        }
+        wire.extend([
+            stop(3),
+            block(9, result),
+            stop(9),
+            terminal("end_turn"),
+            json!({"type":"message_stop"}),
+        ]);
+        (wire, expected)
+    }
+
+    #[tokio::test]
+    async fn mss_u1_caller_survives_decode_capture_encode() {
+        let callers = [
+            Some(json!({"type":"direct","opaque":{"exact":"α"}})),
+            Some(
+                json!({"type":"code_execution_20250825","tool_id":"srvtoolu_origin_α",
+                "opaque":[1, false]}),
+            ),
+            Some(
+                json!({"type":"code_execution_20260120","tool_id":"srvtoolu_origin_2026",
+                "opaque":{"null":null}}),
+            ),
+            None,
+        ];
+        for caller in callers {
+            for fragmented in [false, true] {
+                let (wire, expected) = mss_u1_server_fixture(caller.clone(), fragmented);
+                let (attempt, output) = collect_raw(rows(wire)).await;
+                let attempt = attempt.expect("MSS_U1_SERVER_CALLER_CAPTURE");
+                assert_eq!(attempt.content, expected, "MSS_U1_ORDERED_CALLER_CONTENT");
+                let typed: Vec<ContentBlock> =
+                    serde_json::from_value(json!(attempt.content)).unwrap();
+                assert_eq!(
+                    serde_json::to_value(typed).unwrap(),
+                    json!(expected),
+                    "MSS_U1_TYPED_CALLER_ROUNDTRIP"
+                );
+                let discovery: Vec<Value> = output
+                    .iter()
+                    .filter_map(|event| match event {
+                        SamplingEvent::MessagesToolSearchDisplay { item, .. } => {
+                            Some(item.raw().clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(discovery, expected, "MSS_U1_DISCOVERY_CALLER_FIDELITY");
+                assert!(
+                    !output
+                        .iter()
+                        .any(|event| matches!(event, SamplingEvent::ToolCallDelta { .. })),
+                    "MSS_U1_SERVER_CALL_MUST_NOT_DISPATCH_CLIENT"
+                );
+                let original = rich_body();
+                let initial = initial_body(original.clone());
+                let appended = initial.append(&attempt.content).unwrap();
+                let mut expected_body = original.clone();
+                expected_body["messages"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(assistant_message(&expected));
+                assert_eq!(
+                    body_json(&appended),
+                    expected_body,
+                    "MSS_U1_CONCRETE_CALLER_APPEND"
+                );
+                assert_eq!(body_json(&initial), original);
+            }
+        }
+        for caller in [
+            json!(null),
+            json!("direct"),
+            json!([]),
+            json!({}),
+            json!({"type":"future_caller"}),
+            json!({"type":"code_execution_20250825"}),
+            json!({"type":"code_execution_20260120","tool_id":null}),
+            json!({"type":"code_execution_20260120","tool_id":""}),
+            json!({"type":"code_execution_20260120","tool_id":7}),
+        ] {
+            let (wire, _) = mss_u1_server_fixture(Some(caller), false);
+            let (attempt, output) = collect_raw(rows(wire)).await;
+            assert!(attempt.is_err(), "MSS_U1_INVALID_CALLER_NOT_CAPTURED");
+            assert!(
+                !output
+                    .iter()
+                    .any(|event| matches!(event, SamplingEvent::Completed { .. })),
+                "MSS_U1_INVALID_CALLER_NOT_COMPLETED"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mss_u1_client_caller_capture_preserves_pairing_rejection() {
+        let (mut wire, mut expected) = mss_u1_server_fixture(Some(json!({"type":"direct"})), true);
+        wire.truncate(wire.len() - 2);
+        let client = json!({"type":"tool_use","id":"client_mss_actual","name":"fs__read_file",
+            "input":{"path":"a"},"caller":{"type":"direct","opaque":"client-exact"}});
+        wire.extend([
+            block(12, client.clone()),
+            stop(12),
+            terminal("tool_use"),
+            json!({"type":"message_stop"}),
+        ]);
+        expected.push(client);
+        let (attempt, output) = collect_raw(rows(wire)).await;
+        let attempt = attempt.expect("MSS_U1_CLIENT_CALLER_CAPTURE");
+        assert_eq!(attempt.content, expected, "MSS_U1_CLIENT_CALLER_FIDELITY");
+        let typed: Vec<ContentBlock> = serde_json::from_value(json!(attempt.content)).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), json!(expected));
+        let client_ids: Vec<_> = output
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ToolCallDelta { id: Some(id), .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(client_ids, vec!["client_mss_actual"]);
+        assert_eq!(initial_body(rich_body()).append(&attempt.content).err(),
+            Some(ContinuationError::Validation(
+                xai_grok_sampling_types::request_validation::RequestValidationError::UnansweredToolUse {
+                    id: "client_mss_actual".to_owned(),
+                })), "MSS_U1_ACTUAL_CLIENT_PAIRING_REJECTION");
+    }
+
+    fn mss_u2_citation_objects() -> Vec<Value> {
+        vec![
+            json!({"type":"char_location","cited_text":"char α","document_index":0,
+                "document_title":null,"start_char_index":0,"end_char_index":4,
+                "file_id":"file_opaque_α","extra":{"keep":[null,1]}}),
+            json!({"type":"page_location","cited_text":"page","document_index":2,
+                "document_title":"PDF","start_page_number":1,"end_page_number":2,"file_id":null}),
+            json!({"type":"content_block_location","cited_text":"blocks","document_index":1,
+                "document_title":null,"start_block_index":2,"end_block_index":4,"file_id":"file_blocks"}),
+            json!({"type":"web_search_result_location","cited_text":"web","encrypted_index":"opaque_α\\\"",
+                "title":null,"url":"https://example.invalid/web","extra":false}),
+            json!({"type":"search_result_location","cited_text":"search","search_result_index":3,
+                "source":"https://example.invalid/source","title":null,"start_block_index":1,"end_block_index":3}),
+        ]
+    }
+
+    fn mss_u2_citation_fixture(
+        presence: Option<Value>,
+        with_deltas: bool,
+    ) -> (Vec<Value>, Vec<Value>) {
+        let mut first = json!({"type":"text","text":"first α"});
+        let mut second = json!({"type":"text","text":"second"});
+        if let Some(presence) = presence {
+            first["citations"] = presence.clone();
+            second["citations"] = presence;
+        }
+        let thinking = json!({"type":"thinking","thinking":"why","signature":"sig_exact"});
+        let server = json!({"type":"server_tool_use","id":"srvtoolu_u2","name":"tool_search_tool_bm25",
+            "input":{"query":"read"},"caller":{"type":"direct","opaque":"keep"}});
+        let result = json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_u2",
+            "content":{"type":"tool_search_tool_search_result","tool_references":[]}});
+        let mut wire = vec![
+            start(),
+            block(3, first.clone()),
+            block(4, json!({"type":"thinking","thinking":"","signature":""})),
+            delta(4, json!({"type":"thinking_delta","thinking":"why"})),
+            delta(4, json!({"type":"signature_delta","signature":"sig_exact"})),
+            stop(4),
+            block(11, second.clone()),
+        ];
+        if with_deltas {
+            let citations = mss_u2_citation_objects();
+            wire.push(delta(3, json!({"type":"text_delta","text":" + one"})));
+            wire.push(delta(11, json!({"type":"text_delta","text":" + two"})));
+            first["text"] = json!("first α + one");
+            second["text"] = json!("second + two");
+            for (ordinal, index) in [(0, 3), (3, 11), (1, 3), (2, 11), (4, 3)] {
+                wire.push(delta(
+                    index,
+                    json!({"type":"citations_delta","citation":citations[ordinal]}),
+                ));
+            }
+            let initial_first = first
+                .get("citations")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let initial_second = second
+                .get("citations")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut expected_first = initial_first;
+            expected_first.extend([
+                citations[0].clone(),
+                citations[1].clone(),
+                citations[4].clone(),
+            ]);
+            let mut expected_second = initial_second;
+            expected_second.extend([citations[3].clone(), citations[2].clone()]);
+            first["citations"] = json!(expected_first);
+            second["citations"] = json!(expected_second);
+        }
+        wire.extend([
+            stop(11),
+            stop(3),
+            block(20, server.clone()),
+            stop(20),
+            block(21, result.clone()),
+            stop(21),
+            terminal("end_turn"),
+            json!({"type":"message_stop"}),
+        ]);
+        (wire, vec![first, thinking, second, server, result])
+    }
+
+    #[tokio::test]
+    async fn mss_u2_citations_start_and_delta_roundtrip() {
+        for presence in [
+            None,
+            Some(Value::Null),
+            Some(json!([])),
+            Some(json!([mss_u2_citation_objects()[0].clone()])),
+        ] {
+            for with_deltas in [false, true] {
+                let (wire, expected) = mss_u2_citation_fixture(presence.clone(), with_deltas);
+                let (attempt, output) = collect_raw(rows(wire)).await;
+                let attempt = attempt.expect("MSS_U2_EXACT_ORDERED_CAPTURE");
+                assert_eq!(attempt.content, expected, "MSS_U2_INDEXED_CITATION_ORDER");
+                let typed: Vec<ContentBlock> =
+                    serde_json::from_value(json!(attempt.content)).unwrap();
+                assert_eq!(
+                    serde_json::to_value(typed).unwrap(),
+                    json!(expected),
+                    "MSS_U2_TYPED_RAW_EQUALITY"
+                );
+                let original = rich_body();
+                let appended = initial_body(original.clone())
+                    .append(&attempt.content)
+                    .unwrap();
+                let mut expected_body = original;
+                expected_body["messages"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(assistant_message(&expected));
+                assert_eq!(
+                    body_json(&appended),
+                    expected_body,
+                    "MSS_U2_EXACT_CITATION_REENCODE"
+                );
+                assert!(
+                    !output
+                        .iter()
+                        .any(|event| matches!(event, SamplingEvent::ToolCallDelta { .. }))
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mss_u2_citations_reject_wrong_index_or_kind() {
+        let (valid, _) = mss_u2_citation_fixture(None, true);
+        collect_raw(rows(valid))
+            .await
+            .0
+            .expect("MSS_U2_VALID_CITATION_SEQUENCE");
+        let citation = mss_u2_citation_objects()[0].clone();
+        let text = json!({"type":"text","text":"safe"});
+        let terminal_frames = || [terminal("end_turn"), json!({"type":"message_stop"})];
+        let mut invalid = vec![
+            vec![
+                delta(3, json!({"type":"citations_delta","citation":citation})),
+                start(),
+                block(3, text.clone()),
+                stop(3),
+            ],
+            vec![
+                start(),
+                block(3, text.clone()),
+                delta(55, json!({"type":"citations_delta","citation":citation})),
+                stop(3),
+            ],
+            vec![
+                start(),
+                block(3, text.clone()),
+                stop(3),
+                delta(3, json!({"type":"citations_delta","citation":citation})),
+            ],
+            vec![
+                start(),
+                block(3, text.clone()),
+                stop(3),
+                terminal("end_turn"),
+                delta(3, json!({"type":"citations_delta","citation":citation})),
+            ],
+            vec![
+                start(),
+                block(3, text.clone()),
+                json!({"type":"content_block_delta","delta":{"type":"citations_delta","citation":citation}}),
+                stop(3),
+            ],
+        ];
+        for content in [
+            json!({"type":"thinking","thinking":"why","signature":"sig"}),
+            json!({"type":"tool_use","id":"client_wrong_kind","name":"read","input":{}}),
+            json!({"type":"server_tool_use","id":"srvtoolu_wrong_kind","name":"tool_search_tool_bm25","input":{}}),
+            json!({"type":"image","source":{"type":"url","url":"https://example.invalid/image"}}),
+            json!({"type":"redacted_thinking","data":"opaque"}),
+            json!({"type":"tool_result","tool_use_id":"client_result","content":"data"}),
+            json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_result","content":{"type":"tool_search_tool_search_result","tool_references":[]}}),
+        ] {
+            let mut wire = vec![
+                start(),
+                block(3, content),
+                delta(3, json!({"type":"citations_delta","citation":citation})),
+                stop(3),
+            ];
+            wire.extend(terminal_frames());
+            let public = stream::iter(rows(wire.clone()))
+                .map(|row| {
+                    crate::client::parse_messages_stream_event(&row).map(|frame| frame.event)
+                })
+                .boxed();
+            let output = crate::stream::messages::stream_messages(
+                public,
+                None,
+                RequestId::from("mss-u2-kind"),
+                Duration::from_secs(1),
+            )
+            .collect::<Vec<_>>()
+            .await;
+            assert!(
+                output
+                    .iter()
+                    .any(|event| matches!(event, SamplingEvent::Failed { .. })),
+                "MSS_U2_PUBLIC_NON_TEXT_REJECTED"
+            );
+            assert!(
+                !output
+                    .iter()
+                    .any(|event| matches!(event, SamplingEvent::Completed { .. }))
+            );
+            invalid.push(wire);
+        }
+        for malformed in [
+            json!(null),
+            json!(7),
+            json!([]),
+            json!({}),
+            json!({"type":"future_citation"}),
+            json!({"type":"web_search_result_location","url":"https://example.invalid/evidence"}),
+        ] {
+            invalid.push(vec![
+                start(),
+                block(3, text.clone()),
+                delta(3, json!({"type":"citations_delta","citation":malformed})),
+                stop(3),
+            ]);
+        }
+        for (field, value) in [
+            ("document_index", json!(-1)),
+            ("start_char_index", json!(1.5)),
+            ("file_id", json!(false)),
+            ("end_char_index", json!(0)),
+        ] {
+            let mut bad = citation.clone();
+            if field == "end_char_index" {
+                bad["start_char_index"] = json!(2);
+            }
+            bad[field] = value;
+            invalid.push(vec![
+                start(),
+                block(3, text.clone()),
+                delta(3, json!({"type":"citations_delta","citation":bad})),
+                stop(3),
+            ]);
+        }
+        let mut page = mss_u2_citation_objects()[1].clone();
+        page["start_page_number"] = json!(0);
+        invalid.push(vec![
+            start(),
+            block(3, text.clone()),
+            delta(3, json!({"type":"citations_delta","citation":page})),
+            stop(3),
+        ]);
+        invalid.push(vec![
+            start(),
+            block(3, text),
+            delta(3, json!({"type":"citation_delta","citation":citation})),
+            stop(3),
+        ]);
+        for mut wire in invalid {
+            wire.extend(terminal_frames());
+            let (attempt, _) = collect_raw(rows(wire)).await;
+            assert!(
+                attempt.is_err(),
+                "MSS_U2_INVALID_INDEX_KIND_OR_SHAPE_NOT_CAPTURED"
+            );
+        }
+    }
+
+    fn mss_u3_usage_fixture() -> Vec<Value> {
+        let (mut wire, _) = mss_u1_server_fixture(None, false);
+        wire[0]["message"]["usage"] = json!({"input_tokens":10,"output_tokens":0,
+            "server_tool_use":{"web_search_requests":1,"web_fetch_requests":2},
+            "output_tokens_details":{"thinking_tokens":0},
+            "cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":null},
+            "service_tier":"priority","inference_geo":null,
+            "iterations":[{"iteration":1}],"speed":"standard","opaque":{"exact":"α"}});
+        wire.truncate(wire.len() - 2);
+        wire.extend([
+            json!({"type":"message_delta","delta":{},"usage":{"output_tokens":2,
+                "server_tool_use":{"web_search_requests":3},"output_tokens_details":{"thinking_tokens":null}}}),
+            json!({"type":"message_delta","delta":{},"usage":{"output_tokens":4,
+                "server_tool_use":{"web_fetch_requests":4},"iterations":[{"iteration":2}]}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_details":null},
+                "usage":{"output_tokens":7,"server_tool_use":null,"output_tokens_details":{},
+                    "speed":"fast","fallback_credit":{"outcome":"not_used"}}}),
+            json!({"type":"message_stop"}),
+        ]);
+        wire
+    }
+
+    async fn mss_u3_capture_evidence(wire: Vec<Value>) -> (Value, Vec<SamplingEvent>) {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let lease = NativeCaptureLease::issue(
+            "mss-u3-lineage".into(),
+            "mss-u3-request".into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let mut capture = AttemptCapture::passive(lease);
+        let frames = stream::iter(rows(wire))
+            .map(|row| crate::client::parse_messages_stream_event(&row))
+            .boxed();
+        let output = stream_messages_tracked(
+            frames,
+            None,
+            RequestId::from("mss-u3-request"),
+            Duration::from_secs(1),
+            Some(&mut capture),
+        )
+        .collect::<Vec<_>>()
+        .await;
+        let status = if output
+            .iter()
+            .any(|event| matches!(event, SamplingEvent::Completed { .. }))
+        {
+            NativeResponseStatus::Accepted
+        } else {
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed)
+        };
+        let evidence = capture
+            .seal_native(1, status, true, 1, None)
+            .expect("MSS_U3_REAL_CAPTURE_SEAL");
+        (serde_json::to_value(evidence).unwrap(), output)
+    }
+
+    #[test]
+    fn mss_u3_usage_decode_keeps_partial_server_counts() {
+        let raw = json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},
+            "usage":{"output_tokens":0,"server_tool_use":{"web_search_requests":0}}});
+        let frame = crate::client::parse_messages_stream_event(&raw.to_string()).unwrap();
+        let typed = serde_json::to_value(frame.event).unwrap();
+        assert_eq!(
+            typed["usage"], raw["usage"],
+            "MSS_U3_TYPED_PARTIAL_SERVER_COUNTS"
+        );
+        for value in [json!(-1), json!(1.5), json!("1"), json!(false)] {
+            let mut bad = raw.clone();
+            bad["usage"]["server_tool_use"]["web_search_requests"] = value;
+            assert!(crate::client::parse_messages_stream_event(&bad.to_string()).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn mss_u3_usage_reduces_cumulative_fields_once() {
+        let wire = mss_u3_usage_fixture();
+        let (evidence, output) = mss_u3_capture_evidence(wire.clone()).await;
+        let observed = &evidence["messages_metadata"]["Observed"];
+        assert!(observed.is_object(), "MSS_U3_ORDERED_METADATA_HANDOFF");
+        let expected_usage = json!({"input_tokens":10,"output_tokens":7,
+            "server_tool_use":{"web_search_requests":3,"web_fetch_requests":4},
+            "output_tokens_details":{"thinking_tokens":0},
+            "cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":null},
+            "service_tier":"priority","inference_geo":null,"iterations":[{"iteration":2}],
+            "speed":"fast","opaque":{"exact":"α"},"fallback_credit":{"outcome":"not_used"}});
+        assert_eq!(
+            observed["finalized"],
+            json!({"usage":{"Value":expected_usage},
+            "stop_reason":{"Value":"end_turn"},"stop_sequence":"Missing","stop_details":"Null",
+            "terminal_observation":3}),
+            "MSS_U3_PER_FIELD_CUMULATIVE_REDUCTION"
+        );
+        assert_eq!(evidence["usage"], expected_usage);
+        let observations = observed["observations"].as_array().unwrap();
+        assert_eq!(observations.len(), 4);
+        let envelopes: Vec<_> = wire
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row["type"].as_str(),
+                    Some("message_start" | "message_delta")
+                )
+            })
+            .collect();
+        for (ordinal, (actual, raw)) in observations.iter().zip(envelopes).enumerate() {
+            let envelope = if raw["type"] == "message_start" {
+                &raw["message"]
+            } else {
+                raw
+            };
+            assert_eq!(actual["ordinal"], ordinal);
+            assert_eq!(
+                actual["usage"],
+                json!({"Value":envelope["usage"]}),
+                "MSS_U3_RAW_USAGE_PRESENCE"
+            );
+        }
+        assert_eq!(observed["coverage"], "Complete");
+        assert_eq!(
+            output
+                .iter()
+                .filter(|event| matches!(event, SamplingEvent::Completed { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn mss_u3_metadata_limits_are_inclusive() {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let start = json!({"type":"message_start","message":{"id":"mss-limits","type":"message",
+            "role":"assistant","model":"test","content":[],"stop_reason":null,
+            "usage":{"input_tokens":0,"output_tokens":0}}});
+        let update =
+            json!({"type":"message_delta","delta":{},"usage":{"output_tokens":0}}).to_string();
+        for passive in [false, true] {
+            let mut capture = if passive {
+                AttemptCapture::passive(NativeCaptureLease::issue(
+                    "limits".into(),
+                    "limits".into(),
+                    1,
+                    1,
+                    NATIVE_SOURCE_BYTES,
+                ))
+            } else {
+                AttemptCapture::default()
+            };
+            capture
+                .observe(&crate::client::parse_messages_stream_event(&start.to_string()).unwrap())
+                .unwrap();
+            let mut refused = None;
+            for count in 2..=100_001 {
+                let result =
+                    capture.observe(&crate::client::parse_messages_stream_event(&update).unwrap());
+                if result == Err(CaptureError::LimitExceeded) {
+                    refused = Some(count);
+                    break;
+                }
+                assert_eq!(result, Ok(()));
+            }
+            assert!(refused.is_some(), "MSS_U3_OBSERVATION_CAP_ENFORCED");
+            if !passive {
+                assert_eq!(refused, Some(100_001), "MSS_U3_COUNT_CAP_INCLUSIVE");
+            } else {
+                assert!(
+                    refused.unwrap() <= 100_001,
+                    "MSS_U3_TIGHTER_NATIVE_LIMIT_PREVAILS"
+                );
+            }
+        }
+    }
+
+    fn mss_u3_byte_start(payload: usize) -> Value {
+        json!({"type":"message_start","message":{"id":"mss-bytes","type":"message","role":"assistant",
+            "model":"test","content":[],"stop_reason":null,"stop_details":null,
+            "usage":{"input_tokens":1,"output_tokens":0,"opaque":"x".repeat(payload)}}})
+    }
+
+    fn mss_u3_independent_start_bytes(raw: &Value, wire_bytes: usize) -> u64 {
+        let usage = &raw["message"]["usage"];
+        let observation = json!({"ordinal":0,"kind":"MessageStart","terminal":false,
+            "usage":{"Value":usage},"stop_reason":"Null","stop_sequence":"Missing","stop_details":"Null"});
+        let captured = json!({"Observed":{"observations":[observation],
+            "finalized":{"usage":{"Value":usage},"stop_reason":"Null","stop_sequence":"Missing","stop_details":"Null",
+                "terminal_observation":null},"coverage":{"Partial":{"reason":"ConflictingObservation"}}}});
+        wire_bytes as u64
+            + serde_json::to_vec(&captured).unwrap().len() as u64
+            + serde_json::to_vec(usage).unwrap().len() as u64
+            + serde_json::to_vec(&raw["message"]["id"]).unwrap().len() as u64
+            + 4
+    }
+
+    #[test]
+    fn mss_u3_metadata_byte_limits_reserve_before_growth() {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeMessagesPresence;
+        let empty = mss_u3_byte_start(0);
+        let overhead = mss_u3_independent_start_bytes(&empty, empty.to_string().len());
+        let payload = ((MAX_ENCODED_MESSAGES_REQUEST_BYTES - overhead) / 4) as usize;
+        let raw = mss_u3_byte_start(payload);
+        let row = raw.to_string();
+        let used = mss_u3_independent_start_bytes(&raw, row.len());
+        let row = row + &" ".repeat((MAX_ENCODED_MESSAGES_REQUEST_BYTES - used) as usize);
+        assert_eq!(
+            mss_u3_independent_start_bytes(&raw, row.len()),
+            MAX_ENCODED_MESSAGES_REQUEST_BYTES
+        );
+        let mut fit = AttemptCapture::default();
+        assert_eq!(
+            fit.observe(&crate::client::parse_messages_stream_event(&row).unwrap()),
+            Ok(()),
+            "MSS_U3_BYTES_EXACT_FIT"
+        );
+        assert_eq!(fit.messages_observations.len(), 1);
+        let mut too_large = AttemptCapture::default();
+        assert_eq!(
+            too_large.observe(&crate::client::parse_messages_stream_event(&(row + " ")).unwrap()),
+            Err(CaptureError::LimitExceeded),
+            "MSS_U3_BYTES_PLUS_ONE_REFUSES"
+        );
+        assert!(
+            too_large.messages_observations.is_empty(),
+            "MSS_U3_BYTES_RESERVE_BEFORE_GROWTH"
+        );
+        assert!(matches!(
+            too_large.messages_finalized.usage,
+            NativeMessagesPresence::Missing
+        ));
+    }
+
+    fn mss_u3_ordinary_projection(events: &[SamplingEvent]) -> Value {
+        let complete: Vec<_> = events.iter().filter_map(|event| match event {
+            SamplingEvent::Completed { response, .. } => Some(json!({
+                "items":response.items,"usage":response.usage,"stop_reason":response.stop_reason,
+                "message_id":response.message_id,"raw_stop_reason":response.raw_stop_reason,
+                "stop_message":response.stop_message,"stop_sequence":response.stop_sequence,
+                "cost_usd_ticks":response.cost_usd_ticks,"message_chunks_emitted":response.message_chunks_emitted,
+            })),
+            _ => None,
+        }).collect();
+        assert_eq!(complete.len(), 1);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::Failed { .. }))
+        );
+        json!(complete)
+    }
+
+    #[tokio::test]
+    async fn mss_u3_metadata_passive_byte_exhaustion_preserves_ordinary() {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let raw = vec![
+            mss_u3_byte_start(NATIVE_RESPONSE_BYTES as usize),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ordinary intact"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}),
+            json!({"type":"message_stop"}),
+        ];
+        let frames = || {
+            stream::iter(rows(raw.clone()))
+                .map(|row| crate::client::parse_messages_stream_event(&row))
+                .boxed()
+        };
+        let ordinary = stream_messages_tracked(
+            frames(),
+            None,
+            RequestId::from("mss-u3-bytes"),
+            Duration::from_secs(1),
+            None,
+        )
+        .collect::<Vec<_>>()
+        .await;
+        let mut capture = AttemptCapture::passive(NativeCaptureLease::issue(
+            "mss-u3-bytes".into(),
+            "mss-u3-bytes".into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        ));
+        let passive = stream_messages_tracked(
+            frames(),
+            None,
+            RequestId::from("mss-u3-bytes"),
+            Duration::from_secs(1),
+            Some(&mut capture),
+        )
+        .collect::<Vec<_>>()
+        .await;
+        assert_eq!(
+            mss_u3_ordinary_projection(&passive),
+            mss_u3_ordinary_projection(&ordinary),
+            "MSS_U3_PASSIVE_BYTES_ORDINARY_EQUAL"
+        );
+        assert!(
+            capture.passive_exhausted(),
+            "MSS_U3_PASSIVE_METADATA_BYTES_CHARGED"
+        );
+        assert!(capture.messages_observations.is_empty());
+        assert!(matches!(
+            capture.messages_failure,
+            Some(NativeUnavailable::Capacity)
+        ));
+    }
+
+    #[test]
+    fn mss_u3_usage_missing_server_counts_are_not_zero() {
+        for server in [
+            None,
+            Some(json!(null)),
+            Some(json!({})),
+            Some(json!({"web_search_requests":0})),
+        ] {
+            let mut usage = json!({"input_tokens":0,"output_tokens":0});
+            if let Some(server) = server {
+                usage["server_tool_use"] = server;
+            }
+            let start = json!({"type":"message_start","message":{"id":"mss-u3-absence","type":"message","role":"assistant",
+                "model":"test","content":[],"stop_reason":null,"usage":usage}});
+            let delta =
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":usage});
+            for raw in [start, delta] {
+                let frame = crate::client::parse_messages_stream_event(&raw.to_string()).unwrap();
+                let typed = serde_json::to_value(frame.event).unwrap();
+                let actual = if raw["type"] == "message_start" {
+                    &typed["message"]["usage"]
+                } else {
+                    &typed["usage"]
+                };
+                assert_eq!(*actual, usage, "MSS_U3_NO_SYNTHETIC_SERVER_USAGE");
+            }
+        }
+    }
+
+    #[test]
+    fn mss_u3_metadata_reserves_every_physical_copy_before_growth() {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let lease = NativeCaptureLease::issue(
+            "mss-u3-copy".into(),
+            "mss-u3-copy".into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let mut capture = AttemptCapture::passive(lease.clone());
+        let before = lease.charged().unwrap();
+        let before_reserved = capture.native_reserved_response_bytes;
+        let raw = mss_u3_byte_start(16_000).to_string();
+        capture
+            .observe(&crate::client::parse_messages_stream_event(&raw).unwrap())
+            .unwrap();
+        let observation = serde_json::to_vec(&capture.messages_observations[0])
+            .unwrap()
+            .len() as u64;
+        let finalized = serde_json::to_vec(&capture.messages_finalized)
+            .unwrap()
+            .len() as u64;
+        let usage = serde_json::to_vec(&capture.native_usage).unwrap().len() as u64;
+        let copies = 2 * (observation + finalized + usage);
+        assert_eq!(
+            lease.charged().unwrap() - before,
+            capture.native_reserved_response_bytes - before_reserved + copies,
+            "MSS_U3_CAPTURE_OBSERVATION_COPIES_CHARGED"
+        );
+        let metadata = NativeMessagesCapture::Observed {
+            observations: capture.messages_observations.clone(),
+            finalized: capture.messages_finalized.clone().into(),
+            coverage: NativeMessagesCoverage::Partial {
+                reason: NativeUnavailable::Incomplete,
+            },
+        };
+        let metadata_bytes = serde_json::to_vec(&metadata).unwrap().len() as u64;
+        assert!(
+            capture.native_reserved_response_bytes >= 5 * metadata_bytes,
+            "MSS_U3_CAPTURE_LEDGER_COPIES_RESERVED"
+        );
+    }
+
+    fn mss_u4_stop_frames(details: Option<Value>, sequence: Option<Value>) -> Vec<Value> {
+        let mut wire = vec![
+            json!({"type":"message_start","message":{"id":"mss-u4-capture",
+            "type":"message","role":"assistant","model":"test","content":[],"stop_reason":null,
+            "stop_details":{"type":"start","explanation":"start-only","opaque":[1,2]},
+            "stop_sequence":"start-only","usage":{"input_tokens":1,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use",
+                "id":"srvtoolu_u4","name":"tool_search_tool_bm25","input":{}}}),
+            json!({"type":"content_block_stop","index":2}),
+            json!({"type":"content_block_start","index":9,"content_block":{"type":"tool_search_tool_result",
+                "tool_use_id":"srvtoolu_u4","content":{"type":"tool_search_tool_search_result","tool_references":[]}}}),
+            json!({"type":"content_block_stop","index":9}),
+            json!({"type":"message_delta","delta":{"stop_details":{"explanation":"nonterminal-only"},
+                "stop_sequence":"nonterminal-only"},"usage":{"output_tokens":2}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
+            json!({"type":"message_stop"}),
+        ];
+        if let Some(details) = details {
+            wire[6]["delta"]["stop_details"] = details;
+        }
+        if let Some(sequence) = sequence {
+            wire[6]["delta"]["stop_sequence"] = sequence;
+        }
+        wire
+    }
+
+    #[tokio::test]
+    async fn mss_u4_stream_stop_details_are_not_explanation_only() {
+        let details = json!({"type":null,"category":"terminal","explanation":"terminal-only",
+            "resumable":false,"fallback_has_prefill_claim":true,"opaque":{"empty":[],"null":null}});
+        let raw = json!({"type":"message_delta","delta":{"stop_reason":"end_turn",
+            "stop_sequence":null,"stop_details":details},"usage":{"output_tokens":7}});
+        let frame = crate::client::parse_messages_stream_event(&raw.to_string()).unwrap();
+        let typed = serde_json::to_value(frame.event).unwrap();
+        assert_eq!(
+            typed["delta"], raw["delta"],
+            "MSS_U4_TYPED_WHOLE_STOP_DETAILS"
+        );
+        for value in [None, Some(json!(null)), Some(json!({})), Some(details)] {
+            for sequence in [None, Some(json!(null)), Some(json!("matched-α\""))] {
+                let wire = mss_u4_stop_frames(value.clone(), sequence.clone());
+                let terminal = &wire[6]["delta"];
+                let frame =
+                    crate::client::parse_messages_stream_event(&wire[6].to_string()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(frame.event).unwrap()["delta"],
+                    *terminal,
+                    "MSS_U4_TERMINAL_TYPED_PRESENCE"
+                );
+                let (evidence, output) = mss_u3_capture_evidence(wire).await;
+                let observed = &evidence["messages_metadata"]["Observed"];
+                let presence = |value: &Option<Value>| match value {
+                    None => json!("Missing"),
+                    Some(Value::Null) => json!("Null"),
+                    Some(value) => json!({"Value":value}),
+                };
+                assert_eq!(
+                    observed["finalized"]["stop_details"],
+                    presence(&value),
+                    "MSS_U4_TERMINAL_DETAILS_REPLACE"
+                );
+                assert_eq!(
+                    observed["finalized"]["stop_sequence"],
+                    presence(&sequence),
+                    "MSS_U4_TERMINAL_SEQUENCE_REPLACE"
+                );
+                assert_eq!(observed["observations"].as_array().unwrap().len(), 3);
+                let responses: Vec<_> = output
+                    .iter()
+                    .filter_map(|event| match event {
+                        SamplingEvent::Completed { response, .. } => Some(response),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(responses.len(), 1);
+                assert_eq!(
+                    responses[0].stop_sequence.as_deref(),
+                    sequence.as_ref().and_then(Value::as_str),
+                    "MSS_U4_ORDINARY_TERMINAL_SEQUENCE"
+                );
+                assert_eq!(
+                    responses[0].stop_message.as_deref(),
+                    value
+                        .as_ref()
+                        .and_then(|value| value.get("explanation"))
+                        .and_then(Value::as_str)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mss_u5_container_and_eof_never_qualify_a_suffix() {
+        for at_start in [true, false] {
+            let (mut wire, _) = mss_u1_server_fixture(None, false);
+            if at_start {
+                wire[0]["message"]["container"] = json!({"id":"unsupported-container"});
+            } else {
+                let terminal = wire.len() - 2;
+                wire[terminal]["delta"]["container"] = json!({"id":"unsupported-container"});
+            }
+            let (attempt, output) = collect_raw(rows(wire)).await;
+            assert!(attempt.is_err(), "MSS_U5_CONTAINER_NO_FAITHFUL_SUFFIX");
+            assert!(
+                !output
+                    .iter()
+                    .any(|event| matches!(event, SamplingEvent::Completed { .. })),
+                "MSS_U5_REQUIRED_CONTAINER_FAILURE"
+            );
+        }
+        let (mut wire, _) = mss_u1_server_fixture(None, false);
+        wire.pop();
+        let (attempt, output) = collect_raw(rows(wire)).await;
+        assert!(attempt.is_err(), "MSS_U5_EOF_NO_FAITHFUL_SUFFIX");
+        assert_eq!(
+            output
+                .iter()
+                .filter(|event| matches!(event, SamplingEvent::Failed { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !output
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::Completed { .. }))
         );
     }
 }

@@ -9036,6 +9036,778 @@ mod tests {
         );
     }
 
+    fn mss_u5_http_frames() -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+        use serde_json::json;
+        let first = json!({"type":"char_location","cited_text":"known","document_index":0,
+            "document_title":null,"start_char_index":0,"end_char_index":5,"file_id":"file_mss5"});
+        let next = json!({"type":"web_search_result_location","cited_text":"web","encrypted_index":"opaque_mss5",
+            "title":null,"url":"https://example.invalid/mss5"});
+        let text = json!({"type":"text","text":"known + α","citations":[first,next]});
+        let call = json!({"type":"server_tool_use","id":"srvtoolu_mss5_http","name":"tool_search_tool_bm25",
+            "input":{"query":"read"},"caller":{"type":"direct","opaque":{"order":[2,1]}}});
+        let result = json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_mss5_http",
+            "content":{"type":"tool_search_tool_search_result","tool_references":[]}});
+        let wire = vec![
+            json!({"type":"ping"}),
+            json!({"type":"message_start","message":{"id":"mss-u5-http","type":"message",
+                "role":"assistant","model":"mss-fixture","content":[],"stop_reason":null,
+                "usage":{"input_tokens":3,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":2},
+                    "output_tokens_details":{"thinking_tokens":1}}}}),
+            json!({"type":"content_block_start","index":3,"content_block":{"type":"text","text":"known","citations":[first]}}),
+            json!({"type":"ping"}),
+            json!({"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":" + α"}}),
+            json!({"type":"content_block_delta","index":3,"delta":{"type":"citations_delta","citation":next}}),
+            json!({"type":"content_block_stop","index":3}),
+            json!({"type":"ping"}),
+            json!({"type":"content_block_start","index":7,"content_block":call}),
+            json!({"type":"content_block_stop","index":7}),
+            json!({"type":"content_block_start","index":9,"content_block":result}),
+            json!({"type":"content_block_stop","index":9}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":"done"},
+                "usage":{"output_tokens":7,"server_tool_use":{"web_search_requests":1}}}),
+            json!({"type":"ping"}),
+            json!({"type":"message_stop"}),
+        ];
+        (wire, vec![text, call, result])
+    }
+
+    #[tokio::test]
+    async fn mss_u5_http_known_citations_and_ping_complete() {
+        use crate::events::SamplingEvent;
+        use serde_json::json;
+        let (wire, expected) = mss_u5_http_frames();
+        let (attempt, output) = mss_http_capture(wire.clone()).await;
+        let attempt = attempt.expect("MSS_U5_HTTP_KNOWN_CAPTURE");
+        assert!(attempt.content == expected, "MSS_U5_HTTP_ORDERED_CAPTURE");
+        let responses: Vec<_> = output
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::Completed { response, .. } => Some(response),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(responses.len(), 1, "MSS_U5_HTTP_KNOWN_COMPLETED");
+        assert!(
+            !output.iter().any(|event| matches!(
+                event,
+                SamplingEvent::Failed { .. } | SamplingEvent::ToolCallDelta { .. }
+            )),
+            "MSS_U5_HTTP_SERVER_ONLY_OUTCOME"
+        );
+        assert_eq!(responses[0].assistant_text(), "known + α");
+        let usage = responses[0].usage.as_ref().unwrap();
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.reasoning_tokens,
+                usage.total_tokens
+            ),
+            (3, 7, 1, 10),
+            "MSS_U5_HTTP_USAGE_ONCE"
+        );
+        assert_eq!(responses[0].stop_sequence.as_deref(), Some("done"));
+        let original = json!({"model":"mss-fixture","messages":[{"role":"user","content":"read"}],
+            "max_tokens":4096,"stream":true,"tools":[
+                {"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"},
+                {"name":"read","input_schema":{"type":"object"},"defer_loading":true}]});
+        let request = serde_json::from_value(original.clone()).unwrap();
+        let encoded =
+            xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
+                &request,
+            )
+            .unwrap();
+        let body = crate::messages_continuation::ContinuationBody::new(encoded)
+            .append(&attempt.content)
+            .unwrap();
+        let actual: serde_json::Value = serde_json::from_slice(body.encoded().as_bytes()).unwrap();
+        let mut expected_body = original.clone();
+        expected_body["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"role":"assistant","content":expected}));
+        assert!(
+            actual == expected_body,
+            "MSS_U5_HTTP_CONCRETE_APPEND_EQUALITY"
+        );
+        let (evidence, _, _) = mss_u4_http_observation(wire.clone()).await;
+        let metadata = &evidence["messages_metadata"]["Observed"];
+        assert_eq!(
+            metadata["observations"].as_array().unwrap().len(),
+            2,
+            "MSS_U5_PING_ADDS_NO_METADATA_OBSERVATION"
+        );
+        assert_eq!(metadata["coverage"], "Complete");
+        assert_eq!(
+            metadata["finalized"]["usage"]["Value"]["server_tool_use"],
+            json!({"web_search_requests":1,"web_fetch_requests":2}),
+            "MSS_U5_HTTP_CUMULATIVE_FIELDS"
+        );
+        assert_eq!(metadata["finalized"]["usage"]["Value"]["output_tokens"], 7);
+        assert_eq!(
+            metadata["finalized"]["stop_sequence"],
+            json!({"Value":"done"})
+        );
+        for (case, position, unknown) in [
+            ("top", 2, json!({"type":"future_event","value":"liveness"})),
+            (
+                "block",
+                2,
+                json!({"type":"content_block_start","index":2,"content_block":{"type":"future_block"}}),
+            ),
+            (
+                "delta",
+                4,
+                json!({"type":"content_block_delta","index":3,"delta":{"type":"future_delta"}}),
+            ),
+            (
+                "singular",
+                4,
+                json!({"type":"content_block_delta","index":3,"delta":{"type":"citation_delta"}}),
+            ),
+            (
+                "malformed-known",
+                4,
+                json!({"type":"content_block_delta","index":3,
+                "delta":{"type":"citations_delta","citation":{"type":"char_location"}}}),
+            ),
+        ] {
+            let mut malformed = wire.clone();
+            malformed.insert(position, unknown);
+            let (capture, events) = mss_http_capture(malformed).await;
+            assert!(
+                capture.is_err(),
+                "MSS_U5_HTTP_UNKNOWN_NO_FAITHFUL_SUFFIX case={case}"
+            );
+            let failures: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    SamplingEvent::Failed { error, .. } => Some(error),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(failures.len(), 1, "MSS_U5_HTTP_UNKNOWN_FAILED case={case}");
+            assert_eq!(
+                failures[0].kind,
+                crate::events::SamplingErrorKind::Serialization,
+                "MSS_U5_HTTP_UNKNOWN_SERIALIZATION case={case}"
+            );
+            assert!(!failures[0].is_retryable);
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, SamplingEvent::Completed { .. }))
+            );
+        }
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+        #[derive(Clone)]
+        struct PingTiming(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+        struct OutcomeVisitor<'a>(&'a mut Vec<String>);
+        impl tracing::field::Visit for OutcomeVisitor<'_> {
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "ttft_outcome" {
+                    self.0.push(value.to_owned());
+                }
+            }
+        }
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for PingTiming {
+            fn on_record(
+                &self,
+                _: &tracing::span::Id,
+                values: &tracing::span::Record<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                values.record(&mut OutcomeVisitor(&mut self.0.lock().unwrap()));
+            }
+        }
+        let outcomes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(PingTiming(outcomes.clone()));
+        let (capture, events) =
+            mss_http_capture(vec![json!({"type":"ping"}), json!({"type":"ping"})])
+                .with_subscriber(subscriber)
+                .await;
+        assert!(capture.is_err(), "MSS_U5_HTTP_PING_ONLY_NO_FAITHFUL_SUFFIX");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::Completed { .. }))
+        );
+        assert_eq!(
+            *outcomes.lock().unwrap(),
+            vec!["end_of_stream".to_owned()],
+            "MSS_U5_HTTP_PING_TTFT_NO_CONTENT_PROGRESS"
+        );
+    }
+
+    #[tokio::test]
+    async fn mss_u2_http_citations_reach_capture() {
+        use crate::events::SamplingEvent;
+        use serde_json::json;
+        let citations = [
+            json!({"type":"char_location","cited_text":"char α","document_index":0,"document_title":null,
+                "start_char_index":0,"end_char_index":4,"file_id":"file_http_α","extra":{"keep":true}}),
+            json!({"type":"page_location","cited_text":"page","document_index":1,"document_title":"PDF",
+                "start_page_number":1,"end_page_number":2,"file_id":null}),
+            json!({"type":"content_block_location","cited_text":"blocks","document_index":2,"document_title":null,
+                "start_block_index":1,"end_block_index":3,"file_id":"file_http_blocks"}),
+            json!({"type":"web_search_result_location","cited_text":"web","encrypted_index":"opaque_http_α\\\"",
+                "title":null,"url":"https://example.invalid/web"}),
+            json!({"type":"search_result_location","cited_text":"search","search_result_index":3,
+                "source":"https://example.invalid/source","title":null,"start_block_index":0,"end_block_index":1}),
+        ];
+        for presence in [
+            None,
+            Some(json!(null)),
+            Some(json!([])),
+            Some(json!([citations[0]])),
+        ] {
+            let mut first = json!({"type":"text","text":"first α"});
+            if let Some(presence) = presence {
+                first["citations"] = presence;
+            }
+            let second = json!({"type":"text","text":"second","citations":null});
+            let server = json!({"type":"server_tool_use","id":"srvtoolu_u2_http","name":"tool_search_tool_bm25",
+                "input":{"query":"read"},"caller":{"type":"direct","opaque":"kept"}});
+            let result = json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_u2_http",
+                "content":{"type":"tool_search_tool_search_result","tool_references":[]}});
+            let mut wire = vec![
+                json!({"type":"message_start","message":{"id":"msg_u2_http","type":"message",
+                "role":"assistant","model":"mss-fixture","content":[],"stop_reason":null,
+                "usage":{"input_tokens":3,"output_tokens":0}}}),
+                json!({"type":"content_block_start","index":3,"content_block":first}),
+                json!({"type":"content_block_start","index":11,"content_block":second}),
+            ];
+            for (ordinal, index) in [(0, 3), (3, 11), (1, 3), (2, 11), (4, 3)] {
+                wire.push(json!({"type":"content_block_delta","index":index,
+                    "delta":{"type":"citations_delta","citation":citations[ordinal]}}));
+            }
+            wire.extend([json!({"type":"content_block_stop","index":11}),
+                json!({"type":"content_block_stop","index":3}),
+                json!({"type":"content_block_start","index":20,"content_block":server}),
+                json!({"type":"content_block_stop","index":20}),
+                json!({"type":"content_block_start","index":21,"content_block":result}),
+                json!({"type":"content_block_stop","index":21}),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
+                json!({"type":"message_stop"})]);
+            let mut expected_first = first
+                .get("citations")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            expected_first.extend([
+                citations[0].clone(),
+                citations[1].clone(),
+                citations[4].clone(),
+            ]);
+            first["citations"] = json!(expected_first);
+            let expected_second =
+                json!({"type":"text","text":"second","citations":[citations[3],citations[2]]});
+            let expected = vec![first, expected_second, server, result];
+            let (attempt, output) = mss_http_capture(wire).await;
+            let attempt = attempt.expect("MSS_U2_HTTP_CITATIONS_CAPTURE");
+            assert_eq!(attempt.content, expected, "MSS_U2_HTTP_CITATIONS_EXACT");
+            let typed: Vec<xai_grok_sampling_types::messages::ContentBlock> =
+                serde_json::from_value(json!(attempt.content)).unwrap();
+            assert_eq!(serde_json::to_value(typed).unwrap(), json!(expected));
+            assert!(
+                !output
+                    .iter()
+                    .any(|event| matches!(event, SamplingEvent::ToolCallDelta { .. }))
+            );
+        }
+    }
+
+    async fn mss_u3_http_evidence(
+        wire: Vec<serde_json::Value>,
+    ) -> (serde_json::Value, Vec<crate::events::SamplingEvent>) {
+        use futures_util::{StreamExt, stream};
+        use std::time::Duration;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let data = wire
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect::<String>();
+        let chunks: Vec<Bytes> = data
+            .as_bytes()
+            .chunks(5)
+            .map(Bytes::copy_from_slice)
+            .collect();
+        let app = Router::new().route(
+            "/v1/messages",
+            post(move || {
+                let chunks = chunks.clone();
+                async move {
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from_stream(stream::iter(
+                            chunks.into_iter().map(Ok::<_, std::convert::Infallible>),
+                        )))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{address}/v1"),
+            api_backend: ApiBackend::Messages,
+            model: "mss-fixture".to_owned(),
+            max_retries: Some(0),
+            max_completion_tokens: Some(4096),
+            ..minimal_config()
+        })
+        .unwrap();
+        let request = MessagesRequestWrapper::new(
+            serde_json::from_value(serde_json::json!({
+            "model":"mss-fixture","messages":[{"role":"user","content":"read"}],
+            "max_tokens":4096,"stream":true}))
+            .unwrap(),
+        );
+        let (frames, _) = client
+            .create_message_stream_with_carrier(
+                request,
+                None,
+                None,
+                client.inactive_native_history(),
+            )
+            .await
+            .unwrap();
+        let lease = NativeCaptureLease::issue(
+            "mss-u3-http-lineage".into(),
+            "mss-u3-http".into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let mut capture = crate::messages_continuation::AttemptCapture::passive(lease);
+        let output = tokio::time::timeout(
+            Duration::from_secs(30),
+            crate::stream::messages::stream_messages_tracked(
+                frames,
+                None,
+                crate::types::RequestId::from("mss-u3-http"),
+                Duration::from_secs(10),
+                Some(&mut capture),
+            )
+            .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+        server.abort();
+        let _ = server.await;
+        let status = if output
+            .iter()
+            .any(|event| matches!(event, crate::events::SamplingEvent::Completed { .. }))
+        {
+            NativeResponseStatus::Accepted
+        } else {
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed)
+        };
+        let evidence = capture
+            .seal_native(1, status, true, 1, None)
+            .expect("MSS_U3_HTTP_REAL_SEAL");
+        (serde_json::to_value(evidence).unwrap(), output)
+    }
+
+    #[tokio::test]
+    async fn mss_u3_http_usage_reaches_capture() {
+        use crate::events::SamplingEvent;
+        use serde_json::json;
+        let server = json!({"type":"server_tool_use","id":"srvtoolu_u3_http","name":"tool_search_tool_bm25","input":{}});
+        let result = json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_u3_http",
+            "content":{"type":"tool_search_tool_search_result","tool_references":[]}});
+        let wire = vec![
+            json!({"type":"message_start","message":{"id":"msg_u3_http","type":"message",
+            "role":"assistant","model":"mss-fixture","content":[],"stop_reason":null,
+            "usage":{"input_tokens":3,"output_tokens":0,"server_tool_use":{"web_search_requests":1,"web_fetch_requests":2}}}}),
+            json!({"type":"content_block_start","index":2,"content_block":server}),
+            json!({"type":"content_block_stop","index":2}),
+            json!({"type":"content_block_start","index":9,"content_block":result}),
+            json!({"type":"content_block_stop","index":9}),
+            json!({"type":"message_delta","delta":{},"usage":{"output_tokens":2,"server_tool_use":{"web_search_requests":3}}}),
+            json!({"type":"message_delta","delta":{},"usage":{"output_tokens":4,"server_tool_use":{"web_fetch_requests":4}}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
+            json!({"type":"message_stop"}),
+        ];
+        let (evidence, output) = mss_u3_http_evidence(wire.clone()).await;
+        let metadata = &evidence["messages_metadata"]["Observed"];
+        assert!(metadata.is_object(), "MSS_U3_HTTP_FINAL_HANDOFF");
+        assert_eq!(
+            metadata["finalized"]["usage"],
+            json!({"Value":{"input_tokens":3,"output_tokens":7,
+            "server_tool_use":{"web_search_requests":3,"web_fetch_requests":4}}})
+        );
+        assert_eq!(metadata["observations"].as_array().unwrap().len(), 4);
+        assert_eq!(metadata["coverage"], "Complete");
+        assert_eq!(
+            output
+                .iter()
+                .filter(|event| matches!(event, SamplingEvent::Completed { .. }))
+                .count(),
+            1
+        );
+        let mut partial = wire[..wire.len() - 2].to_vec();
+        partial.push(json!({"type":"message_delta","delta":{},
+            "usage":{"server_tool_use":{"web_search_requests":999}}}));
+        let (evidence, output) = mss_u3_http_evidence(partial).await;
+        let metadata = &evidence["messages_metadata"]["Observed"];
+        assert_eq!(metadata["observations"].as_array().unwrap().len(), 3);
+        assert_eq!(metadata["finalized"]["usage"]["Value"]["output_tokens"], 4);
+        assert_eq!(metadata["finalized"]["terminal_observation"], json!(null));
+        assert_eq!(metadata["coverage"], json!({"Partial":{"reason":"Failed"}}));
+        assert_eq!(evidence["status"], json!({"PartialTerminal":"Failed"}));
+        assert!(
+            !output
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::Completed { .. }))
+        );
+    }
+
+    async fn mss_u4_http_observation(
+        wire: Vec<serde_json::Value>,
+    ) -> (
+        serde_json::Value,
+        Vec<crate::events::SamplingEvent>,
+        Vec<serde_json::Value>,
+    ) {
+        use futures_util::{StreamExt, stream};
+        use std::time::Duration;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let data = wire
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect::<String>();
+        let chunks: Vec<Bytes> = data
+            .as_bytes()
+            .chunks(3)
+            .map(Bytes::copy_from_slice)
+            .collect();
+        let app = Router::new().route(
+            "/v1/messages",
+            post(move || {
+                let chunks = chunks.clone();
+                async move {
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from_stream(stream::iter(
+                            chunks.into_iter().map(Ok::<_, std::convert::Infallible>),
+                        )))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{address}/v1"),
+            api_backend: ApiBackend::Messages,
+            model: "mss-fixture".into(),
+            max_retries: Some(0),
+            max_completion_tokens: Some(4096),
+            ..minimal_config()
+        })
+        .unwrap();
+        let request = MessagesRequestWrapper::new(
+            serde_json::from_value(serde_json::json!({
+            "model":"mss-fixture","messages":[{"role":"user","content":"read"}],
+            "max_tokens":4096,"stream":true}))
+            .unwrap(),
+        );
+        let (frames, _) = client
+            .create_message_stream_with_carrier(
+                request,
+                None,
+                None,
+                client.inactive_native_history(),
+            )
+            .await
+            .unwrap();
+        let typed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = typed.clone();
+        let frames = frames
+            .inspect(move |frame| {
+                if let Ok(frame) = frame {
+                    observed
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::to_value(&frame.event).unwrap());
+                }
+            })
+            .boxed();
+        let mut capture =
+            crate::messages_continuation::AttemptCapture::passive(NativeCaptureLease::issue(
+                "mss-u4-http-lineage".into(),
+                "mss-u4-http".into(),
+                1,
+                1,
+                NATIVE_SOURCE_BYTES,
+            ));
+        let output = tokio::time::timeout(
+            Duration::from_secs(30),
+            crate::stream::messages::stream_messages_tracked(
+                frames,
+                None,
+                crate::types::RequestId::from("mss-u4-http"),
+                Duration::from_secs(10),
+                Some(&mut capture),
+            )
+            .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+        server.abort();
+        let _ = server.await;
+        let status = if output
+            .iter()
+            .any(|event| matches!(event, crate::events::SamplingEvent::Completed { .. }))
+        {
+            NativeResponseStatus::Accepted
+        } else {
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed)
+        };
+        let evidence = capture.seal_native(1, status, true, 1, None).unwrap();
+        let typed = typed.lock().unwrap().clone();
+        (serde_json::to_value(evidence).unwrap(), output, typed)
+    }
+
+    #[tokio::test]
+    async fn mss_u4_http_terminal_metadata_reaches_capture() {
+        use crate::events::SamplingEvent;
+        use serde_json::json;
+        let details = json!({"type":null,"category":"terminal","explanation":"ordinary-terminal",
+            "resumable":false,"fallback_has_prefill_claim":true,"opaque":{"empty":[],"null":null}});
+        let wire = vec![
+            json!({"type":"message_start","message":{"id":"mss-u4-http","type":"message",
+            "role":"assistant","model":"mss-fixture","content":[],"stop_reason":null,
+            "stop_details":{"explanation":"start-only"},"usage":{"input_tokens":3,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use",
+                "id":"srvtoolu_u4_http","name":"tool_search_tool_bm25","input":{}}}),
+            json!({"type":"content_block_stop","index":2}),
+            json!({"type":"content_block_start","index":9,"content_block":{"type":"tool_search_tool_result",
+                "tool_use_id":"srvtoolu_u4_http","content":{"type":"tool_search_tool_search_result","tool_references":[]}}}),
+            json!({"type":"content_block_stop","index":9}),
+            json!({"type":"message_delta","delta":{"stop_details":{"explanation":"nonterminal-only"},
+                "stop_sequence":"nonterminal-only"},"usage":{"output_tokens":2}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,
+                "stop_details":details},"usage":{"output_tokens":7}}),
+            json!({"type":"message_stop"}),
+        ];
+        let (evidence, output, typed) = mss_u4_http_observation(wire.clone()).await;
+        assert_eq!(
+            typed[6]["delta"], wire[6]["delta"],
+            "MSS_U4_FRAGMENTED_HTTP_TYPED_TERMINAL"
+        );
+        let metadata = &evidence["messages_metadata"]["Observed"];
+        assert_eq!(
+            metadata["finalized"]["stop_details"],
+            json!({"Value":details}),
+            "MSS_U4_HTTP_FINAL_STOP_HANDOFF"
+        );
+        assert_eq!(
+            metadata["finalized"]["stop_reason"],
+            json!({"Value":"end_turn"})
+        );
+        assert_eq!(metadata["finalized"]["stop_sequence"], "Null");
+        assert_eq!(metadata["observations"].as_array().unwrap().len(), 3);
+        assert_eq!(metadata["coverage"], "Complete");
+        let responses: Vec<_> = output
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::Completed { response, .. } => Some(response),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(
+            responses[0].stop_sequence, None,
+            "MSS_U4_HTTP_TERMINAL_SEQUENCE_REPLACES"
+        );
+        assert_eq!(
+            responses[0].stop_message.as_deref(),
+            Some("ordinary-terminal")
+        );
+        assert!(
+            !output
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::Failed { .. }))
+        );
+        assert!(
+            !output
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::ToolCallDelta { .. }))
+        );
+    }
+
+    async fn mss_http_capture(
+        wire: Vec<serde_json::Value>,
+    ) -> (
+        std::result::Result<
+            crate::messages_continuation::CompletedAttempt,
+            crate::messages_continuation::CaptureError,
+        >,
+        Vec<crate::events::SamplingEvent>,
+    ) {
+        use futures_util::{StreamExt, stream};
+        use std::time::Duration;
+        let bytes = wire
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect::<String>();
+        let chunks: Vec<Bytes> = bytes
+            .as_bytes()
+            .chunks(7)
+            .map(Bytes::copy_from_slice)
+            .collect();
+        let app = Router::new().route(
+            "/v1/messages",
+            post(move || {
+                let chunks = chunks.clone();
+                async move {
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from_stream(stream::iter(
+                            chunks.into_iter().map(Ok::<_, std::convert::Infallible>),
+                        )))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{address}/v1"),
+            api_backend: ApiBackend::Messages,
+            model: "mss-fixture".to_owned(),
+            max_completion_tokens: Some(4096),
+            max_retries: Some(0),
+            ..minimal_config()
+        })
+        .unwrap();
+        let request = MessagesRequestWrapper::new(
+            serde_json::from_value(serde_json::json!({
+            "model":"mss-fixture","messages":[{"role":"user","content":"read"}],
+            "max_tokens":4096,"stream":true}))
+            .unwrap(),
+        );
+        let (frames, _) = client
+            .create_message_stream_with_carrier(
+                request,
+                None,
+                None,
+                client.inactive_native_history(),
+            )
+            .await
+            .unwrap();
+        let mut capture = crate::messages_continuation::AttemptCapture::default();
+        let output = tokio::time::timeout(
+            Duration::from_secs(30),
+            crate::stream::messages::stream_messages_tracked(
+                frames,
+                None,
+                crate::types::RequestId::from("mss-http"),
+                Duration::from_secs(10),
+                Some(&mut capture),
+            )
+            .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+        server.abort();
+        let _ = server.await;
+        (
+            capture.completed.ok_or(
+                capture
+                    .failure
+                    .unwrap_or(crate::messages_continuation::CaptureError::IncompleteStream),
+            ),
+            output,
+        )
+    }
+
+    #[tokio::test]
+    async fn mss_u1_http_caller_reaches_capture() {
+        use crate::events::SamplingEvent;
+        use serde_json::json;
+        for with_client in [false, true] {
+            let server = json!({"type":"server_tool_use","id":"srvtoolu_mss_http",
+                "name":"tool_search_tool_bm25","input":{"query":"read α"},
+                "caller":{"type":"direct","opaque":[null,"exact"]}});
+            let result = json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_mss_http",
+                "content":{"type":"tool_search_tool_search_result","tool_references":[]}});
+            let mut expected = vec![server.clone(), result.clone()];
+            let mut start_server = server;
+            start_server["input"] = json!({});
+            let mut wire = vec![
+                json!({"type":"message_start","message":{
+                    "id":"msg_mss_http","type":"message","role":"assistant","model":"mss-fixture",
+                    "content":[],"stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}),
+                json!({"type":"content_block_start","index":2,"content_block":start_server}),
+                json!({"type":"content_block_delta","index":2,"delta":{
+                    "type":"input_json_delta","partial_json":"{\"query\":\"read "}}),
+                json!({"type":"content_block_delta","index":2,"delta":{
+                    "type":"input_json_delta","partial_json":"α\"}"}}),
+                json!({"type":"content_block_stop","index":2}),
+                json!({"type":"content_block_start","index":8,"content_block":result}),
+                json!({"type":"content_block_stop","index":8}),
+            ];
+            if with_client {
+                let client = json!({"type":"tool_use","id":"client_mss_http","name":"read",
+                    "input":{"path":"a"},"caller":{"type":"direct","opaque":"client"}});
+                expected.push(client.clone());
+                wire.extend([
+                    json!({"type":"content_block_start","index":9,"content_block":client}),
+                    json!({"type":"content_block_stop","index":9}),
+                ]);
+            }
+            wire.extend([
+                json!({"type":"message_delta","delta":{
+                    "stop_reason":if with_client { "tool_use" } else { "end_turn" }},
+                    "usage":{"output_tokens":7}}),
+                json!({"type":"message_stop"}),
+            ]);
+            let (attempt, output) = mss_http_capture(wire).await;
+            let attempt = attempt.expect("MSS_U1_FRAGMENTED_HTTP_CALLER_CAPTURE");
+            assert_eq!(attempt.content, expected, "MSS_U1_HTTP_EXACT_CALLER");
+            let displayed: Vec<_> = output
+                .iter()
+                .filter_map(|event| match event {
+                    SamplingEvent::MessagesToolSearchDisplay { item, .. } => {
+                        Some(item.raw().clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(displayed, expected[..2], "MSS_U1_HTTP_DISCOVERY_CALLER");
+            let ids: Vec<_> = output
+                .iter()
+                .filter_map(|event| match event {
+                    SamplingEvent::ToolCallDelta { id: Some(id), .. } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                ids,
+                if with_client {
+                    vec!["client_mss_http"]
+                } else {
+                    vec![]
+                }
+            );
+            assert_eq!(
+                output
+                    .iter()
+                    .filter(|event| matches!(event, SamplingEvent::Completed { .. }))
+                    .count(),
+                1
+            );
+        }
+    }
+
     #[test]
     fn live_bearer_resolver_uses_x_api_key_for_messages_plus_anthropic_api_key() {
         let cfg = SamplerConfig {
