@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "HTS-3V1S-LNR-LUNA",
-  "title": "apex-3v1s LNR LUNA; semantic receipt required",
+  "title": "apex-3v1s LNR LUNA: native tool search on an admitted Responses route. PASS = the tool_search declaration is tools[0], the bridge is neither declared nor called, a client-executed tool_search_call is answered by a tool_search_output naming archive__package_manifest, and that call and its result close the round trip. Harness premise 0-hit -> BLOCKED; model premise 0-hit -> VACUOUS; any other pin 0-hit -> FAIL.",
   "bead": "apex-3v1s",
   "suite": "wire-shape",
   "tier": "slim",
@@ -10,15 +10,300 @@
   "wire": "responses",
   "cwd": "/Users/palanisd/hts-native-declaration-evidence/3v1s-groupA-v3n5-live-20261021T000851Z/workload",
   "wirecap": true,
-  "config_patch": {"model/gpt-6-luna/supports_search_tool":true},
+  "config_patch": {
+    "model/gpt-6-luna/supports_search_tool": true,
+    "mcp_servers/archive/command": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/fixtures/archive_mcp.py"
+  },
   "steps": [
-    {"op":"turn","prompt":"Use native tool search to discover the archive server's read-only package_manifest tool, which reads the isolated probe-build pager Cargo manifest. Invoke the discovered function directly using its returned name and schema. Do not call search_tool, use_tool, shell, read-file, pty, weave, or any other lookup tool. After the successful tool result, reply HTS-3V1S-LNR-LUNA-RESULT followed by the complete JSON object from that result and nothing else."},
-    {"op":"turn","prompt":"Without calling any tool, repeat the complete JSON object from the previous archive package_manifest tool result. Prefix your answer with HTS-3V1S-LNR-LUNA-DONE and include nothing else."}
+    {
+      "op": "turn",
+      "prompt": "Use native tool search to discover the archive server's read-only package_manifest tool, which reads the isolated probe-build pager Cargo manifest. Invoke the discovered function directly using its returned name and schema. Do not call search_tool, use_tool, shell, read-file, pty, weave, or any other lookup tool. After the successful tool result, reply HTS-3V1S-LNR-LUNA-RESULT followed by the complete JSON object from that result and nothing else."
+    },
+    {
+      "op": "turn",
+      "prompt": "Without calling any tool, repeat the complete JSON object from the previous archive package_manifest tool result. Prefix your answer with HTS-3V1S-LNR-LUNA-DONE and include nothing else."
+    }
   ],
-  "assert": {"exit":0,"ndjson":[{"id":"no_error","op":"absent","event":"acp_error"},{"id":"two_ends","op":"count","event":"acp_end","min":2},{"id":"done","op":"text_contains","value":"HTS-3V1S-LNR-LUNA-DONE"}],"wire":[{"id":"row_seen","kind":"field","file":"req-*.json","where":{"method":"POST","path":"/v1/responses","body.model":"gpt-6-luna"},"path":"$.body.model","eq":"gpt-6-luna"},{"id":"store_first_match","kind":"field","file":"req-*.json","where":{"method":"POST","path":"/v1/responses","body.model":"gpt-6-luna"},"path":"$.body.store","eq":false},{"id":"status_record","kind":"resp_status","file":"req-*.json","where":{"method":"POST","path":"/v1/responses","body.model":"gpt-6-luna"},"which":"last"}]},
-  "timeouts": {"turn_s":900,"acp_init_s":180,"acp_set_model_s":180,"mcp_startup_s":30},
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "id": "no_error",
+        "op": "absent",
+        "event": "acp_error"
+      },
+      {
+        "id": "two_ends",
+        "op": "count",
+        "event": "acp_end",
+        "min": 2
+      },
+      {
+        "id": "done",
+        "op": "text_contains",
+        "value": "HTS-3V1S-LNR-LUNA-DONE"
+      }
+    ],
+    "wire": [
+      {
+        "id": "row_seen",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "path": "$.body.model",
+        "eq": "gpt-6-luna"
+      },
+      {
+        "id": "store_first_match",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "path": "$.body.store",
+        "eq": false
+      },
+      {
+        "id": "row_req_count",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "min": 1,
+        "label": "CONTROL (anti-vacuous pin): bounds the filtered set so the last:0 selections below name the FIRST request of this row."
+      },
+      {
+        "id": "tsearch_first",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "path": "$.body.tools[0].type",
+        "eq": "tool_search",
+        "last": 0,
+        "label": "CONTROL (harness premise): the hosted tool_search declaration is hoisted to tools[0] of the first admitted-route request. Hoist: client.rs:1598-1600,1613-1621; declaration bytes responses.rs:1041-1069 (preserve_order, :1033-1034)."
+      },
+      {
+        "id": "tsearch_desc",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "any": true,
+        "grep": "Searches over deferred tool metadata with BM25",
+        "label": "The declaration carries the campaign description (responses.rs:1015-1029). any:true = fail-closed on an empty filtered set (run.py:3791-3802)."
+      },
+      {
+        "id": "no_bridge_decl",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "all": true,
+        "absent": true,
+        "regex": true,
+        "grep": "\"type\": \"function\",\\s*\"name\": \"(search_tool|use_tool)\"",
+        "label": "An admitted Responses route carries NO bridge declaration (sampler_turn.rs:456-470). Declaration shape taken from the in-tree body fixture h1-accept-cw1-req007-EV-1.json:565-567, so a historical call item cannot satisfy it. all:true requires absent:true and fails closed on an empty set (run.py:3751-3758)."
+      },
+      {
+        "id": "native_call",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "any": true,
+        "grep": "\"type\": \"tool_search_call\"",
+        "label": "MODEL PREMISE: the provider minted a client-executed native search call that the harness replayed into the next request (item type tool_search.rs:135; the answer arm turn.rs:3634-3729)."
+      },
+      {
+        "id": "native_exec_client",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "any": true,
+        "grep": "\"execution\": \"client\"",
+        "label": "The declaration and the answer are the CLIENT-execution form (execution enum ToolSearchExecution::Client, responses.rs:912-928; answer key order tool_search.rs:604-640 with CLIENT_EXECUTION at :177)."
+      },
+      {
+        "id": "native_output",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "any": true,
+        "grep": "\"type\": \"tool_search_output\"",
+        "label": "The harness answered the search: the paired output item (tool_search.rs:146)."
+      },
+      {
+        "id": "native_output_pm",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\"type\": \"tool_search_output\"((?!\"type\": \"function_call\")[\\s\\S]){0,4000}?\"name\": \"archive__package_manifest\"",
+        "label": "The harness-authored answer itself names the discovered tool: the client answer's tools[] entries are {\"type\": \"function\", \"name\", \"description\", \"parameters\"} (turn.rs:3702-3716) inside the item built by ToolSearchItem::client_answer (tool_search.rs:599-612). The window is TEMPERED with a negative lookahead on the next item's type tag so the needle cannot leak past the answer into the model's FOLLOWING function_call: the untethered [\\s\\S]{0,4000}? window was measured to still hit when the answer named a different tool, i.e. the loose form passes a rig whose discovery answer is defective (section 7, ARM-LNR-3b)."
+      },
+      {
+        "id": "native_pair",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\"call_id\": \"([^\"]+)\"[\\s\\S]{0,4000}?\"type\": \"tool_search_output\",\\s*\"call_id\": \"\\1\"",
+        "label": "PAIRING: the output item's call_id is the id of an earlier call in the same captured request. Output key order (type, call_id, status, execution, tools) is source-verified at tool_search.rs:604-640; the replayed call item's key order is UNVERIFIED, so the pattern stays agnostic about it and binds only on the id."
+      },
+      {
+        "id": "fn_call_pm",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\"name\": \"archive__package_manifest\",\\s*\"arguments\"",
+        "label": "MODEL PREMISE (second leg): the model then called the discovered tool DIRECTLY. The name+arguments key pair is the discriminating form: the harness answer's tool definitions carry \"name\" followed by \"description\"/\"parameters\" (turn.rs:3702-3716), and the MCP announcement renders '- archive (1 tool)' (search_tool/mod.rs:190-196), so neither can satisfy this needle. The pair itself is pinned by fn_result_pair. Key adjacency is UNVERIFIED per section 4.4 and is byte-checked in T4.1."
+      },
+      {
+        "id": "fn_result_nonce",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "any": true,
+        "grep": "ARCHIVE-PM-RSULT-4a7b91",
+        "label": "MODEL PREMISE (third leg): the fixture result rode the next request. The nonce is in no prompt (section 4.5)."
+      },
+      {
+        "id": "fn_result_pair",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\"call_id\": \"([^\"]+)\",\\s*\"name\": \"archive__package_manifest\",\\s*\"arguments\"[\\s\\S]{0,6000}?\"call_id\": \"\\1\",\\s*\"output\": \"[\\s\\S]{0,2000}?ARCHIVE-PM-RSULT-4a7b91",
+        "label": "PAIRING of the second leg: the direct call's call_id is the call_id of the function_call_output whose output leads with the fixture nonce, so the discovered call CLOSED on the real fixture payload (fields per sampler_turn_tests.rs:7719-7727; the 200-char output window holds because section 8.1 makes the nonce the payload's first key). Key adjacency UNVERIFIED per section 4.4."
+      },
+      {
+        "id": "no_bridge_call",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "all": true,
+        "absent": true,
+        "regex": true,
+        "grep": "\"type\": \"function_call\",\\s*\"call_id\": \"[^\"]+\",\\s*\"name\": \"(search_tool|use_tool)\"",
+        "label": "The LNR/LHR discriminator: this family must never reach the tool through the bridge (the prompt forbids it)."
+      },
+      {
+        "id": "status_ok",
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6-luna"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "HTTP 200 on the final request of the row; status_in makes the pin assertive (run.py:3894, the list test at :3934-3935)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "tsearch_first",
+        "class": "harness",
+        "note": "no tool_search declaration on the admitted route: the rig or the admission flag failed, so no model conclusion is owed"
+      },
+      {
+        "pin": "native_call",
+        "class": "model",
+        "note": "the model never used native tool search on this row"
+      },
+      {
+        "pin": "fn_call_pm",
+        "class": "model",
+        "note": "the model searched but never called the discovered tool"
+      },
+      {
+        "pin": "fn_result_nonce",
+        "class": "model",
+        "note": "the discovered call never closed"
+      }
+    ]
+  },
+  "timeouts": {
+    "turn_s": 900,
+    "acp_init_s": 180,
+    "acp_set_model_s": 180,
+    "mcp_startup_s": 30
+  },
   "watchdog_s": 900,
-  "retry": {"on_status":[],"max_attempts":0,"backoff_s":0,"recheck_models":false},
-  "scoring": {"require_wire_evidence":true},
-  "env": {"store":false,"home":"hermetic","launcher":"runner"}
+  "retry": {
+    "on_status": [],
+    "max_attempts": 0,
+    "backoff_s": 0,
+    "recheck_models": false
+  },
+  "env": {
+    "store": false,
+    "home": "hermetic",
+    "launcher": "runner"
+  }
 }

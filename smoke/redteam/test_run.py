@@ -12021,3 +12021,282 @@ class HermeticHomePolicyGuardTest(unittest.TestCase):
             findings, [],
             "the policy guard did not decide these two cases as r2 §5.2 T-10 "
             "states; failing cells: %s" % ";".join(findings))
+
+
+# ---------------------------------------------------------------------------
+# apex-mwga.1 T4.3 (spec r2 §8.2, OD-3, signed answer Q-T4.3 = yes): the
+# 3V1S (three-vendors, one search) family's case contract, owned by this
+# suite. Before this class the family's offline contract lived only outside
+# the runner's own battery — in the durable verdict rig (T4.2) and in the
+# eleven one-off counterfactuals T3 ran by hand (spec §7.4).
+#
+# RED, measured on the bytes this batch opened with
+# (.../apex-mwga.1/batch-6-T4.3/logs/B6-RED-*.log): not one §7.4 rejection
+# string appeared anywhere in this file, and in a landing-style export with
+# §7.4 row 10's fault installed in hts-3v1s-lnr-luna.json — `all: true` with
+# `absent` removed, which the schema gate accepts by design and only
+# check_wire rejects at pin time — all 246 base tests stayed green, while the
+# sibling row 9 fault (remove "bead") turned CaseContractTest red. So the
+# gate's *reasons* were unpinned and the validation-invisible fault class was
+# unguarded by anything the runner runs.
+#
+# GREEN: twelve tests, one contract test over all six landed files plus one
+# per §7.4 row. Offline only — json.load plus run.py's validator and pin
+# functions; no process, socket, credential, proxy or binary is touched, and
+# every mutation below is a deep copy in memory: no file on disk is rewritten.
+#
+# Each row asserts the reason the engine actually returns, measured verbatim
+# on the landed bytes under BOTH validator engines
+# (.../batch-6-T4.3/logs/B6-probe-eleven-rows{,-hand}.json), so no row depends
+# on which engine is importable and none can be quietly skipped (BE-5).
+# ---------------------------------------------------------------------------
+HTS_3V1S_FILES = (
+    "hts-3v1s-lhr-luna", "hts-3v1s-lhr-terra", "hts-3v1s-lhr-sol",
+    "hts-3v1s-lnr-luna", "hts-3v1s-lnr-terra", "hts-3v1s-lnr-sol",
+)
+# Spec §7.4: "Each row mutates one field of hts-3v1s-lnr-luna.json".
+HTS_3V1S_CF_FILE = "hts-3v1s-lnr-luna"
+# The premise lists each family case ships with, measured on the landed
+# bytes. §7.4 row 11 is why they are pinned here rather than left to the
+# gate: the non-mcp_calls branch of the NEW-case gate does not cap the
+# premise count, so a premise added later would validate clean and silently
+# change which verdict arm a 0-hit lands on.
+HTS_3V1S_PREMISES = {
+    "hts-3v1s-lhr-luna": 5, "hts-3v1s-lhr-terra": 5, "hts-3v1s-lhr-sol": 5,
+    "hts-3v1s-lnr-luna": 4, "hts-3v1s-lnr-terra": 4, "hts-3v1s-lnr-sol": 4,
+}
+
+
+class Hts3V1sCaseContractTest(unittest.TestCase):
+    """The six landed 3V1S cases and the eleven §7.4 gate reasons, pinned."""
+
+    def _path(self, stem):
+        path = os.path.join(run.CASES_DIR, stem + ".json")
+        self.assertTrue(
+            os.path.exists(path),
+            "the family's case file is missing from cases/: %s" % path)
+        return path
+
+    def _case(self, stem):
+        with open(self._path(stem)) as fh:
+            return json.load(fh)
+
+    def _cf(self, mutate):
+        """One §7.4 row: mutate a deep copy of the landed bytes, validate it
+        through the same entry point the rig uses, return the errors."""
+        case = json.loads(json.dumps(self._case(HTS_3V1S_CF_FILE)))
+        mutate(case)
+        return run._validate_new_case(HTS_3V1S_CF_FILE + ".json", case)
+
+    def assertRejected(self, errs, count, needles, row):
+        """The row is refused by name, not merely refused."""
+        joined = " | ".join(errs)
+        self.assertEqual(
+            len(errs), count,
+            "%s: expected %d error(s), got %d: %s"
+            % (row, count, len(errs), joined))
+        for needle in needles:
+            self.assertIn(needle, joined,
+                          "%s: the gate did not name %r; got: %s"
+                          % (row, needle, joined))
+
+    def test_six_landed_files_pass_both_validators(self):
+        """Spec §8.2's first half: each of the six files loads and satisfies
+        validate_case_file (the gate that judges a case at run time) and
+        _validate_new_case (the NEW-case gate the §7.4 rows score through)
+        with 0 errors. Nothing in the pre-delta suite asked for these six by
+        name: CaseContractTest globs cases/*.json, so it validated them only
+        as members of the set and never required the family to be there."""
+        self.assertEqual(len(HTS_3V1S_FILES), 6)
+        for stem in HTS_3V1S_FILES:
+            with self.subTest(case=stem):
+                path = self._path(stem)
+                self.assertEqual(run.validate_case_file(path), [],
+                                 "%s: validate_case_file" % stem)
+                self.assertEqual(
+                    run._validate_new_case(stem + ".json", self._case(stem)),
+                    [], "%s: _validate_new_case" % stem)
+
+    # ---- §7.4 rows 1-9: the gate refuses each fault by name --------------
+
+    def test_cf01_scored_wire_assert_needs_where(self):
+        """G10: a scored wire assert without `where` is refused. The landed
+        case carries `where` on all 16 of its scored wire asserts."""
+        def mutate(case):
+            del case["assert"]["wire"][3]["where"]
+        errs = self._cf(mutate)
+        self.assertRejected(
+            errs, 1, ["assert.wire[3]: scored wire assert needs 'where' "
+                      "(G10)"], "§7.4 row 1")
+
+    def test_cf02_dangling_vacuous_if_pin(self):
+        """A scoring.vacuous_if pin that names neither an assert id nor a
+        declared-call id is refused, and on this case the same entry is
+        refused twice over: it is also a harness-class premise on a case
+        without mcp_calls."""
+        def mutate(case):
+            case["scoring"]["vacuous_if"][0]["pin"] = "nope"
+        errs = self._cf(mutate)
+        self.assertRejected(
+            errs, 2,
+            ["scoring.vacuous_if[0].pin 'nope' does not resolve to an assert "
+             "or declared-call id",
+             "scoring.vacuous_if[0] harness-class premise without mcp_calls "
+             "must name a scored wire assert"], "§7.4 row 2")
+
+    def test_cf03_recon_cannot_be_smuggled_onto_a_scored_assert(self):
+        """`recon: true` is the schema's escape from G10, so adding it to an
+        assert that a premise names must be refused by the schema itself —
+        otherwise a premise could be moved onto a non-scoring pin. The two
+        engines word this differently (jsonschema "Additional properties are
+        not allowed ('recon' was unexpected)", hand-rolled
+        "additionalProperties is false; unexpected ['recon']"), so the pin is
+        on what both name."""
+        def mutate(case):
+            case["assert"]["wire"][3]["recon"] = True
+        errs = self._cf(mutate)
+        self.assertRejected(errs, 1, ["schema:", "'recon'"], "§7.4 row 3")
+
+    def test_cf04_last_prompt_keeps_its_done_reply_line(self):
+        """_validate_drift: the last turn's prompt must still name the DONE
+        reply line the case asserts, or the case would score a reply it never
+        asked for."""
+        def mutate(case):
+            case["steps"][-1]["prompt"] = case["steps"][-1]["prompt"].replace(
+                "HTS-3V1S-LNR-LUNA-DONE", "HTS-3V1S-LNR-LUNA-DXXE")
+        errs = self._cf(mutate)
+        self.assertRejected(
+            errs, 1,
+            ["prompt drift",
+             "missing the 'done' reply line 'HTS-3V1S-LNR-LUNA-DONE'"],
+            "§7.4 row 4")
+
+    def test_cf05_config_patch_values_stay_scalar(self):
+        """config_patch is applied as a scalar per key (spec §8.1's rule), so
+        a list value is refused twice: by the schema's scalar type and by the
+        acp NEW-case rule."""
+        def mutate(case):
+            case["config_patch"]["mcp_servers/archive/args"] = ["x"]
+        errs = self._cf(mutate)
+        self.assertRejected(
+            errs, 2,
+            ["schema:", "mcp_servers/archive/args", "boolean",
+             "acp NEW case config_patch 'mcp_servers/archive/args' must be "
+             "scalar"], "§7.4 row 5")
+
+    def test_cf06_duplicate_pin_id(self):
+        """Assert ids and declared-call ids share one namespace and must be
+        unique — a duplicate would let one 0-hit stand in for another."""
+        def mutate(case):
+            case["assert"]["wire"][1]["id"] = case["assert"]["wire"][0]["id"]
+        errs = self._cf(mutate)
+        self.assertRejected(
+            errs, 1,
+            ["duplicate assert/call id '%s' (ids must be unique)"
+             % self._case(HTS_3V1S_CF_FILE)["assert"]["wire"][0]["id"]],
+            "§7.4 row 6")
+
+    def test_cf07_status_in_must_be_an_array(self):
+        """`status_in` is a set, not a scalar; both engines refuse the scalar
+        (jsonschema "200 is not of type 'array'", hand-rolled "value '200'
+        has type int, expected 'array'")."""
+        def mutate(case):
+            for spec in case["assert"]["wire"]:
+                if spec.get("id") == "status_ok":
+                    spec["status_in"] = 200
+        errs = self._cf(mutate)
+        self.assertRejected(errs, 1, ["schema:", "status_in", "array"],
+                            "§7.4 row 7")
+
+    def test_cf08_resp_status_which_is_first_or_last(self):
+        """`which` admits only first/last, which is why §6 pins those two and
+        no other selection."""
+        def mutate(case):
+            for spec in case["assert"]["wire"]:
+                if spec.get("id") == "status_ok":
+                    spec["which"] = "middle"
+        errs = self._cf(mutate)
+        self.assertRejected(errs, 1, ["schema:", "which", "middle", "first"],
+                            "§7.4 row 8")
+
+    def test_cf09_new_case_needs_a_string_bead(self):
+        """A NEW case names the bead it belongs to; without it a case that
+        fails has no owner to route the finding to."""
+        def mutate(case):
+            del case["bead"]
+        errs = self._cf(mutate)
+        self.assertRejected(errs, 1, ["NEW case needs a string 'bead'"],
+                            "§7.4 row 9")
+
+    # ---- §7.4 rows 10-11: the gate is silent, so the suite is not ---------
+
+    def test_cf10_all_true_without_absent_is_a_pin_rejection(self):
+        """The one fault of the eleven the schema gate does NOT catch: `all:
+        true` with `absent` removed validates with 0 errors and is refused
+        only at pin time, by check_wire with `all:true requires
+        absent:true`. That asymmetry is why the shipped family never relies
+        on it, and why this test pins both halves: the engine's refusal of the
+        shape, and the fact that no shipped file of the family carries it.
+        Before this class the second half was guarded by nothing at all — the
+        pre-delta suite ran all 246 tests green with this fault installed in
+        hts-3v1s-lnr-luna.json (B6-RED-E2). The shipped-file half runs first
+        so a family file that acquired the shape fails by name instead of
+        dying inside the mutation below."""
+        for stem in HTS_3V1S_FILES:
+            for spec in self._case(stem)["assert"]["wire"]:
+                self.assertFalse(
+                    spec.get("all") and not spec.get("absent"),
+                    "%s: wire assert %r ships all:true without absent, a "
+                    "shape the schema gate accepts and the runner refuses at "
+                    "pin time" % (stem, spec.get("id")))
+
+        def mutate(case):
+            for spec in case["assert"]["wire"]:
+                if spec.get("id") == "no_bridge_decl":
+                    spec.pop("absent", None)
+
+        errs = self._cf(mutate)
+        self.assertEqual(errs, [],
+                         "7.4 row 10 must validate with 0 errors; got: %s"
+                         % errs)
+        mutant = json.loads(json.dumps(self._case(HTS_3V1S_CF_FILE)))
+        mutate(mutant)
+        spec = [s for s in mutant["assert"]["wire"]
+                if s.get("id") == "no_bridge_decl"][0]
+        self.assertTrue(spec.get("all") and "absent" not in spec,
+                        "7.4 row 10: the mutation did not build the shape")
+        empty = tempfile.mkdtemp(prefix="rt-3v1s-cf10-")
+        self.addCleanup(lambda: shutil.rmtree(empty, ignore_errors=True))
+        res = run.check_wire(json.loads(json.dumps(spec)), empty)
+        self.assertFalse(res.ok,
+                         "7.4 row 10: check_wire accepted all:true without "
+                         "absent: %s" % res.detail)
+        self.assertIn("all:true requires absent:true", str(res.detail),
+                      "7.4 row 10: check_wire refused for an unexpected "
+                      "reason: %s" % res.detail)
+
+    def test_cf11_the_gate_does_not_cap_the_premise_count(self):
+        """Characterisation, not a pass/fail pin: a second harness-class
+        premise validates with 0 errors, because the non-mcp_calls branch of
+        the NEW-case gate caps nothing. The family therefore keeps its
+        premise lists short by choice (5 for LHR, 4 for LNR), and this test
+        is what notices a change — a silently added premise moves which arm
+        a 0-hit decides on, and no validator would say so."""
+        def mutate(case):
+            case["scoring"]["vacuous_if"].append(
+                {"pin": "native_output", "class": "harness",
+                 "note": "a second harness-class premise"})
+        errs = self._cf(mutate)
+        self.assertEqual(
+            errs, [],
+            "§7.4 row 11: the gate is documented not to cap the premise "
+            "count; it moved, so this test and the map disagree: %s" % errs)
+        for stem in HTS_3V1S_FILES:
+            premises = self._case(stem).get("scoring", {}).get(
+                "vacuous_if", [])
+            self.assertEqual(
+                len(premises), HTS_3V1S_PREMISES[stem],
+                "%s: premise count moved from %d — the gate will not stop "
+                "that, so this pin does; re-derive the verdict arms of spec "
+                "§7.3 before changing it"
+                % (stem, HTS_3V1S_PREMISES[stem]))

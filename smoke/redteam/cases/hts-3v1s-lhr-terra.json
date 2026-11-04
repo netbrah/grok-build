@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "HTS-3V1S-LHR-TERRA",
-  "title": "apex-3v1s LHR TERRA; semantic receipt required",
+  "title": "apex-3v1s LHR TERRA: genuine ordinary-bridge history into an admitted destination. PASS = the seed row declares the bridge and closes both real search_tool/use_tool pairs on the target; the FIRST destination main-turn request carries both historical pairs intact and paired in input plus the result payload, declares no bridge tool, and carries the hosted tool_search declaration at tools[0]; that same request answers with HTTP 200 and its completion repeats the payload. Harness premise 0-hit -> BLOCKED; model premise 0-hit -> VACUOUS; any other pin 0-hit -> FAIL.",
   "bead": "apex-3v1s",
   "suite": "wire-shape",
   "tier": "slim",
@@ -10,16 +10,398 @@
   "wire": "responses",
   "cwd": "/Users/palanisd/hts-native-declaration-evidence/3v1s-groupA-v3n5-live-20261021T000851Z/workload",
   "wirecap": true,
-  "config_patch": {"model/gpt-6.1-sol/supports_search_tool":false,"model/gpt-5.6-terra/supports_search_tool":true},
+  "config_patch": {
+    "model/gpt-6.1-sol/supports_search_tool": false,
+    "model/gpt-5.6-terra/supports_search_tool": true,
+    "mcp_servers/archive/command": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/fixtures/archive_mcp.py"
+  },
   "steps": [
-    {"op":"turn","prompt":"First call the declared search_tool to discover the archive server's read-only package_manifest tool, then call the declared use_tool to invoke it using its returned name and schema. Both ordinary bridge calls are required; do not use native tool search, shell, read-file, pty, weave, or another lookup tool. After the successful tool result, reply HTS-3V1S-LHR-TERRA-SEED followed by the complete JSON object from that result and nothing else."},
-    {"op":"switch","model":"gpt-5.6-terra","via":"acp"},
-    {"op":"turn","prompt":"Without searching or calling any tool again, repeat the complete JSON object from the previous archive package_manifest result in this conversation's ordinary bridge history. Prefix your answer with HTS-3V1S-LHR-TERRA-DONE and include nothing else."}
+    {
+      "op": "turn",
+      "prompt": "First call the declared search_tool to discover the archive server's read-only package_manifest tool, which reads the isolated probe-build pager Cargo manifest, then call the declared use_tool to invoke it using its returned name and schema. Both ordinary bridge calls are required; do not use native tool search, shell, read-file, pty, weave, or another lookup tool. After the successful tool result, reply HTS-3V1S-LHR-TERRA-SEED followed by the value of that result's path field and nothing else; do not quote the whole result object."
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-terra",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Without searching or calling any tool again, repeat the complete JSON object from the previous archive package_manifest tool result in this conversation's ordinary bridge history. Prefix your answer with HTS-3V1S-LHR-TERRA-DONE and include nothing else."
+    }
   ],
-  "assert": {"exit":0,"ndjson":[{"id":"no_error","op":"absent","event":"acp_error"},{"id":"two_ends","op":"count","event":"acp_end","min":2},{"id":"done","op":"text_contains","value":"HTS-3V1S-LHR-TERRA-DONE"}],"wire":[{"id":"row_seen","kind":"field","file":"req-*.json","where":{"method":"POST","path":"/v1/responses","body.model":"gpt-5.6-terra"},"path":"$.body.model","eq":"gpt-5.6-terra"},{"id":"store_first_match","kind":"field","file":"req-*.json","where":{"method":"POST","path":"/v1/responses","body.model":"gpt-5.6-terra"},"path":"$.body.store","eq":false},{"id":"status_record","kind":"resp_status","file":"req-*.json","where":{"method":"POST","path":"/v1/responses","body.model":"gpt-5.6-terra"},"which":"last"}]},
-  "timeouts": {"turn_s":900,"acp_init_s":180,"acp_set_model_s":180,"mcp_startup_s":30},
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "id": "no_error",
+        "op": "absent",
+        "event": "acp_error"
+      },
+      {
+        "id": "two_ends",
+        "op": "count",
+        "event": "acp_end",
+        "min": 2
+      },
+      {
+        "id": "done",
+        "op": "text_contains",
+        "value": "HTS-3V1S-LHR-TERRA-DONE"
+      },
+      {
+        "id": "seed_receipt",
+        "op": "text_contains",
+        "value": "HTS-3V1S-LHR-TERRA-SEED"
+      },
+      {
+        "id": "answer_payload",
+        "op": "text_contains",
+        "value": "ARCHIVE-PM-RSULT-4a7b91",
+        "label": "Group A r4 section 5 item 5 (expected payload in the answer). The seed turn is asked for the path field only, so the nonce should reach the model text only in the DONE answer; ndjson_text joins every acp_message chunk of the session (run.py:1422-1425, op at :2893-2900), so this runner pin is a coarse guard and per-turn attribution is the leg record's job (section 6.0)."
+      }
+    ],
+    "wire": [
+      {
+        "id": "seed_row_seen",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "path": "$.body.model",
+        "eq": "gpt-6.1-sol",
+        "last": 0,
+        "label": "The oldest request of the seed row (last:0 = oldest, run.py:2919-2928 + :3050-3054)."
+      },
+      {
+        "id": "seed_store",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "path": "$.body.store",
+        "eq": false,
+        "last": 0,
+        "label": "store=false on the seed row (wire invariant 6.2)."
+      },
+      {
+        "id": "seed_req_count",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "min": 1,
+        "label": "CONTROL: bounds the seed-row set so the last:0 selections below name its FIRST request."
+      },
+      {
+        "id": "seed_decl_search",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\"type\": \"function\",\\s*\"name\": \"search_tool\"",
+        "label": "CONTROL (harness premise): the non-admitted source row declares the real bridge tool search_tool. Declaration byte shape from h1-accept-cw1-req007-EV-1.json:565-567, so a historical call item cannot satisfy it."
+      },
+      {
+        "id": "seed_decl_use",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\"type\": \"function\",\\s*\"name\": \"use_tool\"",
+        "label": "CONTROL (harness premise): the non-admitted source row declares the real bridge tool use_tool (same declaration shape)."
+      },
+      {
+        "id": "seed_no_native_decl",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"type\": \"tool_search\"",
+        "label": "The source row is unadmitted (config_patch false), so no hosted tool_search declaration may appear on it (responses.rs:1184-1192 admits only with supports_search_tool)."
+      },
+      {
+        "id": "seed_search_call",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\"name\": \"search_tool\",\\s*\"arguments\"",
+        "label": "MODEL PREMISE: the model issued a real search_tool call (name+arguments key pair; the prompt never writes that pair)."
+      },
+      {
+        "id": "seed_use_call",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\"name\": \"use_tool\",\\s*\"arguments\"",
+        "label": "MODEL PREMISE: the model issued a real use_tool call."
+      },
+      {
+        "id": "seed_use_tgt",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\\\\\"archive__package_manifest\\\\\"",
+        "label": "MODEL PREMISE (DISCRIMINATING FORM, the t21-responses-glm52-mcp-tool.json cg_tgt precedent): the escaped-JSON qualified name appears only inside a real function_call's arguments. No prompt and no announcement writes it (- archive (1 tool), search_tool/mod.rs:190-196)."
+      },
+      {
+        "id": "seed_result_pair",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "any": true,
+        "regex": true,
+        "grep": "\"call_id\": \"([^\"]+)\",\\s*\"name\": \"use_tool\",\\s*\"arguments\"[\\s\\S]{0,6000}?\"call_id\": \"\\1\",\\s*\"output\": \"[\\s\\S]{0,2000}?ARCHIVE-PM-RSULT-4a7b91",
+        "label": "The use_tool call CLOSED: its call_id is the call_id of the function_call_output leading with the fixture nonce (fields per sampler_turn_tests.rs:7719-7727; window holds because section 8.1 puts the nonce first)."
+      },
+      {
+        "id": "seed_status_first",
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-6.1-sol"
+        },
+        "which": "first",
+        "status_in": [
+          200
+        ],
+        "label": "Group A r4 section 5 item 2: an actual successful source completion (HTTP 200 on the seed row's first request)."
+      },
+      {
+        "id": "dest_row_seen",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "path": "$.body.model",
+        "eq": "gpt-5.6-terra",
+        "last": 0,
+        "label": "The FIRST destination main-turn request (Group A r4 section 5 item 4): where body.model = destination plus last:0 = the oldest filtered capture."
+      },
+      {
+        "id": "dest_store",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "path": "$.body.store",
+        "eq": false,
+        "last": 0,
+        "label": "store=false on the destination row (wire invariant 6.2)."
+      },
+      {
+        "id": "dest_req_count",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "min": 1,
+        "max": 1,
+        "label": "Group A r4 section 5 item 5 guard: the answer must come from the FIRST destination request. A second destination-row capture means that request completed with a tool call instead of the answer, so the arm is recorded UNVERIFIED and never PASS on a later request. Fail-closed; if the ratification leg shows a destination-row auxiliary request also lands here, this ceiling is re-derived from that capture (section 6.0)."
+      },
+      {
+        "id": "dest_native_entry",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "path": "$.body.tools[0].type",
+        "eq": "tool_search",
+        "last": 0,
+        "label": "CONTROL (harness premise): destination admission and native entry on that same request (responses.rs:1184-1192, :1245-1247; hoist client.rs:1613-1621)."
+      },
+      {
+        "id": "dest_tsearch_desc",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "last": 0,
+        "grep": "Searches over deferred tool metadata with BM25",
+        "label": "The native entry is the campaign declaration (responses.rs:1015-1029), on the selected first destination request (single-file form, run.py:3823-3847)."
+      },
+      {
+        "id": "dest_no_bridge_decl",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "absent": true,
+        "regex": true,
+        "last": 0,
+        "grep": "\"type\": \"function\",\\s*\"name\": \"(search_tool|use_tool)\"",
+        "label": "Group A r4 section 5 item 4: neither bridge tool is in the CURRENT tools of the first destination request (sampler_turn.rs:456-470). The needle is the declaration shape only, so the historical search_tool/use_tool call items in the same body cannot satisfy it; the body is never grepped flat for bridge names, as that section requires."
+      },
+      {
+        "id": "dest_hist_search_pair",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "regex": true,
+        "last": 0,
+        "grep": "\"call_id\": \"([^\"]+)\",\\s*\"name\": \"search_tool\",\\s*\"arguments\"[\\s\\S]{0,6000}?\"call_id\": \"\\1\",\\s*\"output\": \"[\\s\\S]{0,2000}?archive__package_manifest",
+        "label": "HARNESS obligation: the first historical ordinary bridge pair is present in input, intact and correctly paired, and the discovery result itself survived (Group A r4 section 5 item 4). The paired output names the qualified tool rather than the result payload because that is what a search_tool result carries: SearchToolOutput.content is the grouped body {\"results\":[{\"server\":..,\"tools\":[{tool_name,description,score,input_schema}]}]} (output.rs:593-597 + :641-660), so archive__package_manifest is in it and the fixture nonce is not (the nonce is pinned on the use_tool pair). 0-hit here is a replay/projection defect, never VACUOUS: sampler_turn_tests.rs:7648-7654 pins that ordinary complete search/use pairs keep baseline lowering and that their identities are never pruned or renamed."
+      },
+      {
+        "id": "dest_hist_use_pair",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "regex": true,
+        "last": 0,
+        "grep": "\"call_id\": \"([^\"]+)\",\\s*\"name\": \"use_tool\",\\s*\"arguments\"[\\s\\S]{0,6000}?\"call_id\": \"\\1\",\\s*\"output\": \"[\\s\\S]{0,2000}?ARCHIVE-PM-RSULT-4a7b91",
+        "label": "HARNESS obligation: the second historical pair (the use_tool round trip) is present, intact and paired in the same first destination request."
+      },
+      {
+        "id": "dest_hist_nonce",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "last": 0,
+        "grep": "ARCHIVE-PM-RSULT-4a7b91",
+        "label": "The fixture payload itself survived into the destination input (not merely the call names)."
+      },
+      {
+        "id": "dest_status_200",
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "which": "first",
+        "status_in": [
+          200
+        ],
+        "label": "Group A r4 section 5 item 5: that exact first destination request pairs with HTTP 200 (which: first = the oldest capture by the capture's own n, run.py:3526-3535; status_in makes it assertive, :3934-3935)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "seed_decl_search",
+        "class": "harness",
+        "note": "the unadmitted source row never declared the bridge: the rig or the row flag failed"
+      },
+      {
+        "pin": "dest_native_entry",
+        "class": "harness",
+        "note": "the destination route is not admitted: the destination flag or the admission predicate failed"
+      },
+      {
+        "pin": "seed_search_call",
+        "class": "model",
+        "note": "the model never used the ordinary bridge on the source row"
+      },
+      {
+        "pin": "seed_use_call",
+        "class": "model",
+        "note": "the model searched but never invoked the tool through the bridge"
+      },
+      {
+        "pin": "answer_payload",
+        "class": "model",
+        "note": "the model never returned the payload in its answer"
+      }
+    ]
+  },
+  "timeouts": {
+    "turn_s": 900,
+    "acp_init_s": 180,
+    "acp_set_model_s": 180,
+    "mcp_startup_s": 30
+  },
   "watchdog_s": 900,
-  "retry": {"on_status":[],"max_attempts":0,"backoff_s":0,"recheck_models":false},
-  "scoring": {"require_wire_evidence":true},
-  "env": {"store":false,"home":"hermetic","launcher":"runner"}
+  "retry": {
+    "on_status": [],
+    "max_attempts": 0,
+    "backoff_s": 0,
+    "recheck_models": false
+  },
+  "env": {
+    "store": false,
+    "home": "hermetic",
+    "launcher": "runner"
+  }
 }
