@@ -3334,11 +3334,20 @@ mod binding_tests {
         true
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ExpectedEngine {
+        Local,
+        Remote,
+    }
+
+    #[derive(Debug)]
     struct Case {
         backend: ApiBackend,
         admitted: bool,
         session_token: bool,
         remote: bool,
+        family: Option<&'static str>,
+        expected_engine: ExpectedEngine,
     }
 
     struct Fixture {
@@ -3407,9 +3416,7 @@ mod binding_tests {
             .models_manager
             .set_current_model_id(acp::ModelId::new("u7-operator"));
         let mut entry = support::entry_with_search_flag("u7-source-a", case.admitted);
-        if case.remote {
-            entry.info.model_family = Some("codex".into());
-        }
+        entry.info.model_family = case.family.map(str::to_owned);
         actor.models_manager.insert_test_entry("u7-source-a", entry);
         actor.models_manager.insert_test_entry(
             "u7-installed-b",
@@ -3677,7 +3684,7 @@ mod binding_tests {
             counts,
             "retain standalone gated auth plus one preflight and one gated auth at bound preparation"
         );
-        if case.remote {
+        if case.expected_engine == ExpectedEngine::Remote {
             let request = trace
                 .remote_request
                 .as_ref()
@@ -3707,7 +3714,7 @@ mod binding_tests {
     }
 
     async fn run_sender(fixture: &Fixture, case: &Case, two_pass: bool) -> bool {
-        if case.remote {
+        if case.expected_engine == ExpectedEngine::Remote {
             for server in [&fixture.server_a, &fixture.server_b] {
                 server.enqueue_response("/v1/responses", ScriptedResponse::json(400, serde_json::json!({"error": {"type": "invalid_request_error", "message": "u7 terminal fixture rejection"}})));
             }
@@ -3750,6 +3757,11 @@ mod binding_tests {
             );
             let succeeded = run_sender(&fixture, &case, two_pass).await;
             let trace = guard.take();
+            assert_eq!(
+                trace.remote_request.is_some(),
+                case.expected_engine == ExpectedEngine::Remote,
+                "compaction arm for row {case:?}"
+            );
             assert!(
                 fixture.server_b.requests().is_empty(),
                 "{} transport must never use installed B",
@@ -3783,7 +3795,8 @@ mod binding_tests {
             let body = request.body.as_ref().unwrap();
             assert_eq!(body["model"], fixture.a.config.model);
             assert_eq!(
-                succeeded, !case.remote,
+                succeeded,
+                case.expected_engine == ExpectedEngine::Local,
                 "local send succeeds; remote fixture terminates without an auth retry"
             );
             assert_inputs(
@@ -3835,6 +3848,8 @@ mod binding_tests {
                             admitted,
                             session_token: false,
                             remote: false,
+                            family: None,
+                            expected_engine: ExpectedEngine::Local,
                         },
                         true,
                     )
@@ -3846,6 +3861,8 @@ mod binding_tests {
                         admitted: true,
                         session_token: true,
                         remote: false,
+                        family: None,
+                        expected_engine: ExpectedEngine::Local,
                     },
                     true,
                 )
@@ -3873,6 +3890,8 @@ mod binding_tests {
                             admitted,
                             session_token: false,
                             remote: false,
+                            family: None,
+                            expected_engine: ExpectedEngine::Local,
                         },
                         false,
                     )
@@ -3884,6 +3903,8 @@ mod binding_tests {
                         admitted: true,
                         session_token: true,
                         remote: false,
+                        family: None,
+                        expected_engine: ExpectedEngine::Local,
                     },
                     false,
                 )
@@ -3894,10 +3915,52 @@ mod binding_tests {
                         admitted: true,
                         session_token: false,
                         remote: true,
+                        family: Some("codex"),
+                        expected_engine: ExpectedEngine::Remote,
                     },
                     false,
                 )
                 .await;
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn full_sender_engine_follows_flag_backend_and_family() {
+        const NAME: &str = "session::acp_session::compaction::binding_tests::full_sender_engine_follows_flag_backend_and_family";
+        if isolated(NAME) {
+            return;
+        }
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for case in [
+                    Case {
+                        backend: ApiBackend::Responses,
+                        admitted: true,
+                        session_token: false,
+                        remote: false,
+                        family: Some("codex"),
+                        expected_engine: ExpectedEngine::Local,
+                    },
+                    Case {
+                        backend: ApiBackend::Responses,
+                        admitted: true,
+                        session_token: false,
+                        remote: true,
+                        family: None,
+                        expected_engine: ExpectedEngine::Local,
+                    },
+                    Case {
+                        backend: ApiBackend::Messages,
+                        admitted: true,
+                        session_token: false,
+                        remote: true,
+                        family: Some("codex"),
+                        expected_engine: ExpectedEngine::Local,
+                    },
+                ] {
+                    exercise_sender(case, false).await;
+                }
             })
             .await;
     }
@@ -3984,6 +4047,8 @@ mod binding_tests {
             admitted: true,
             session_token,
             remote: true,
+            family: Some("codex"),
+            expected_engine: ExpectedEngine::Remote,
         };
         let mut fixture = fixture(&case).await;
         fixture.b.config.api_backend = ApiBackend::Responses;
@@ -4491,6 +4556,8 @@ mod binding_tests {
                         admitted,
                         session_token: false,
                         remote: false,
+                        family: None,
+                        expected_engine: ExpectedEngine::Local,
                     },
                     two_pass,
                     backend_search,
