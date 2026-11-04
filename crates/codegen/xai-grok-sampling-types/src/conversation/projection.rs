@@ -4271,6 +4271,317 @@ mod tests {
         )
     }
 
+    #[test]
+    fn native_history_continuation_join_validates_only_exact_continuation() {
+        use crate::conversation::native_search_history::*;
+        use crate::conversation::tool_search::ToolSearchItem;
+        use std::collections::BTreeMap;
+        let make = || {
+            let mut fixture = u5_mixed_fixture();
+            fixture.source.responses[0].source_stop_reason = Some("tool_use".into());
+            assert!(fixture.ledger.lifecycle.terminal.is_empty());
+            let mut binding = fixture.source.producing_bindings[0].clone();
+            binding.request = "r2".into();
+            binding.origin_ref = fixture.put(
+                "producing_binding",
+                &serde_json::json!({
+                "request":binding.request,"generation":binding.generation,"origin":binding.origin}),
+            );
+            fixture.source.producing_bindings.push(binding.clone());
+            let produced = U4Fixture::produced();
+            let mut result = produced.source.ordered_blocks[1].clone();
+            result.coordinates.producing_binding = binding.request.clone();
+            result.coordinates.occurrence = fixture.source.ordered_blocks.len() as u64;
+            result.coordinates.response = 1;
+            result.coordinates.block = 0;
+            result.wire_index = 0;
+            result.arrival_ordinal = 0;
+            fixture.source.ordered_blocks.push(result.clone());
+            let mut entry = fixture.ledger.accounting[0].clone();
+            entry.source = result.coordinates.clone();
+            fixture.ledger.accounting.push(entry);
+            let mut response = fixture.source.responses[0].clone();
+            response.occurrence = 1;
+            response.request = binding.request.clone();
+            response.lease = 2;
+            response.block_start = result.coordinates.occurrence;
+            response.block_end = result.coordinates.occurrence + 1;
+            response.source_stop_reason = Some("end_turn".into());
+            response.provider_response_id = Some(serde_json::json!("msg_s3l_continuation"));
+            fixture.source.responses.push(response);
+            let NativeIdentityExtension::Revision2 {
+                eligible_member_links: links,
+                eligible_member_accounting: witnesses,
+            } = &produced.identity
+            else {
+                unreachable!()
+            };
+            for (link, witness) in links.iter().zip(witnesses) {
+                let mut link = link.clone();
+                let mut witness = witness.clone();
+                let NativeEligibleMemberIdentity::Backed { eligible_ref } = &link.identity else {
+                    unreachable!()
+                };
+                let mut snapshot: NativeEligibleSnapshot =
+                    serde_json::from_slice(&produced.blobs[&eligible_ref.digest]).unwrap();
+                snapshot.binding = binding.origin_ref.clone();
+                let eligible_ref = fixture.put("eligible_snapshot", &snapshot);
+                fixture.source.eligible_snapshots.push(eligible_ref.clone());
+                let submember = link.source.submember;
+                link.source = result.coordinates.clone();
+                link.source.submember = submember;
+                link.identity = NativeEligibleMemberIdentity::Backed { eligible_ref };
+                witness.source = link.source.clone();
+                let NativeIdentityExtension::Revision2 {
+                    eligible_member_links,
+                    eligible_member_accounting,
+                } = &mut fixture.identity
+                else {
+                    unreachable!()
+                };
+                eligible_member_links.push(link);
+                eligible_member_accounting.push(witness);
+            }
+            fixture
+                .authorship
+                .insert(result.coordinates.occurrence, NativeIdAuthorship::Provider);
+            fixture.ledger.groups[0].members.push(result.coordinates);
+            fixture.ledger.groups[0].state = "Completed".into();
+            let key = fixture.ledger.groups[0].key.clone();
+            fixture
+                .ledger
+                .lifecycle
+                .groups
+                .insert(key, "Completed".into());
+            fixture
+                .ledger
+                .lifecycle
+                .exchanges
+                .insert(binding.request, "Terminal".into());
+            fixture.reseal_shape();
+            fixture
+        };
+        let selected = |f: &U4Fixture| {
+            f.source
+                .ordered_blocks
+                .iter()
+                .map(|b| b.coordinates.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut verdicts = Vec::new();
+        let mut b5_validator = None;
+        for leg in 1..=9 {
+            let mut bad = make();
+            let r1 = bad.source.producing_bindings[0].request.clone();
+            match leg {
+                1 => {
+                    let mut middle = bad.source.producing_bindings[0].clone();
+                    middle.request = "r1b".into();
+                    middle.origin_ref = bad.put("producing_binding", &serde_json::json!({
+                        "request":middle.request,"generation":middle.generation,"origin":middle.origin}));
+                    bad.source.producing_bindings.insert(1, middle);
+                }
+                2 => {
+                    bad.ledger
+                        .lifecycle
+                        .exchanges
+                        .insert(r1.clone(), "Terminal".into());
+                    bad.ledger.lifecycle.terminal.insert(
+                        format!("{r1}:1"),
+                        NativeTerminalMarker {
+                            outcome: NativeUnavailable::Cancelled,
+                            last_accepted_response: Some(0),
+                            observed_bytes: 100,
+                            failed_block: None,
+                        },
+                    );
+                }
+                3 => {
+                    for client in &mut bad.ledger.lifecycle.waiting_clients {
+                        client.delivery = "Unavailable".into();
+                    }
+                }
+                4 => bad.source.responses[0].source_stop_reason = Some("end_turn".into()),
+                5 => {
+                    let mut output = bad.ledger.groups[0].clone();
+                    output.key = "r2:2:1:0".into();
+                    output.origin_ref = bad.source.producing_bindings[1].origin_ref.clone();
+                    output.members = vec![bad.source.ordered_blocks[3].coordinates.clone()];
+                    output.state = "AbandonedPending".into();
+                    bad.ledger.groups[0].members.truncate(1);
+                    bad.ledger.groups[0].state = "LivePending".into();
+                    let lifecycle = &mut bad.ledger.lifecycle;
+                    lifecycle
+                        .groups
+                        .insert(bad.ledger.groups[0].key.clone(), "LivePending".into());
+                    lifecycle
+                        .groups
+                        .insert(output.key.clone(), output.state.clone());
+                    bad.ledger.groups.push(output);
+                    lifecycle.terminal.insert(
+                        "r2:1".into(),
+                        NativeTerminalMarker {
+                            outcome: NativeUnavailable::Incomplete,
+                            last_accepted_response: Some(1),
+                            observed_bytes: 100,
+                            failed_block: None,
+                        },
+                    );
+                }
+                6 => {
+                    let mut duplicate = bad.source.ordered_blocks[3].clone();
+                    duplicate.coordinates.occurrence = 4;
+                    duplicate.coordinates.block = 1;
+                    duplicate.wire_index = 1;
+                    duplicate.arrival_ordinal = 1;
+                    let mut entry = bad.ledger.accounting[3].clone();
+                    entry.source = duplicate.coordinates.clone();
+                    bad.ledger.accounting.push(entry);
+                    bad.ledger.groups[0]
+                        .members
+                        .push(duplicate.coordinates.clone());
+                    bad.source.ordered_blocks.push(duplicate);
+                    bad.source.responses[1].block_end = 5;
+                    bad.authorship.insert(4, NativeIdAuthorship::Provider);
+                }
+                7 | 8 => {
+                    for (index, request, response) in [(0, "r2".to_owned(), 1), (3, r1, 0)] {
+                        let coordinate = &mut bad.source.ordered_blocks[index].coordinates;
+                        coordinate.producing_binding = request;
+                        coordinate.response = response;
+                        bad.ledger.accounting[index].source = coordinate.clone();
+                    }
+                    bad.ledger.groups[0].members = [0, 3]
+                        .map(|index| bad.source.ordered_blocks[index].coordinates.clone())
+                        .into();
+                    let NativeIdentityExtension::Revision2 {
+                        eligible_member_links,
+                        eligible_member_accounting,
+                    } = &mut bad.identity
+                    else {
+                        unreachable!()
+                    };
+                    for (link, witness) in eligible_member_links
+                        .iter_mut()
+                        .zip(eligible_member_accounting)
+                    {
+                        if link.source.occurrence == 3 {
+                            let submember = link.source.submember.unwrap();
+                            link.source = bad.source.ordered_blocks[3].coordinates.clone();
+                            link.source.submember = Some(submember);
+                            link.identity = NativeEligibleMemberIdentity::Backed {
+                                eligible_ref: bad.source.eligible_snapshots[submember as usize]
+                                    .clone(),
+                            };
+                            witness.source = link.source.clone();
+                        }
+                    }
+                    if leg == 8 {
+                        bad.ledger.groups[0].origin_ref =
+                            bad.source.producing_bindings[1].origin_ref.clone();
+                    }
+                }
+                9 => bad.ledger.groups[0].family = "Responses".into(),
+                _ => unreachable!(),
+            }
+            bad.reseal_shape();
+            if leg == 5 {
+                let raw = bad
+                    .source
+                    .ordered_blocks
+                    .iter()
+                    .filter_map(|block| {
+                        let value =
+                            serde_json::from_slice(&bad.blobs[&block.block.digest]).unwrap();
+                        ToolSearchItem::from_wire(value)
+                            .ok()
+                            .map(|item| (block.coordinates.occurrence, item))
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let domains = bad
+                    .ledger
+                    .groups
+                    .iter()
+                    .map(|group| {
+                        (
+                            group.origin_ref.digest.clone(),
+                            u4_domain("u5-model", ApiBackend::Messages),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let same_domain = |left: &NativeBlobRef, right: &NativeBlobRef| {
+                    left == right
+                        || domains
+                            .get(&left.digest)
+                            .zip(domains.get(&right.digest))
+                            .is_some_and(|(left, right)| {
+                                left.complete() && right.complete() && left == right
+                            })
+                };
+                b5_validator = Some(
+                    native_validate_groups(
+                        &bad.source,
+                        &bad.ledger,
+                        &raw,
+                        &bad.authorship,
+                        same_domain,
+                    )
+                    .map(|_| ()),
+                );
+            }
+            verdicts.push(u5_selected(&bad, &selected(&bad), &Default::default()).map(|_| ()));
+        }
+        assert_eq!(
+            (b5_validator.unwrap(), verdicts[4]),
+            (
+                Err(NativeUnavailable::InvalidReference),
+                Err(NativeUnavailable::InvalidReference)
+            ),
+            "T-2 b5 (i), (ii) validator and preparer refuse the result-only group"
+        );
+        assert_eq!(
+            verdicts,
+            vec![Err(NativeUnavailable::InvalidReference); 9],
+            "T-2 b1-b9 structural refusals"
+        );
+        let fixture = make();
+        let all = selected(&fixture);
+        let kept = u5_selected(&fixture, &all, &Default::default())
+            .expect("T-2 (a) the adjacent complete continuation validates");
+        let target = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+        let from = origin(Boundary::Vertex, None);
+        let mut qualified = u4_qualification(&U4Fixture::produced(), "u5-model", &target, &from);
+        qualified.receipt = None;
+        let demoted = u4_prepare(&fixture, "u5-model", &target, &from, qualified)
+            .expect("T-2 (a) production-shaped qualification decides the joined group");
+        for (decision, action) in [
+            (kept, NativeHistoryAction::Keep),
+            (demoted, NativeHistoryAction::F),
+        ] {
+            assert_eq!(
+                decision.groups,
+                vec![NativeGroupDecision {
+                    key: fixture.ledger.groups[0].key.clone(),
+                    action,
+                    members: fixture.ledger.groups[0].members.clone(),
+                    waiting_clients: Vec::new(),
+                }]
+            );
+            assert_eq!(
+                decision
+                    .members
+                    .iter()
+                    .map(|member| (member.source.clone(), member.action, member.raw.is_some()))
+                    .collect::<Vec<_>>(),
+                fixture.ledger.groups[0]
+                    .members
+                    .iter()
+                    .map(|source| (source.clone(), action, action == NativeHistoryAction::Keep))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
     fn u5_two_genuine_fixture() -> U4Fixture {
         use crate::conversation::native_search_history::*;
         let mut fixture = U4Fixture::produced();

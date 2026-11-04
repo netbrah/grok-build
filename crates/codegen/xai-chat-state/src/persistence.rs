@@ -2079,6 +2079,7 @@ pub mod native {
         lease: &NativeCaptureLease,
         attempts: &[Arc<NativeAttemptEvidence>],
         publication: NativePrimaryPublication,
+        joins: &BTreeMap<(u64, usize), String>,
     ) -> Result<bool, NativeUnavailable> {
         let v3 = previous.is_some_and(|previous| previous.record.schema_version == 3)
             || attempts
@@ -2208,10 +2209,11 @@ pub mod native {
                 }
             }
             NativeResource::ResponseBytes.admit(raw_bytes, bytes)?;
-            let abandoned = xai_grok_sampling_types::tool_search::call_id_groups(&discoveries).iter().any(|group|
-                !(group.iter().any(|index| discoveries[*index].kind() == xai_grok_sampling_types::tool_search::ToolSearchKind::ServerToolUse)
-                    && group.iter().any(|index| discoveries[*index].kind() == xai_grok_sampling_types::tool_search::ToolSearchKind::ToolSearchToolResult)
-                    || attempt.status == NativeResponseStatus::Accepted && attempt.source_stop_reason.as_deref() == Some("tool_use")));
+            let abandoned = xai_grok_sampling_types::tool_search::call_id_groups(&discoveries).iter().enumerate().any(|(ordinal, group)|
+                !joins.contains_key(&(attempt.attempt, ordinal))
+                    && !(group.iter().any(|index| discoveries[*index].kind() == xai_grok_sampling_types::tool_search::ToolSearchKind::ServerToolUse)
+                        && group.iter().any(|index| discoveries[*index].kind() == xai_grok_sampling_types::tool_search::ToolSearchKind::ToolSearchToolResult)
+                        || attempt.status == NativeResponseStatus::Accepted && attempt.source_stop_reason.as_deref() == Some("tool_use")));
             if matches!(attempt.status, NativeResponseStatus::PartialTerminal(_)) || abandoned {
                 members = NativeResource::LedgerMembers.admit(members, 1)?;
             }
@@ -3147,7 +3149,96 @@ pub mod native {
                     return Err(NativeUnavailable::StaleHistory);
                 }
             }
-            let messages_v3 = messages_preflight(previous, lease, attempts, publication)?;
+            fn continuation_join_plan(
+                previous: Option<&NativeCheckpoint>,
+                lease: &NativeCaptureLease,
+                attempts: &[Arc<NativeAttemptEvidence>],
+                items: &[ConversationItem],
+            ) -> BTreeMap<(u64, usize), String> {
+                use xai_grok_sampling_types::tool_search::{
+                    ToolSearchItem, ToolSearchKind, call_id_groups,
+                };
+                let Some(previous) = previous else {
+                    return BTreeMap::new();
+                };
+                let source = &previous.source;
+                let ledger = &previous.ledger;
+                let blobs = &previous.blobs;
+                use serde_json::Value;
+                let bindings = &source.producing_bindings;
+                let position = bindings
+                    .iter()
+                    .position(|binding| binding.request == lease.request())
+                    .unwrap_or(bindings.len());
+                let Some(origin) = bindings[..position].last() else {
+                    return BTreeMap::new();
+                };
+                if !native_results_continuation(source, ledger, items, origin) {
+                    return BTreeMap::new();
+                }
+                let mut plan = BTreeMap::new();
+                for attempt in attempts {
+                    if attempt.status != NativeResponseStatus::Accepted
+                        || !attempt.stream_complete
+                        || !attempt.admitted
+                        || !attempt.response_started
+                        || ledger.observations.iter().any(|old| {
+                            old.request == lease.request()
+                                && old.lease == lease.ordinal()
+                                && old.attempt == attempt.attempt
+                        })
+                    {
+                        continue;
+                    }
+                    let (discoveries, closed): (Vec<_>, Vec<_>) = attempt
+                        .blocks
+                        .iter()
+                        .filter_map(|block| {
+                            let raw = serde_json::from_str(&block.raw).ok()?;
+                            let item = ToolSearchItem::from_wire(raw).ok()?;
+                            Some((item, block.state == NativeBlockState::ClosedFaithful))
+                        })
+                        .unzip();
+                    for (ordinal, group) in call_id_groups(&discoveries).into_iter().enumerate() {
+                        let [index] = group.as_slice() else { continue };
+                        let item = &discoveries[*index];
+                        if item.kind() != ToolSearchKind::ToolSearchToolResult || !closed[*index] {
+                            continue;
+                        }
+                        let Some(id) = item.call_id() else { continue };
+                        let mut targets = ledger.groups.iter().filter_map(|target| {
+                            let [call] = target.members.as_slice() else {
+                                return None;
+                            };
+                            let block = source.ordered_blocks.get(call.occurrence as usize)?;
+                            let response = source.responses.get(call.response as usize)?;
+                            let raw: Value =
+                                serde_json::from_slice(blobs.get(&block.block.digest)?).ok()?;
+                            let key = format!("{}:{}", origin.request, response.attempt);
+                            (target.origin_ref == origin.origin_ref
+                                && target.family == "Messages"
+                                && target.execution == "server"
+                                && target.state == "LivePending"
+                                && ledger.lifecycle.groups.get(&target.key) == Some(&target.state)
+                                && target.validated_join.as_deref() == Some(id)
+                                && call.producing_binding == origin.request
+                                && raw["type"] == "server_tool_use"
+                                && raw["id"].as_str() == Some(id)
+                                && !ledger.lifecycle.terminal.contains_key(&key))
+                            .then_some(target)
+                        });
+                        let (Some(target), None) = (targets.next(), targets.next()) else {
+                            continue;
+                        };
+                        if !plan.values().any(|key| key == &target.key) {
+                            plan.insert((attempt.attempt, ordinal), target.key.clone());
+                        }
+                    }
+                }
+                plan
+            }
+            let joins = continuation_join_plan(previous, lease, attempts, items);
+            let messages_v3 = messages_preflight(previous, lease, attempts, publication, &joins)?;
             let mut blobs = previous.map_or_else(BTreeMap::new, |p| p.blobs.clone());
             let mut blob_kinds = previous.map_or_else(BTreeMap::new, |p| p.blob_kinds.clone());
             let mut source = previous.map_or_else(
@@ -3632,6 +3723,20 @@ pub mod native {
                         .iter()
                         .map(|i| discovery_coordinates[*i].clone())
                         .collect();
+                    if let Some(key) = joins.get(&(attempt.attempt, ordinal)) {
+                        let target = ledger
+                            .groups
+                            .iter_mut()
+                            .find(|target| &target.key == key)
+                            .ok_or(NativeUnavailable::InvalidReference)?;
+                        target.members.extend(members);
+                        target.state = "Completed".into();
+                        ledger
+                            .lifecycle
+                            .groups
+                            .insert(key.clone(), "Completed".into());
+                        continue;
+                    }
                     let completed = group.iter().any(|i| discoveries[*i].kind() == xai_grok_sampling_types::tool_search::ToolSearchKind::ServerToolUse)
                         && group.iter().any(|i| discoveries[*i].kind() == xai_grok_sampling_types::tool_search::ToolSearchKind::ToolSearchToolResult);
                     let state = if completed {

@@ -11585,6 +11585,7 @@ async fn owning_primary_tool_bearing_plan_derives_declaration_identities() {
 #[derive(Clone, Copy)]
 enum S3fContinuation {
     Text,
+    ResultFirst,
     NoResponse,
     /// A sent continuation gets a non-retryable 400, so the twin's turn ends without an assistant item.
     Refused,
@@ -11633,6 +11634,22 @@ async fn s3f_live_pending_handoff(continuation: S3fContinuation) -> S3fPendingHa
                 json!({"type":"message_start","message":{"id":"msg_s3f_continuation","type":"message","role":"assistant","model":"u5a","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
                 json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"S3F continuation complete"}}),
                 json!({"type":"content_block_stop","index":0}),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":11,"output_tokens":2}}),
+                json!({"type":"message_stop"}),
+            ]));
+        }
+        S3fContinuation::ResultFirst => {
+            let result = u5a_frames("tool_use", 1)
+                .into_iter()
+                .find(|frame| frame["type"] == "content_block_start" && frame["index"] == 1)
+                .unwrap()["content_block"]
+                .clone();
+            server.enqueue_response("/v1/messages", native_history_script(vec![
+                json!({"type":"message_start","message":{"id":"msg_s3l_continuation","type":"message","role":"assistant","model":"u5a","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
+                json!({"type":"content_block_start","index":0,"content_block":result}),
+                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":"S3L continuation complete"}}),
+                json!({"type":"content_block_stop","index":1}),
                 json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":11,"output_tokens":2}}),
                 json!({"type":"message_stop"}),
             ]));
@@ -13413,4 +13430,134 @@ fn mss_u4_protected_metadata_same_occurrence_survives_disk_and_logs() {
         );
     }
     println!("MSS_U4_CHILD_ASSERTIONS_PASSED");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn split_server_result_after_results_continuation_completes_live_group() {
+    use crate::session::storage::StorageAdapter;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    use xai_grok_sampling_types::conversation::projection::{
+        Boundary, DiscoveryOrigin, NativeHistoryAction, NativeProjectionInputs, NativePureHistory,
+        TargetRoute,
+    };
+    tokio::task::LocalSet::new().run_until(async {
+        let mut handoff = s3f_live_pending_handoff(S3fContinuation::ResultFirst).await;
+        let session = &mut handoff.session;
+        assert!(handoff.outcome.is_ok(), "H-1 (a) result-first continuation completes");
+        assert_eq!(session.executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(handoff.server.messages_request_count(), 3);
+        tokio::time::timeout(NATIVE_TIMEOUT, session.source_acks.recv()).await.unwrap()
+            .expect("H-1 (b) response 2 receives a source ACK");
+        assert!(session.source_acks.try_recv().is_err(), "H-1 (b) exactly one further ACK");
+        let live = session.actor.chat_state_handle.read_native_history().await.unwrap()
+            .checkpoint.expect("H-1 response 2 is captured");
+        let captured = handoff.source_after_capture.as_ref().expect("H-1 response 1 captured");
+        let r1 = captured.producing_bindings.last().unwrap();
+        let position = live.source.producing_bindings.iter().position(|b| b.request == r1.request).unwrap();
+        let r2 = &live.source.producing_bindings[position + 1];
+        assert_eq!(live.source.producing_bindings.last(), Some(r2));
+        let before = session.projection_attempts.lock().unwrap().iter()
+            .find(|write| write.checkpoint.source.producing_bindings.last() == Some(r1))
+            .expect("H-1 has the real response-1 compound checkpoint").checkpoint.clone();
+        let result = live.source.ordered_blocks.iter().find(|block| {
+            block.coordinates.producing_binding == r2.request && {
+                let raw: Value = serde_json::from_slice(&live.blobs[&block.block.digest]).unwrap();
+                raw["type"] == "tool_search_tool_result" && raw["tool_use_id"] == "srvtoolu_u5a"
+            }
+        }).expect("H-1 response 2 begins with the matching server result");
+        assert_eq!(result.coordinates.block, 0);
+        let history = session.actor.chat_state_handle.get_conversation().await;
+        let capture_end = result.coordinates.item as usize;
+        let capture_start = history[..capture_end].iter().rposition(|item| matches!(item,
+            ConversationItem::Assistant(_) | ConversationItem::BackendToolCall(_)
+                | ConversationItem::Reasoning(_) | ConversationItem::Discovery { .. }))
+            .map_or(0, |index| index + 1);
+        let tail = &history[capture_start..capture_end];
+        assert!(matches!(tail, [ConversationItem::ToolResult(result)] if result.tool_call_id == "toolu_u5a_0"),
+            "H-1 exact capture-time input is the executed client result");
+        let mut expected = before.ledger.groups.clone();
+        let group_index = expected.iter().position(|group| group.origin_ref == r1.origin_ref
+            && group.validated_join.as_deref() == Some("srvtoolu_u5a")).unwrap();
+        let key = expected[group_index].key.clone();
+        expected[group_index].members.push(result.coordinates.clone());
+        expected[group_index].state = "Completed".into();
+        let expected_lifecycle = expected.iter().map(|group| (group.key.clone(), group.state.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+            session.directory.path().to_path_buf());
+        let full = adapter.load_session(&session.actor.session_info).await.unwrap();
+        let light = adapter.load_session_without_updates(&session.actor.session_info).await.unwrap();
+        assert_eq!(serde_json::to_value(&full.chat_history).unwrap(), serde_json::to_value(&light.chat_history).unwrap(),
+            "H-1 (d) full and light reload agree");
+        let disk = adapter.read_native_history(&session.actor.session_info).await.unwrap().checkpoint.unwrap();
+        assert_eq!(disk.record, live.record, "H-1 (d) disk and live records agree");
+        assert_eq!(disk.source, live.source);
+        disk.matches_history(&full.chat_history).unwrap();
+        let selected = disk.source.ordered_blocks.iter().map(|block| block.coordinates.clone()).collect::<Vec<_>>();
+        let authorship = disk.source.ordered_blocks.iter().map(|block| (block.coordinates.occurrence, NativeIdAuthorship::Provider))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let admission = xai_grok_sampling_types::SearchAdmission { supports_search_tool: true, has_searchable_tools: true };
+        let route = TargetRoute::new(xai_grok_sampling_types::ApiBackend::Messages, Boundary::Vertex, admission);
+        let domain = NativeReplayDomain { backend: xai_grok_sampling_types::ApiBackend::Messages,
+            dialect: NativeReplayDialect::Messages, model: "u5a".into(), row: "u5a".into(), provider: "offline".into(),
+            deployment: "loopback".into(), deployment_revision: "1".into(), endpoint: format!("{}/messages", handoff.server.url()),
+            principal: "nonsecret-fixture".into() };
+        let core = prepare_native_history_core(&NativePureHistory { record: &disk.record, source: &disk.source,
+            ledger: &disk.ledger, identity: &disk.identity, blobs: &disk.blobs, authorship: &authorship },
+            &NativeProjectionInputs { target_model_id: "u5a", target: &route, tools: &[], current: None,
+                selected: &selected, origin_domains: &Default::default(), pending: &Default::default(), prior_f: None },
+            |group| (DiscoveryOrigin { boundary: Boundary::Vertex, owner_model_id: None }, NativeQualification {
+                source: None, target: Some(domain.clone()), request: Some(domain.clone()), original_admission: admission,
+                shape: NativeReplayShape { family: NativeReplayFamily::MessagesServer, keyless_server: group.keyless_server_fifo,
+                    output_id_present: false, completed: true, result_error: false, referenced_members: 0 },
+                receipt: None, intact_membership: true, current_backing: false, faithful_identity: false }));
+        let core_reason = core.as_ref().err().map(|error| error.reason);
+        session.actor.chat_state_handle.push_user_message_and_ack(ConversationItem::user("one later Selected turn")).await;
+        handoff.server.enqueue_response("/v1/messages", native_history_script(vec![
+            json!({"type":"message_start","message":{"id":"msg_s3l_later","type":"message","role":"assistant","model":"u5a","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"S3L later turn complete"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":11,"output_tokens":2}}),
+            json!({"type":"message_stop"}),
+        ]));
+        session.release_decision.add_permits(1);
+        session.actor.session_turn_active.store(true, std::sync::atomic::Ordering::SeqCst);
+        let later = super::switch_projection::HISTORY_S3_TEST_DOMAIN.scope(domain,
+            super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(NativeHistoryRequirement::Selected,
+                session.actor.process_conversation_turn_with_recovery("S3L-later", None, None, None,
+                    &mut length_salvage::LengthSalvage::new(None), &mut Default::default()))).await;
+        session.actor.session_turn_active.store(false, std::sync::atomic::Ordering::SeqCst);
+        let refusal = later.as_ref().err().map(|error| error.data.as_ref().and_then(|data| data.get("message"))
+            .and_then(Value::as_str).unwrap_or_else(|| error.message.as_ref()).to_owned());
+        let (respond_to, flushed) = tokio::sync::oneshot::channel();
+        session.chat_proxy.send(PersistenceMsg::FlushAndAck { respond_to }).unwrap();
+        flushed.await.unwrap().unwrap();
+        let after = session.actor.chat_state_handle.read_native_history().await.unwrap().checkpoint.unwrap();
+        let terminal_keys = live.ledger.lifecycle.terminal.keys().filter(|name| name.starts_with(&format!("{}:", r2.request)))
+            .cloned().collect::<Vec<_>>();
+        assert_eq!((live.ledger.groups.clone(), core_reason, later.is_ok(), refusal, handoff.server.messages_request_count()),
+            (expected.clone(), None, true, None, 4), "H-1 (c), (e), (f) capture, reloaded core, and next Selected request agree");
+        assert_eq!(live.ledger.lifecycle.groups, expected_lifecycle);
+        assert_eq!(live.ledger.lifecycle.exchanges.get(&r2.request).map(String::as_str), Some("Terminal"));
+        assert!(terminal_keys.is_empty(), "H-1 (c) a joined result writes no terminal marker");
+        assert_eq!(live.ledger.lifecycle.exchanges.get(&r1.request).map(String::as_str), Some("LiveBound"));
+        assert!(live.ledger.lifecycle.waiting_clients.iter().any(|client| client.source.producing_binding == r1.request
+            && client.client_id == "toolu_u5a_0" && client.delivery == "Waiting"));
+        let core = core.expect("H-1 (e) the real reloaded core accepts the joined group");
+        assert_eq!(core.decision.groups.len(), live.ledger.groups.len());
+        let decision = core.decision.groups.iter().find(|group| group.key == key).unwrap();
+        assert_eq!(decision.members, expected[group_index].members);
+        assert_eq!(decision.action, NativeHistoryAction::F);
+        assert_eq!(after.active.dispositions.get(&key).map(String::as_str), Some("F"));
+        fn carries_server_id(value: &Value) -> bool {
+            match value {
+                Value::Object(fields) => fields.get("id").or_else(|| fields.get("tool_use_id"))
+                    .and_then(Value::as_str) == Some("srvtoolu_u5a") || fields.values().any(carries_server_id),
+                Value::Array(values) => values.iter().any(carries_server_id),
+                _ => false,
+            }
+        }
+        let bodies = handoff.server.request_bodies();
+        assert!(!carries_server_id(bodies.last().unwrap()), "H-1 (f) F removes both native halves from request 4");
+    }).await;
 }

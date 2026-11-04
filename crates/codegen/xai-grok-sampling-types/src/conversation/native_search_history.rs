@@ -532,6 +532,51 @@ pub fn native_pending_context(
     NativePendingContext { live_binding, next }
 }
 
+/// Checks the exact results tail for an explicit live producing binding.
+pub fn native_results_continuation(
+    source: &NativeSource,
+    ledger: &NativeLedger,
+    items: &[super::ConversationItem],
+    origin: &NativeProducingBinding,
+) -> bool {
+    use super::ConversationItem;
+    if !source.producing_bindings.contains(origin)
+        || ledger
+            .lifecycle
+            .exchanges
+            .get(&origin.request)
+            .map(String::as_str)
+            != Some("LiveBound")
+    {
+        return false;
+    }
+    let mut waiting = std::collections::BTreeSet::new();
+    for client in ledger.lifecycle.waiting_clients.iter().filter(|client| {
+        client.source.producing_binding == origin.request && client.delivery == "Waiting"
+    }) {
+        if client.client_id.is_empty() || !waiting.insert(client.client_id.as_str()) {
+            return false;
+        }
+    }
+    let start = items
+        .iter()
+        .rposition(|item| {
+            matches!(
+                item,
+                ConversationItem::Assistant(_)
+                    | ConversationItem::BackendToolCall(_)
+                    | ConversationItem::Reasoning(_)
+                    | ConversationItem::Discovery { .. }
+            )
+        })
+        .map_or(0, |index| index + 1);
+    let mut delivered = std::collections::BTreeSet::new();
+    !waiting.is_empty()
+        && items[start..].iter().all(|item| matches!(item, ConversationItem::ToolResult(result)
+            if waiting.contains(result.tool_call_id.as_str()) && delivered.insert(result.tool_call_id.as_str())))
+        && delivered == waiting
+}
+
 pub(super) fn native_completed_action(
     whole_view: bool,
     previous: Option<&str>,
@@ -619,7 +664,10 @@ pub(super) fn native_validate_groups(
                 .iter()
                 .filter(|binding| binding.request == coordinate.producing_binding)
                 .collect();
-            if binding.len() != 1 || !same_domain(&record.origin_ref, &binding[0].origin_ref) {
+            if binding.len() != 1
+                || !same_domain(&record.origin_ref, &binding[0].origin_ref)
+                    && !native_continuation_member(source, ledger, record, coordinate, raw)
+            {
                 return Err(NativeUnavailable::InvalidReference);
             }
             let item = raw
@@ -731,6 +779,77 @@ pub(super) fn native_validate_groups(
         }
     }
     Ok(groups)
+}
+
+fn native_continuation_member(
+    source: &NativeSource,
+    ledger: &NativeLedger,
+    record: &NativeGroupRecord,
+    member: &NativeSourceCoordinate,
+    raw: &BTreeMap<u64, super::tool_search::ToolSearchItem>,
+) -> bool {
+    use super::tool_search::ToolSearchKind::{ServerToolUse, ToolSearchToolResult};
+    let Some(first) = record.members.first() else {
+        return false;
+    };
+    if record.family != "Messages"
+        || record.execution != "server"
+        || record.state != "Completed"
+        || first == member
+        || raw
+            .get(&member.occurrence)
+            .is_none_or(|item| item.kind() != ToolSearchToolResult)
+        || raw
+            .get(&first.occurrence)
+            .is_none_or(|item| item.kind() != ServerToolUse)
+    {
+        return false;
+    }
+    let mut origins = source
+        .producing_bindings
+        .iter()
+        .enumerate()
+        .filter(|(_, binding)| binding.origin_ref == record.origin_ref);
+    let (Some((index, origin)), None) = (origins.next(), origins.next()) else {
+        return false;
+    };
+    if first.producing_binding != origin.request
+        || source
+            .producing_bindings
+            .get(index + 1)
+            .is_none_or(|binding| binding.request != member.producing_binding)
+    {
+        return false;
+    }
+    let (Some(call), Some(result)) = (
+        source
+            .responses
+            .iter()
+            .find(|r| r.occurrence == first.response),
+        source
+            .responses
+            .iter()
+            .find(|r| r.occurrence == member.response),
+    ) else {
+        return false;
+    };
+    ledger
+        .lifecycle
+        .exchanges
+        .get(&origin.request)
+        .is_some_and(|state| state == "LiveBound")
+        && call.request == origin.request
+        && (call.status, call.stream_complete) == (NativeResponseStatus::Accepted, true)
+        && call.source_stop_reason.as_deref() == Some("tool_use")
+        && !ledger
+            .lifecycle
+            .terminal
+            .contains_key(&format!("{}:{}", origin.request, call.attempt))
+        && ledger.lifecycle.waiting_clients.iter().any(|client| {
+            client.source.producing_binding == origin.request && client.delivery == "Waiting"
+        })
+        && result.request == member.producing_binding
+        && (result.status, result.stream_complete) == (NativeResponseStatus::Accepted, true)
 }
 
 pub(super) fn native_pending_action(
@@ -8201,6 +8320,142 @@ mod tests {
             waiting.as_ref().err(),
             Some(&NativePlanRefusal::InvalidQualification),
             "F4 T (b) AwaitResults remains zero-submission"
+        );
+    }
+
+    #[test]
+    fn native_results_continuation_requires_exact_results() {
+        let plan = s3f_pending_plan_candidate(NativeGroupState::LivePending, NativeNextInput::Results {
+        messages: vec![json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s3f","content":"result"}]})],
+        client_outputs: Vec::new(),
+    }).unwrap();
+        let (ledger, _) = serde_json::from_slice::<NativeLedgerV2>(&plan.ledger_bytes)
+            .unwrap()
+            .into_parts();
+        let record = &ledger.groups[0];
+        let coordinate = record.members[0].clone();
+        let origin = NativeProducingBinding {
+            request: coordinate.producing_binding.clone(),
+            generation: Some(1),
+            origin: json!({"status":"Unknown"}),
+            origin_ref: record.origin_ref.clone(),
+        };
+        let source = NativeSource {
+            schema_version: 2,
+            lineage: coordinate.lineage.clone(),
+            source_revision: 1,
+            producing_bindings: vec![origin.clone()],
+            responses: vec![NativeResponseBoundary {
+                occurrence: coordinate.response,
+                request: origin.request.clone(),
+                lease: 1,
+                attempt: 1,
+                continuation: 0,
+                provider_response_id: Some(json!("msg_s3f")),
+                source_stop_reason: Some("tool_use".into()),
+                block_start: 0,
+                block_end: 2,
+                stream_complete: true,
+                status: NativeResponseStatus::Accepted,
+            }],
+            ordered_blocks: Vec::new(),
+            eligible_snapshots: Vec::new(),
+            older_sources: Vec::new(),
+        };
+        let item = super::super::tool_search::ToolSearchItem::from_wire(
+        json!({"type":"server_tool_use","id":"srvtoolu_s3f","name":"tool_search_tool_regex","input":{"query":"lookup"}})).unwrap();
+        let shape = native_item_shape(&item, NativeIdAuthorship::Provider).unwrap();
+        let group = NativeValidatedGroup {
+            record: record.clone(),
+            state: NativeGroupState::LivePending,
+            primary: vec![(coordinate, item, shape)],
+            accepted: true,
+        };
+        let c1 = ledger.lifecycle.waiting_clients[0].client_id.clone();
+        let result = |id: &str| ConversationItem::tool_result(id, "bounded result");
+        let mut two = ledger.clone();
+        let mut client = two.lifecycle.waiting_clients[0].clone();
+        client.client_id = "c2".into();
+        two.lifecycle.waiting_clients.push(client);
+        let mut terminal = ledger.clone();
+        terminal
+            .lifecycle
+            .exchanges
+            .insert(origin.request.clone(), "Terminal".into());
+        let mut absent = source.clone();
+        absent.producing_bindings.clear();
+        let mut empty = ledger.clone();
+        empty.lifecycle.waiting_clients.clear();
+        let mut duplicate_waiting = ledger.clone();
+        duplicate_waiting
+            .lifecycle
+            .waiting_clients
+            .push(duplicate_waiting.lifecycle.waiting_clients[0].clone());
+        let mut empty_id = ledger.clone();
+        empty_id.lifecycle.waiting_clients[0].client_id.clear();
+        let rows = vec![
+            (source.clone(), ledger.clone(), vec![result(&c1)], true),
+            (
+                source.clone(),
+                two.clone(),
+                vec![result("c2"), result(&c1)],
+                true,
+            ),
+            (
+                source.clone(),
+                ledger.clone(),
+                vec![result(&c1), ConversationItem::user("steer")],
+                false,
+            ),
+            (
+                source.clone(),
+                ledger.clone(),
+                vec![ConversationItem::user("steer"), result(&c1)],
+                false,
+            ),
+            (source.clone(), two, vec![result(&c1)], false),
+            (
+                source.clone(),
+                ledger.clone(),
+                vec![result(&c1), result(&c1)],
+                false,
+            ),
+            (source.clone(), ledger.clone(), vec![result("c9")], false),
+            (source.clone(), terminal, vec![result(&c1)], false),
+            (absent, ledger.clone(), vec![result(&c1)], false),
+            (source.clone(), empty, vec![result(&c1)], false),
+            (
+                source.clone(),
+                ledger.clone(),
+                vec![result(&c1), ConversationItem::assistant("assistant-last")],
+                false,
+            ),
+            (source.clone(), duplicate_waiting, vec![result(&c1)], false),
+            (source, empty_id, vec![result("")], false),
+        ];
+        let mut observed = Vec::new();
+        let mut cross_checked = Vec::new();
+        let mut expected = Vec::new();
+        for (source, ledger, tail, verdict) in rows {
+            let mut items = vec![ConversationItem::assistant("live mixed handoff")];
+            items.extend(tail);
+            observed.push(native_results_continuation(
+                &source, &ledger, &items, &origin,
+            ));
+            let pending = native_pending_context(&source, &ledger, &items);
+            cross_checked.push(
+                matches!(native_pending_action(&group, &source, &ledger, &pending),
+            Ok((NativeHistoryAction::ContinueOriginal, waiting)) if !waiting.is_empty()),
+            );
+            expected.push(verdict);
+        }
+        assert_eq!(
+            cross_checked, expected,
+            "T-1 (9) the S3F acceptance cross-check stays below the results-byte limit"
+        );
+        assert_eq!(
+            observed, expected,
+            "T-1 (1-8) exactly one result for each distinct waiting client and nothing else"
         );
     }
 }

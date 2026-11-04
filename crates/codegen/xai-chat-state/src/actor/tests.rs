@@ -11668,3 +11668,537 @@ fn mss_u3_metadata_foreign_key_refuses_at_exact_identity_boundary() {
         );
     }
 }
+
+use crate::persistence::native::{
+    NativeCheckpoint as S3lCheckpoint, NativePrimaryDecision,
+    NativePrimaryPublication as S3lPublication,
+};
+use s3l_history::{NativeCaptureLease as S3lLease, NativeUnavailable as S3lUnavailable};
+use serde_json::{Value as S3lValue, json as s3l_json};
+use xai_grok_sampling_types::conversation::native_search_history as s3l_history;
+use xai_grok_sampling_types::tool_search::ToolSearchItem as S3lItem;
+type S3lAttempt = std::sync::Arc<s3l_history::NativeAttemptEvidence>;
+
+#[derive(Clone, Copy)]
+enum S3lProfile {
+    Legacy,
+    Observed,
+}
+
+fn s3l_output_items(attempt: &s3l_history::NativeAttemptEvidence) -> Vec<ConversationItem> {
+    attempt
+        .blocks
+        .iter()
+        .map(|block| {
+            let raw: S3lValue = serde_json::from_str(&block.raw).unwrap();
+            if let Ok(item) = S3lItem::from_wire(raw.clone()) {
+                ConversationItem::Discovery { item }
+            } else if raw["type"] == "tool_use" {
+                ConversationItem::assistant_tool_calls(vec![
+                    xai_grok_sampling_types::conversation::ToolCall {
+                        id: raw["id"].as_str().unwrap().into(),
+                        name: raw["name"].as_str().unwrap().into(),
+                        arguments: raw["input"].to_string().into(),
+                    },
+                ])
+            } else {
+                ConversationItem::assistant(raw["text"].as_str().unwrap())
+            }
+        })
+        .collect()
+}
+
+fn s3l_attempt(profile: S3lProfile, number: u64, stop: &str, raw: Vec<S3lValue>) -> S3lAttempt {
+    use NativeMessagesPresence::Value as Present;
+    use s3l_history::*;
+    let mut attempt = match profile {
+        S3lProfile::Legacy => u2_native_attempt(number, "S3L".into()),
+        S3lProfile::Observed => mss_u3_observed_attempt(number, 2),
+    };
+    attempt.source_stop_reason = Some(stop.into());
+    if let NativeMessagesCapture::Observed {
+        observations,
+        finalized,
+        ..
+    } = &mut attempt.messages_metadata
+    {
+        observations.last_mut().unwrap().stop_reason = Present(s3l_json!(stop));
+        finalized.stop_reason = Present(s3l_json!(stop));
+    }
+    attempt.blocks = raw
+        .into_iter()
+        .enumerate()
+        .map(|(index, raw)| NativeCapturedBlock {
+            wire_index: index as u32,
+            arrival_ordinal: index as u64,
+            raw: raw.to_string(),
+            partial_json: None,
+            state: NativeBlockState::ClosedFaithful,
+        })
+        .collect();
+    use crate::persistence::native::history_boundary;
+    attempt.view_digests.clear();
+    attempt.view_roles.clear();
+    for (index, item) in s3l_output_items(&attempt).iter().enumerate() {
+        let role = match item {
+            ConversationItem::Discovery { .. } => "Discovery",
+            ConversationItem::Assistant(a) if !a.tool_calls.is_empty() => "Client",
+            _ => "Text",
+        };
+        attempt
+            .view_digests
+            .push(history_boundary(std::slice::from_ref(item)).unwrap().digest);
+        attempt.view_roles.push(Some((index as u64, role.into())));
+    }
+    std::sync::Arc::new(attempt)
+}
+
+fn s3l_lease(request: &str, ordinal: u64) -> S3lLease {
+    use s3l_history::NATIVE_SOURCE_BYTES as BYTES;
+    S3lLease::issue("mock".into(), request.into(), ordinal, ordinal, BYTES)
+}
+
+fn s3l_base(
+    profile: S3lProfile,
+    clients: &[&str],
+) -> (S3lCheckpoint, Vec<ConversationItem>, S3lAttempt) {
+    let mut raw = vec![
+        s3l_json!({"type":"server_tool_use","id":"s1","name":"tool_search_tool_regex","input":{"query":"lookup"}}),
+    ];
+    raw.extend(
+        clients
+            .iter()
+            .map(|id| s3l_json!({"type":"tool_use","id":id,"name":"alpha__lookup","input":{}})),
+    );
+    raw.push(s3l_json!({"type":"text","text":"mixed handoff"}));
+    let attempt = s3l_attempt(profile, 1, "tool_use", raw);
+    let before = S3lCheckpoint::append_with_publication(
+        None,
+        &s3l_lease("r1", 1),
+        std::slice::from_ref(&attempt),
+        &[],
+        None,
+        S3lPublication::Legacy,
+    )
+    .unwrap();
+    let mut items = s3l_output_items(&attempt);
+    items.push(ConversationItem::tool_result("c1", "result"));
+    (before, items, attempt)
+}
+
+fn s3l_result(profile: S3lProfile) -> S3lAttempt {
+    s3l_attempt(
+        profile,
+        1,
+        "end_turn",
+        vec![
+            s3l_json!({"type":"tool_search_tool_result","tool_use_id":"s1","content":{"type":"tool_search_tool_search_result","tool_references":[]}}),
+            s3l_json!({"type":"text","text":"result complete"}),
+        ],
+    )
+}
+
+fn s3l_capture(
+    previous: &S3lCheckpoint,
+    lease: &S3lLease,
+    attempt: &S3lAttempt,
+    items: &[ConversationItem],
+    publication: S3lPublication,
+) -> Result<S3lCheckpoint, S3lUnavailable> {
+    S3lCheckpoint::append_with_publication(
+        Some(previous),
+        lease,
+        std::slice::from_ref(attempt),
+        items,
+        None,
+        publication,
+    )
+}
+
+fn s3l_reseal(mut checkpoint: S3lCheckpoint) -> S3lCheckpoint {
+    use s3l_history::*;
+    if let NativeMessagesMetadataState::Revision3 {
+        messages_response_metadata,
+    } = &checkpoint.messages_metadata
+    {
+        let NativeIdentityExtension::Revision2 {
+            eligible_member_accounting,
+            ..
+        } = &checkpoint.identity
+        else {
+            unreachable!()
+        };
+        let ledger = serde_json::to_value(NativeLedgerV3::from_parts(
+            checkpoint.ledger.clone(),
+            eligible_member_accounting.clone(),
+            messages_response_metadata.clone(),
+        ))
+        .unwrap();
+        checkpoint.record.ledger = u3_put_value(&mut checkpoint, "ledger", &ledger);
+        checkpoint.bytes = serde_json::to_vec(&checkpoint.record).unwrap().into();
+        checkpoint.seal_capacity().unwrap();
+        checkpoint
+    } else {
+        u3_reseal_fixture(checkpoint)
+    }
+}
+
+fn s3l_expected_join(
+    before: &S3lCheckpoint,
+    after: &S3lCheckpoint,
+) -> Vec<s3l_history::NativeGroupRecord> {
+    let mut expected = before.ledger.groups.clone();
+    let group = expected
+        .iter_mut()
+        .find(|g| g.validated_join.as_deref() == Some("s1"))
+        .unwrap();
+    let result = &after.source.ordered_blocks[before.source.ordered_blocks.len()].coordinates;
+    group.members.push(result.clone());
+    group.state = "Completed".into();
+    expected
+}
+
+fn s3l_no_join(
+    before: &S3lCheckpoint,
+    attempt: &S3lAttempt,
+    items: &[ConversationItem],
+    request: &str,
+    leg: &str,
+) {
+    use S3lPublication::Legacy;
+    use s3l_history::NativeResponseStatus::Accepted;
+    use s3l_history::*;
+    let lease = s3l_lease(request, before.source.producing_bindings.len() as u64 + 1);
+    let after = s3l_capture(before, &lease, attempt, items, Legacy).expect(leg);
+    let members = after.source.ordered_blocks[before.source.ordered_blocks.len()..]
+        .iter()
+        .filter(|block| {
+            let raw: S3lValue = serde_json::from_slice(&after.blobs[&block.block.digest]).unwrap();
+            raw["type"] == "tool_search_tool_result"
+        })
+        .map(|block| block.coordinates.clone())
+        .collect::<Vec<_>>();
+    let state = if attempt.status == Accepted
+        && attempt.source_stop_reason.as_deref() == Some("tool_use")
+    {
+        "LivePending"
+    } else {
+        "AbandonedPending"
+    };
+    let key = format!(
+        "{}:{}:{}:0",
+        lease.request(),
+        lease.ordinal(),
+        attempt.attempt
+    );
+    let mut expected = before.ledger.groups.clone();
+    expected.push(serde_json::from_value(s3l_json!({"key":key,"family":"Messages","execution":"server",
+        "origin_ref":after.source.producing_bindings.last().unwrap().origin_ref,"validated_join":"s1","keyless_server_fifo":false,
+        "members":members,"duplicate_observations":[],"state":state})).unwrap());
+    let mut lifecycle = before.ledger.lifecycle.clone();
+    lifecycle.groups.insert(key, state.into());
+    lifecycle.exchanges.insert(
+        request.into(),
+        if state == "LivePending" {
+            "LiveBound"
+        } else {
+            "Terminal"
+        }
+        .into(),
+    );
+    if state == "AbandonedPending" {
+        let last = after
+            .source
+            .responses
+            .iter()
+            .rev()
+            .find(|r| r.status == Accepted)
+            .map(|r| r.occurrence);
+        let reason = if let NativeResponseStatus::PartialTerminal(reason) = attempt.status {
+            reason
+        } else {
+            NativeUnavailable::Incomplete
+        };
+        lifecycle.terminal.insert(format!("{}:{}", lease.request(), attempt.attempt), serde_json::from_value(s3l_json!({"outcome":reason,
+            "last_accepted_response":last,"observed_bytes":attempt.observed_bytes,"failed_block":attempt.failed_block})).unwrap());
+    }
+    assert_eq!(after.ledger.groups, expected, "{leg}: per-attempt groups");
+    assert_eq!(after.ledger.lifecycle, lifecycle, "{leg}: entire lifecycle");
+}
+#[test]
+fn native_capture_joins_continuation_result_to_live_group() {
+    use S3lPublication::{Deferred, Legacy};
+    use s3l_history::*;
+    for profile in [S3lProfile::Legacy, S3lProfile::Observed] {
+        let capture = |base: &S3lCheckpoint,
+                       lease: &S3lLease,
+                       attempt: &S3lAttempt,
+                       items: &[ConversationItem]| {
+            s3l_capture(base, lease, attempt, items, Legacy).unwrap()
+        };
+        let (base, items, r1) = s3l_base(profile, &["c1"]);
+        let result = s3l_result(profile);
+        let joined = capture(&base, &s3l_lease("r2", 2), &result, &items);
+        let mut twin_base = base.clone();
+        twin_base.ledger.lifecycle.waiting_clients[0].delivery = "Unavailable".into();
+        let twin = capture(&s3l_reseal(twin_base), &s3l_lease("r2", 2), &result, &items);
+        let mut provenance = joined.ledger.clone();
+        provenance.groups = twin.ledger.groups.clone();
+        provenance.lifecycle = twin.ledger.lifecycle.clone();
+        assert_eq!(provenance, twin.ledger, "C-1 (a) provenance");
+        assert_eq!(joined.source, twin.source);
+        assert_eq!(joined.identity, twin.identity);
+        assert_eq!(joined.messages_metadata, twin.messages_metadata);
+        for tail in [
+            {
+                let mut tail = items.clone();
+                tail.push(ConversationItem::user("steer"));
+                tail
+            },
+            items[..items.len() - 1].to_vec(),
+        ] {
+            s3l_no_join(&base, &result, &tail, "r2", "C-1 (b) inexact tail");
+        }
+        let (two, missing, _) = s3l_base(profile, &["c1", "c2"]);
+        s3l_no_join(&two, &result, &missing, "r2", "C-1 (b) missing");
+        let r1b = s3l_attempt(
+            profile,
+            1,
+            "tool_use",
+            vec![
+                s3l_json!({"type":"server_tool_use","id":"s2","name":"tool_search_tool_regex","input":{"query":"lookup"}}),
+                s3l_json!({"type":"tool_search_tool_result","tool_use_id":"s2","content":{"type":"tool_search_tool_search_result","tool_references":[]}}),
+                s3l_json!({"type":"tool_use","id":"c2","name":"alpha__lookup","input":{}}),
+            ],
+        );
+        let middle = capture(&base, &s3l_lease("r1b", 2), &r1b, &items);
+        let mut middle_items = items.clone();
+        middle_items.extend(s3l_output_items(&r1b));
+        middle_items.push(ConversationItem::tool_result("c2", "result c2"));
+        s3l_no_join(&middle, &result, &middle_items, "r2", "C-1 (c) adjacency");
+        let r1_lease = s3l_lease("r1", 1);
+        let pending = S3lCheckpoint::append_with_publication(
+            None,
+            &r1_lease,
+            std::slice::from_ref(&r1),
+            &[],
+            None,
+            Deferred,
+        )
+        .unwrap();
+        let intent = pending
+            .pending_primary(&r1_lease, std::slice::from_ref(&r1), &[])
+            .unwrap()
+            .unwrap();
+        let abandoned = pending
+            .resolve_primary(&intent, NativePrimaryDecision::Rejected, &[])
+            .unwrap();
+        s3l_no_join(&abandoned, &result, &items, "r2", "C-1 (d) abandoned");
+        let raw: S3lValue = serde_json::from_str(&result.blocks[0].raw).unwrap();
+        let duplicate = s3l_attempt(profile, 1, "end_turn", vec![raw.clone(), raw]);
+        s3l_no_join(&base, &duplicate, &items, "r2", "C-1 (e) duplicate");
+        if joined.ledger.groups == s3l_expected_join(&base, &joined) {
+            let mut later_items = items.clone();
+            later_items.extend(s3l_output_items(&result));
+            later_items.push(ConversationItem::user("later request"));
+            s3l_no_join(&joined, &result, &later_items, "r3", "C-1 (e) rejoin");
+        }
+        let empty = s3l_attempt(
+            profile,
+            1,
+            "end_turn",
+            vec![s3l_json!({"type":"text","text":"no earlier server call"})],
+        );
+        let prior = s3l_output_items(&empty);
+        let empty = S3lCheckpoint::append_with_publication(
+            None,
+            &s3l_lease("before-call", 1),
+            &[empty],
+            &[],
+            None,
+            Legacy,
+        )
+        .unwrap();
+        s3l_no_join(&empty, &result, &prior, "r2", "C-1 (f) no call");
+        let mut partial = (*result).clone();
+        partial.status = NativeResponseStatus::PartialTerminal(NativeUnavailable::Cancelled);
+        partial.stream_complete = false;
+        if let NativeMessagesCapture::Observed { coverage, .. } = &mut partial.messages_metadata {
+            *coverage = NativeMessagesCoverage::Partial {
+                reason: NativeUnavailable::Cancelled,
+            };
+        }
+        s3l_no_join(
+            &base,
+            &std::sync::Arc::new(partial),
+            &items,
+            "r2",
+            "C-1 (g) partial attempt",
+        );
+        let expected = s3l_expected_join(&base, &joined);
+        assert_eq!(joined.ledger.groups, expected, "C-1 (a) joined group");
+        let mut lifecycle = base.ledger.lifecycle.clone();
+        lifecycle.groups = expected
+            .iter()
+            .map(|g| (g.key.clone(), g.state.clone()))
+            .collect();
+        lifecycle.exchanges.insert("r2".into(), "Terminal".into());
+        assert_eq!(joined.ledger.lifecycle, lifecycle, "C-1 (a) lifecycle");
+    }
+}
+#[test]
+fn native_continuation_join_is_monotonic_across_checkpoints() {
+    use S3lPublication::{Deferred, Legacy};
+    use s3l_history::*;
+    let profile = S3lProfile::Observed;
+    let (base, items, _) = s3l_base(profile, &["c1"]);
+    let result = s3l_result(profile);
+    let lease = s3l_lease("r2", 2);
+    let joined = s3l_capture(&base, &lease, &result, &items, Legacy).unwrap();
+    let expected = s3l_expected_join(&base, &joined);
+    assert_eq!(joined.extends(&base), Ok(()));
+    assert_eq!(joined.validate(), Ok(()));
+    let reread = mss_u3_decode(&joined).unwrap();
+    assert_eq!(reread.ledger.groups, joined.ledger.groups, "C-2 (c) reload");
+    assert_eq!(reread.ledger.lifecycle, joined.ledger.lifecycle);
+    if joined.ledger.groups == expected {
+        let text = s3l_attempt(
+            profile,
+            1,
+            "end_turn",
+            vec![s3l_json!({"type":"text","text":"successor"})],
+        );
+        let mut successor_items = items.clone();
+        successor_items.extend(s3l_output_items(&result));
+        let successor = s3l_capture(
+            &joined,
+            &s3l_lease("r3", 3),
+            &text,
+            &successor_items,
+            Legacy,
+        )
+        .unwrap();
+        for fault in ["reopen", "drop-result", "abandon"] {
+            let mut bad = successor.clone();
+            match fault {
+                "reopen" => bad.ledger.groups[0].state = "LivePending".into(),
+                "drop-result" => {
+                    bad.ledger.groups[0].members.pop();
+                }
+                "abandon" => bad.ledger.groups[0].state = "AbandonedPending".into(),
+                _ => unreachable!(),
+            }
+            bad.ledger.lifecycle.groups.insert(
+                bad.ledger.groups[0].key.clone(),
+                bad.ledger.groups[0].state.clone(),
+            );
+            let bad = s3l_reseal(bad);
+            assert_eq!(
+                bad.extends(&joined),
+                Err(NativeUnavailable::InvalidReference),
+                "C-2 (b) {fault} is refused"
+            );
+        }
+    }
+    let lease = s3l_lease("r2", 2);
+    let pending = s3l_capture(&base, &lease, &result, &items, Deferred).unwrap();
+    let intent = pending
+        .pending_primary(&lease, std::slice::from_ref(&result), &items)
+        .unwrap()
+        .unwrap();
+    let mut committed_items = items.clone();
+    committed_items.extend(s3l_output_items(&result));
+    let rejected = pending
+        .resolve_primary(&intent, NativePrimaryDecision::Rejected, &items)
+        .unwrap();
+    let committed = pending
+        .resolve_primary(&intent, NativePrimaryDecision::Committed, &committed_items)
+        .unwrap();
+    assert_eq!(rejected.validate(), Ok(()));
+    assert_eq!(committed.validate(), Ok(()));
+    assert_eq!(
+        (
+            joined.ledger.groups,
+            rejected.ledger.groups,
+            committed.ledger.groups
+        ),
+        (expected.clone(), expected.clone(), expected),
+        "C-2 (a), (d) completion"
+    );
+    assert_eq!(
+        rejected.ledger.lifecycle.terminal["r2:1"].outcome,
+        NativeUnavailable::Cancelled
+    );
+    assert!(
+        committed
+            .active
+            .view_links
+            .iter()
+            .any(|link| link.source.producing_binding == "r2")
+    );
+}
+#[test]
+fn native_continuation_join_preflight_matches_capture_at_last_fit() {
+    use S3lPublication::Legacy;
+    use s3l_history::*;
+    let seeds = (1..=4)
+        .map(|attempt| std::sync::Arc::new(mss_u3_observed_attempt(attempt, 4000)))
+        .collect::<Vec<_>>();
+    let prefix = S3lCheckpoint::append_with_publication(
+        None,
+        &s3l_lease("seed", 1),
+        &seeds,
+        &[],
+        None,
+        Legacy,
+    )
+    .unwrap();
+    let (_, items, call) = s3l_base(S3lProfile::Observed, &["c1"]);
+    let base = s3l_capture(&prefix, &s3l_lease("r1", 2), &call, &[], Legacy).unwrap();
+    let before = mss_u3_independent_members(&mss_u3_ledger_json(&base));
+    let r = base.record.capacity["ledger_members"] - before;
+    assert_eq!(r, 1, "OD-4 reserves r1's LiveBound call row");
+    let mut result = (*s3l_result(S3lProfile::Observed)).clone();
+    let observations = NATIVE_LEDGER_MEMBERS - before - r - result.blocks.len() as u64 - 2 - 1;
+    result.messages_metadata = mss_u3_observed_attempt(1, observations as usize).messages_metadata;
+    let result = std::sync::Arc::new(result);
+    eprintln!("S3L-C3 before={before} r={r} observations={observations}");
+    let fit = s3l_capture(&base, &s3l_lease("r2", 3), &result, &items, Legacy)
+        .expect("C-3 leg 1 reserved-count last fit must be accepted");
+    let real = mss_u3_independent_members(&mss_u3_ledger_json(&fit));
+    let reserved = fit.record.capacity["ledger_members"];
+    assert_eq!(real, NATIVE_LEDGER_MEMBERS - r, "C-3 leg 1 real count");
+    assert_eq!(reserved, NATIVE_LEDGER_MEMBERS, "C-3 leg 1 reserved count");
+    assert_eq!(fit.ledger.groups, s3l_expected_join(&base, &fit));
+    eprintln!("S3L-C3 leg=1 real={real} reserved={reserved} joined=true");
+    for extra in [1, 2] {
+        let leg = extra + 1;
+        let mut over = (*result).clone();
+        over.messages_metadata =
+            mss_u3_observed_attempt(1, observations as usize + extra).messages_metadata;
+        let over = std::sync::Arc::new(over);
+        let lease = s3l_lease("r2", 3);
+        let charged = lease.charged().unwrap();
+        let refusal = s3l_capture(&base, &lease, &over, &items, Legacy).err();
+        let after = lease.charged().unwrap();
+        eprintln!(
+            "S3L-C3 leg={leg} charged_before={charged} charged_after={after} refusal={refusal:?}"
+        );
+        assert_eq!(
+            refusal,
+            Some(NativeUnavailable::Capacity),
+            "C-3 leg {leg} overflow"
+        );
+        if extra == 1 {
+            assert!(
+                after > charged,
+                "C-3 leg 2 reservation-only overflow charges preflight"
+            );
+        } else {
+            assert_eq!(
+                after, charged,
+                "C-3 leg 3 real overflow refuses before copy"
+            );
+        }
+    }
+}
