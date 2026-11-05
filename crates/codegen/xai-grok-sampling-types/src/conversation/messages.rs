@@ -885,8 +885,56 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     };
     use crate::presence::RequestPresence;
 
-    // D5 stage 1: item-level orphan cleanup, before translation.
-    let items = clean_orphaned_items(&req.items);
+    let native_context = req
+        .native_history
+        .as_ref()
+        .map(crate::request_validation::NativeHistoryRequest::context)
+        .or_else(|| {
+            req.native_bound_preparation
+                .as_ref()
+                .and_then(|prepared| prepared.context())
+        });
+    let native_messages_selected = native_context.is_some_and(|context| {
+        context.requirement() == super::native_search_history::NativeHistoryRequirement::Selected
+            && context.capture().target.backend == crate::ApiBackend::Messages
+            && context.capture().target.dialect == super::projection::NativeReplayDialect::Messages
+            && req.model.as_deref() == Some(context.capture().target.model.as_str())
+            && req.search_admission == Some(context.capture().original_admission)
+    });
+    let mut native_calls = std::collections::BTreeSet::new();
+    let mut native_answers = std::collections::BTreeSet::new();
+    let mut native_invalid_join = false;
+    if native_messages_selected {
+        for retained in &req.items {
+            let ConversationItem::Discovery { item } = retained else {
+                continue;
+            };
+            match item.kind() {
+                tool_search::ToolSearchKind::ServerToolUse => {
+                    native_invalid_join |= item
+                        .id()
+                        .filter(|id| !id.is_empty())
+                        .is_none_or(|id| !native_calls.insert(id.to_owned()));
+                }
+                tool_search::ToolSearchKind::ToolSearchToolResult => {
+                    native_invalid_join |= item
+                        .call_id()
+                        .filter(|id| native_calls.contains(*id))
+                        .is_none_or(|id| !native_answers.insert(id.to_owned()));
+                }
+                tool_search::ToolSearchKind::Call | tool_search::ToolSearchKind::Output => {}
+            }
+        }
+    }
+
+    let native_live_pending =
+        native_messages_selected && native_calls.iter().any(|id| !native_answers.contains(id));
+    // A live handoff must retain every original client obligation for the encoder.
+    let items = if native_live_pending {
+        req.items.clone()
+    } else {
+        clean_orphaned_items(&req.items)
+    };
 
     // D2 Materialise (apex-waj.36 cut 1; SPEC-W2 R-0/R-1/R-5): the /messages
     // wire has no typed discovery item, so the loaded set is replayed as a
@@ -1310,6 +1358,31 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 flush_user(&mut pending_user, &mut messages);
                 pending_user_cm = false;
                 pending_user_class = None;
+                if native_messages_selected
+                    && matches!(
+                        item.kind(),
+                        tool_search::ToolSearchKind::ServerToolUse
+                            | tool_search::ToolSearchKind::ToolSearchToolResult
+                    )
+                {
+                    let raw: Result<ContentBlock, _> = serde_json::from_value(item.raw().clone());
+                    match raw {
+                        Ok(block)
+                            if !native_invalid_join
+                                && serde_json::to_value(&block).ok().as_ref()
+                                    == Some(item.raw()) =>
+                        {
+                            pending_assistant.push(block);
+                        }
+                        _ => {
+                            // The infallible builder exposes malformed raw input to the encoder's refusal gate.
+                            pending_assistant.push(ContentBlock::Unknown {
+                                kind: "invalid native Messages history".into(),
+                            });
+                        }
+                    }
+                    continue;
+                }
                 if no_current_tool_surface {
                     pending_assistant.push(ContentBlock::Text {
                         text: item.text_summary(),
@@ -1477,7 +1550,9 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
 
     // MW-1 D5 stage 3: adjacency cleanup (emptied user and assistant
     // messages are removed).
-    clean_orphaned_blocks_by_adjacency(&mut messages);
+    if !native_live_pending {
+        clean_orphaned_blocks_by_adjacency(&mut messages);
+    }
 
     // MW-2 D2 (leading-assistant repair): post-merge, pre-strip,
     // pre-trailing-repair — run AFTER the adjacency cleanup so a leading

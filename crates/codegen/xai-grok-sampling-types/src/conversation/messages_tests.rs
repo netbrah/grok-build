@@ -7206,3 +7206,703 @@ fn uk0d_tool_bearing_requests_preserve_deferred_contract() {
     assert_eq!(raw, serde_json::to_string(&expected).unwrap());
     uk0d_assert_messages_invariants(&actual);
 }
+
+use super::native_search_history as k2_native;
+use super::projection as k2_projection;
+
+struct K2MessagesFixture {
+    request: ConversationRequest,
+    record: k2_native::NativeSearchHistoryV1,
+    source: k2_native::NativeSource,
+    ledger: k2_native::NativeLedger,
+    identity: k2_native::NativeIdentityExtension,
+    blobs: std::collections::BTreeMap<String, std::sync::Arc<[u8]>>,
+    domain: k2_projection::NativeReplayDomain,
+}
+
+fn k2_put(
+    blobs: &mut std::collections::BTreeMap<String, std::sync::Arc<[u8]>>,
+    kind: &str,
+    value: serde_json::Value,
+) -> k2_native::NativeBlobRef {
+    let bytes = serde_json::to_vec(&value).unwrap();
+    let reference = k2_native::NativeBlobRef {
+        kind: kind.into(),
+        byte_len: bytes.len() as u64,
+        digest: k2_projection::native_content_digest(&bytes),
+    };
+    blobs.insert(reference.digest.clone(), bytes.into());
+    reference
+}
+
+fn k2_messages_fixture(call: serde_json::Value, result: serde_json::Value) -> K2MessagesFixture {
+    use k2_native::*;
+    use serde_json::json;
+    let tools = vec![ToolSpec {
+        name: "alpha__lookup".into(),
+        description: Some("Exact native backing".into()),
+        parameters: json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}),
+        exposure: ToolExposure::Deferred,
+    }];
+    let schema_bytes: std::sync::Arc<[u8]> =
+        serde_json::to_vec(&tools[0].parameters).unwrap().into();
+    let current = NativeEligibleInputs::checked(
+        vec![
+            NativeEligibleEntry::checked(
+                0,
+                NativeNamespaceKind::Mcp,
+                "alpha".into(),
+                "lookup".into(),
+                tools[0].clone(),
+                schema_bytes.clone(),
+                k2_projection::native_content_digest(&schema_bytes),
+            )
+            .unwrap(),
+        ],
+        1,
+    )
+    .unwrap();
+    let raw = [call, result];
+    let items = vec![
+        ConversationItem::user("Find exact records"),
+        ConversationItem::Discovery {
+            item: super::tool_search::ToolSearchItem::from_wire(raw[0].clone()).unwrap(),
+        },
+        ConversationItem::assistant("between native blocks"),
+        ConversationItem::Discovery {
+            item: super::tool_search::ToolSearchItem::from_wire(raw[1].clone()).unwrap(),
+        },
+        ConversationItem::user("Continue with records"),
+    ];
+    let request = ConversationRequest {
+        items,
+        model: Some("k2-native".into()),
+        max_output_tokens: Some(1024),
+        tools,
+        native_eligible_inputs: Some(std::sync::Arc::new(current)),
+        search_admission: Some(crate::SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: true,
+        }),
+        ..Default::default()
+    };
+    let mut blobs = std::collections::BTreeMap::new();
+    let origin = k2_put(
+        &mut blobs,
+        "producing_binding",
+        json!({"request":"k2-A","generation":17,"origin":{"status":"Unknown"}}),
+    );
+    let schema = k2_put(
+        &mut blobs,
+        "eligible_schema",
+        request.tools[0].parameters.clone(),
+    );
+    let eligible = k2_put(
+        &mut blobs,
+        "eligible_snapshot",
+        serde_json::to_value(NativeEligibleSnapshot {
+            version: 1,
+            namespace_kind: NativeNamespaceKind::Mcp,
+            qualified_namespace: "alpha".into(),
+            child_name: "lookup".into(),
+            schema,
+            binding: origin.clone(),
+        })
+        .unwrap(),
+    );
+    let coordinates = |occurrence: u64| NativeSourceCoordinate {
+        lineage: "k2-lineage".into(),
+        producing_binding: "k2-A".into(),
+        turn: 1,
+        item: if occurrence == 0 { 1 } else { 3 },
+        response: 0,
+        block: occurrence,
+        submember: None,
+        occurrence,
+    };
+    let blocks = raw
+        .iter()
+        .enumerate()
+        .map(|(index, block)| NativeRawBlock {
+            coordinates: coordinates(index as u64),
+            wire_index: index as u32,
+            arrival_ordinal: index as u64,
+            block: k2_put(&mut blobs, "raw_block", block.clone()),
+            partial: None,
+            state: NativeBlockState::ClosedFaithful,
+            eligible_ref: None,
+            eligible_unavailable: None,
+        })
+        .collect();
+    let references = native_candidate_references(&raw[1]).unwrap_or_default();
+    let links: Vec<_> = references
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            let mut source = coordinates(1);
+            source.submember = Some(index as u64);
+            NativeEligibleMemberLink {
+                source,
+                identity: NativeEligibleMemberIdentity::Backed {
+                    eligible_ref: eligible.clone(),
+                },
+            }
+        })
+        .collect();
+    let source = NativeSource {
+        schema_version: 2,
+        lineage: "k2-lineage".into(),
+        source_revision: 3,
+        producing_bindings: vec![NativeProducingBinding {
+            request: "k2-A".into(),
+            generation: Some(17),
+            origin: json!({"status":"Unknown"}),
+            origin_ref: origin.clone(),
+        }],
+        responses: vec![NativeResponseBoundary {
+            occurrence: 0,
+            request: "k2-A".into(),
+            lease: 1,
+            attempt: 1,
+            continuation: 0,
+            provider_response_id: Some(json!("msg_k2")),
+            source_stop_reason: Some("end_turn".into()),
+            block_start: 0,
+            block_end: 2,
+            stream_complete: true,
+            status: NativeResponseStatus::Accepted,
+        }],
+        ordered_blocks: blocks,
+        eligible_snapshots: vec![eligible],
+        older_sources: Vec::new(),
+    };
+    let source_ref = k2_put(
+        &mut blobs,
+        "source",
+        serde_json::to_value(NativeSourceV2::from_parts(source.clone(), links.clone())).unwrap(),
+    );
+    let active_ref = k2_put(
+        &mut blobs,
+        "active",
+        serde_json::to_value(NativeActive::default()).unwrap(),
+    );
+    let group = NativeGroupRecord {
+        key: "k2-pair".into(),
+        family: "Messages".into(),
+        execution: "server".into(),
+        origin_ref: origin,
+        validated_join: raw[0]
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        keyless_server_fifo: false,
+        members: vec![coordinates(0), coordinates(1)],
+        duplicate_observations: Vec::new(),
+        state: "Completed".into(),
+    };
+    let mut ledger = NativeLedger {
+        source_digest: source_ref.digest.clone(),
+        active_digest: active_ref.digest.clone(),
+        groups: vec![group],
+        ..Default::default()
+    };
+    ledger
+        .lifecycle
+        .groups
+        .insert("k2-pair".into(), "Completed".into());
+    ledger.accounting = [1u64, 3]
+        .into_iter()
+        .enumerate()
+        .map(|(occurrence, index)| NativeViewLink {
+            source: coordinates(occurrence as u64),
+            source_digest: source_ref.digest.clone(),
+            view_item: Some(index),
+            view_digest: Some(k2_projection::native_content_digest(
+                &serde_json::to_vec(&request.items[index as usize]).unwrap(),
+            )),
+            role: "Discovery".into(),
+            source_subrange: None,
+        })
+        .collect();
+    let reference_accounting: Vec<_> = links
+        .iter()
+        .map(|link| NativeEligibleMemberAccounting {
+            source: link.source.clone(),
+            source_digest: source_ref.digest.clone(),
+        })
+        .collect();
+    let ledger_ref = k2_put(
+        &mut blobs,
+        "ledger",
+        serde_json::to_value(NativeLedgerV2::from_parts(
+            ledger.clone(),
+            reference_accounting.clone(),
+        ))
+        .unwrap(),
+    );
+    let history_boundary = NativeHistoryBoundary {
+        items: request.items.len() as u64,
+        digest: k2_projection::native_content_digest(&serde_json::to_vec(&request.items).unwrap()),
+    };
+    let record = NativeSearchHistoryV1 {
+        schema_version: 2,
+        policy_revision: 1,
+        reader_floor: 2,
+        limits_revision: 1,
+        lineage: NativeLineage {
+            id: "k2-lineage".into(),
+            source_revision: 3,
+            source_digest: source_ref.digest.clone(),
+        },
+        generation: 5,
+        high_water: 7,
+        source: source_ref,
+        active: active_ref,
+        ledger: ledger_ref,
+        history_boundary,
+        exchange_snapshot: None,
+        previous_checkpoint: None,
+        capacity: Default::default(),
+    };
+    let domain = k2_projection::NativeReplayDomain {
+        backend: crate::ApiBackend::Messages,
+        dialect: k2_projection::NativeReplayDialect::Messages,
+        model: "k2-native".into(),
+        row: "k2-native".into(),
+        provider: "offline".into(),
+        deployment: "loopback".into(),
+        deployment_revision: "1".into(),
+        endpoint: "http://127.0.0.1/messages".into(),
+        principal: "nonsecret-fixture".into(),
+    };
+    K2MessagesFixture {
+        request,
+        record,
+        source,
+        ledger,
+        blobs,
+        domain,
+        identity: NativeIdentityExtension::Revision2 {
+            eligible_member_links: links,
+            eligible_member_accounting: reference_accounting,
+        },
+    }
+}
+
+impl K2MessagesFixture {
+    fn core(
+        &self,
+        qualified: bool,
+    ) -> Result<k2_native::NativeHistoryCore, k2_native::NativeHistoryRefusal> {
+        use k2_native::*;
+        use k2_projection::*;
+        let selected: Vec<_> = self
+            .source
+            .ordered_blocks
+            .iter()
+            .map(|block| block.coordinates.clone())
+            .collect();
+        let authorship = self
+            .source
+            .ordered_blocks
+            .iter()
+            .map(|block| (block.coordinates.occurrence, NativeIdAuthorship::Provider))
+            .collect();
+        let target = TargetRoute::new(
+            crate::ApiBackend::Messages,
+            Boundary::Vertex,
+            self.request.search_admission.unwrap(),
+        );
+        let result: serde_json::Value =
+            serde_json::from_slice(&self.blobs[&self.source.ordered_blocks[1].block.digest])
+                .unwrap();
+        let shape = NativeReplayShape {
+            family: NativeReplayFamily::MessagesServer,
+            keyless_server: false,
+            output_id_present: false,
+            completed: true,
+            result_error: result
+                .pointer("/content/type")
+                .and_then(serde_json::Value::as_str)
+                == Some("tool_search_tool_result_error"),
+            referenced_members: native_candidate_references(&result)
+                .unwrap_or_default()
+                .len() as u64,
+        };
+        prepare_native_history_core(
+            &NativePureHistory {
+                record: &self.record,
+                source: &self.source,
+                ledger: &self.ledger,
+                identity: &self.identity,
+                blobs: &self.blobs,
+                authorship: &authorship,
+            },
+            &NativeProjectionInputs {
+                target_model_id: "k2-native",
+                target: &target,
+                tools: &self.request.tools,
+                current: self.request.native_eligible_inputs.as_deref(),
+                selected: &selected,
+                origin_domains: &Default::default(),
+                pending: &Default::default(),
+                prior_f: None,
+            },
+            |_| {
+                (
+                    DiscoveryOrigin {
+                        boundary: Boundary::Vertex,
+                        owner_model_id: qualified.then(|| "k2-native".into()),
+                    },
+                    NativeQualification {
+                        source: qualified.then(|| self.domain.clone()),
+                        target: Some(self.domain.clone()),
+                        request: Some(self.domain.clone()),
+                        original_admission: self.request.search_admission.unwrap(),
+                        shape: shape.clone(),
+                        receipt: qualified.then(|| NativeShapeReceipt {
+                            target: self.domain.clone(),
+                            shape: shape.clone(),
+                            receipt_id: "K2-offline-shape-only".into(),
+                        }),
+                        intact_membership: true,
+                        current_backing: true,
+                        faithful_identity: true,
+                    },
+                )
+            },
+        )
+    }
+
+    fn context(&self) -> k2_native::NativeHistoryRequestContext {
+        use k2_native::*;
+        NativeHistoryRequestContext::captured(
+            NativeHistoryRequirement::Selected,
+            NativeHistoryCapture {
+                history: self.record.history_boundary.clone(),
+                history_revision: 11,
+                lineage: self.record.lineage.clone(),
+                native_generation: 5,
+                high_water: 7,
+                projection_revision: 0,
+                strict_append_sequence: 13,
+                binding_generation: 17,
+                install_generation: 19,
+                issued_request: "k2-A".into(),
+                target: self.domain.clone(),
+                execution: NativeHistoryExecution::Server,
+                original_admission: self.request.search_admission.unwrap(),
+                versions: NativeHistoryVersions {
+                    schema: 2,
+                    policy: 1,
+                    projection: 1,
+                    reader: 2,
+                    limits: 1,
+                },
+            },
+            NativeHistoryWriteAuthority::SendOnly,
+        )
+    }
+    fn projected_request(&self, core: &k2_native::NativeHistoryCore) -> ConversationRequest {
+        let mut request = self.request.clone();
+        for member in &core.decision.members {
+            let link = self
+                .ledger
+                .accounting
+                .iter()
+                .find(|link| link.source == member.source)
+                .unwrap();
+            let index = link.view_item.unwrap() as usize;
+            request.items[index] = match (&member.raw, &member.neutral) {
+                (Some(raw), None) => ConversationItem::Discovery {
+                    item: super::tool_search::ToolSearchItem::from_wire(raw.clone()).unwrap(),
+                },
+                (None, Some(neutral)) => ConversationItem::assistant(neutral.text.clone()),
+                _ => panic!("fixture requires one retained completed member"),
+            };
+        }
+        request.native_history = Some(crate::request_validation::NativeHistoryRequest::new(
+            self.context(),
+            None,
+        ));
+        request
+    }
+
+    fn plan(
+        &self,
+        request: &ConversationRequest,
+        core: k2_native::NativeHistoryCore,
+        carrier: k2_native::NativeFinalCarrier,
+    ) -> Result<k2_native::NativeHistoryPlan, k2_native::NativePlanRefusal> {
+        use k2_native::*;
+        let mut blobs = self.blobs.clone();
+        let declarations: Vec<serde_json::Value> =
+            serde_json::from_slice(carrier.declarations().unwrap()).unwrap();
+        let binding = self.source.producing_bindings[0].origin_ref.clone();
+        let identities = declarations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, declaration)| {
+                let schema_value = declaration.get("input_schema")?;
+                let name = declaration.get("name").unwrap().as_str().unwrap();
+                let (namespace_kind, namespace, child) = match name.split_once("__") {
+                    Some((namespace, child)) => (NativeNamespaceKind::Mcp, namespace, child),
+                    None => (NativeNamespaceKind::GrokBuild, "grok_build", name),
+                };
+                let schema = k2_put(&mut blobs, "eligible_schema", schema_value.clone());
+                let provenance = k2_put(
+                    &mut blobs,
+                    "eligible_snapshot",
+                    serde_json::to_value(NativeEligibleSnapshot {
+                        version: 1,
+                        namespace_kind,
+                        qualified_namespace: namespace.into(),
+                        child_name: child.into(),
+                        schema: schema.clone(),
+                        binding: binding.clone(),
+                    })
+                    .unwrap(),
+                );
+                Some(NativeDeclarationIdentity {
+                    declaration_index: index as u64,
+                    child_index: None,
+                    namespace_kind,
+                    qualified_namespace: namespace.into(),
+                    child_name: child.into(),
+                    declaration: declaration.clone(),
+                    schema_bytes: blobs[&schema.digest].clone(),
+                    schema,
+                    provenance_bytes: blobs[&provenance.digest].clone(),
+                    provenance,
+                    binding_bytes: Some(blobs[&binding.digest].clone()),
+                })
+            })
+            .collect();
+        let finalization =
+            NativeFinalizationEvidence::checked_native_messages(request, &core, carrier.clone())?;
+        NativeHistoryPlan::checked_finalized(
+            self.context(),
+            NativeHistoryPlanInput {
+                record: self.record.clone(),
+                input_history_bytes: serde_json::to_vec(&self.request.items).unwrap().into(),
+                ledger_bytes: self.blobs[&self.record.ledger.digest].clone(),
+                lowering_request: request,
+                post_history_bytes: serde_json::to_vec(&request.items).unwrap().into(),
+                carrier,
+                identities,
+                qualification: core.accounting.qualification.clone(),
+                core,
+            },
+            finalization,
+        )?
+        .send_only()
+    }
+}
+
+fn k2_native_blocks(body: &serde_json::Value) -> Vec<serde_json::Value> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().unwrap())
+        .filter(|block| {
+            matches!(
+                block["type"].as_str(),
+                Some("server_tool_use" | "tool_search_tool_result")
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn messages_native_pair_replays_unchanged() {
+    use k2_native::*;
+    use serde_json::json;
+    let contents = [
+        json!({"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"alpha__lookup"}]}),
+        json!({"type":"tool_search_tool_search_result","tool_references":[]}),
+        json!({"type":"tool_search_tool_result_error","error_code":"too_many_requests"}),
+    ];
+    for caller in [
+        None,
+        Some(json!({"type":"direct","retained":"exact caller object"})),
+    ] {
+        for content in &contents {
+            let mut call = json!({"type":"server_tool_use","id":"opaque-native-α","name":"tool_search_tool_regex","input":{"query":"exact\nα\\query"}});
+            if let Some(caller) = &caller {
+                call["caller"] = caller.clone();
+            }
+            let result = json!({"type":"tool_search_tool_result","tool_use_id":"opaque-native-α","content":content});
+            let fixture = k2_messages_fixture(call.clone(), result.clone());
+            let core = fixture.core(true).unwrap();
+            assert_eq!(
+                core.decision.groups[0].action,
+                k2_projection::NativeHistoryAction::Keep
+            );
+            let mut request = fixture.projected_request(&core);
+            let lowered = build_messages_request(&request);
+            let encoded =
+                crate::request_validation::validate_and_encode_messages_request(&lowered).unwrap();
+            let body: serde_json::Value = serde_json::from_slice(encoded.as_bytes()).unwrap();
+            assert_eq!(
+                k2_native_blocks(&body),
+                vec![call.clone(), result.clone()],
+                "authorized native blocks must not be retyped, summarized, expanded or minted"
+            );
+            assert_eq!(body["messages"].as_array().unwrap().len(), 3);
+            assert_eq!(
+                body["messages"][1],
+                json!({"role":"assistant","content":[call,{"type":"text","text":"between native blocks"},result]})
+            );
+            let carrier = NativeFinalCarrier::capture(encoded.as_bytes().to_vec().into()).unwrap();
+            let plan = fixture.plan(&request, core, carrier.clone()).unwrap();
+            let context = fixture.context();
+            request.native_history = Some(crate::request_validation::NativeHistoryRequest::new(
+                context.clone(),
+                Some(plan.clone()),
+            ));
+            assert_eq!(
+                crate::request_validation::check_native_history_request(
+                    &request,
+                    &context,
+                    Some(&plan)
+                ),
+                Ok(())
+            );
+            assert_eq!(
+                crate::request_validation::validate_native_messages_send(
+                    &context,
+                    Some(&plan),
+                    &carrier,
+                    Some(&carrier)
+                ),
+                Ok(NativeHistoryReady::SendOnly)
+            );
+            assert_eq!(
+                serde_json::to_vec(&build_messages_request(&request)).unwrap(),
+                encoded.as_bytes()
+            );
+        }
+    }
+}
+
+#[test]
+fn messages_replay_preserves_identity_and_rejects_bad_joins() {
+    use k2_native::*;
+    use serde_json::json;
+    let call = json!({"type":"server_tool_use","id":"srvtoolu_identity","name":"tool_search_tool_regex","input":{"query":"identity"}});
+    let result = json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_identity","content":{"type":"tool_search_tool_search_result","tool_references":[]}});
+    let fixture = k2_messages_fixture(call.clone(), result.clone());
+    let core = fixture.core(true).unwrap();
+    let request = fixture.projected_request(&core);
+    let encoded = crate::request_validation::validate_and_encode_messages_request(
+        &build_messages_request(&request),
+    )
+    .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(encoded.as_bytes()).unwrap();
+    assert_eq!(
+        k2_native_blocks(&body),
+        vec![call.clone(), result.clone()],
+        "only genuine server-id joins may be replayed"
+    );
+    let carrier = NativeFinalCarrier::capture(encoded.as_bytes().to_vec().into()).unwrap();
+    let plan = fixture.plan(&request, core, carrier.clone()).unwrap();
+    let context = fixture.context();
+    assert_eq!(
+        crate::request_validation::validate_native_messages_send(&context, None, &carrier, None),
+        Err(NativePlanRefusal::MissingPlan)
+    );
+    let mut foreign = context.capture().clone();
+    foreign.target.row = "foreign-row".into();
+    let foreign = NativeHistoryRequestContext::captured(
+        NativeHistoryRequirement::Selected,
+        foreign,
+        NativeHistoryWriteAuthority::SendOnly,
+    );
+    assert_eq!(
+        crate::request_validation::check_native_history_request(&request, &foreign, Some(&plan)),
+        Err(NativePlanRefusal::StaleContext)
+    );
+    assert_eq!(
+        crate::request_validation::validate_native_messages_send(
+            &foreign,
+            Some(&plan),
+            &carrier,
+            Some(&carrier)
+        ),
+        Err(NativePlanRefusal::StaleContext)
+    );
+    let unproven = fixture.core(false).unwrap();
+    assert!(
+        unproven
+            .decision
+            .groups
+            .iter()
+            .all(|group| group.action != k2_projection::NativeHistoryAction::Keep)
+    );
+    let unproven = fixture.projected_request(&unproven);
+    let unproven = serde_json::to_value(build_messages_request(&unproven)).unwrap();
+    assert!(k2_native_blocks(&unproven).is_empty());
+    let inactive = serde_json::to_value(build_messages_request(&fixture.request)).unwrap();
+    assert!(
+        k2_native_blocks(&inactive).is_empty(),
+        "a srvtoolu prefix is not authority"
+    );
+    for (bad_call, bad_result) in [
+        (call.clone(), {
+            let mut value = result.clone();
+            value.as_object_mut().unwrap().remove("tool_use_id");
+            value
+        }),
+        (call.clone(), {
+            let mut value = result.clone();
+            value["tool_use_id"] = json!(7);
+            value
+        }),
+        (
+            {
+                let mut value = call.clone();
+                value["id"] = json!(false);
+                value
+            },
+            result.clone(),
+        ),
+        (call.clone(), {
+            let mut value = result.clone();
+            value["tool_use_id"] = json!("foreign");
+            value
+        }),
+        (call.clone(), {
+            let mut value = result.clone();
+            value["tool_use_id"] = json!("foreign");
+            value["id"] = call["id"].clone();
+            value
+        }),
+    ] {
+        let malformed = k2_messages_fixture(bad_call, bad_result);
+        assert!(
+            malformed.core(true).is_err(),
+            "unsafe or conflicting native membership must refuse, not KEEP"
+        );
+    }
+    let mut server_answer = serde_json::to_value(build_messages_request(&request)).unwrap();
+    server_answer["messages"][2]["content"] = json!([{"type":"tool_result","tool_use_id":"srvtoolu_identity","content":"not a client result"}]);
+    let server_answer: crate::messages::MessagesRequest =
+        serde_json::from_value(server_answer).unwrap();
+    assert!(
+        crate::request_validation::validate_and_encode_messages_request(&server_answer).is_err(),
+        "a server id must never receive a user client answer"
+    );
+    let mut wrong_join = request.clone();
+    let mut wrong_result = result;
+    wrong_result["tool_use_id"] = json!("foreign");
+    wrong_join.items[3] = ConversationItem::Discovery {
+        item: super::tool_search::ToolSearchItem::from_wire(wrong_result).unwrap(),
+    };
+    let wrong_join = serde_json::to_value(build_messages_request(&wrong_join)).unwrap();
+    assert!(
+        k2_native_blocks(&wrong_join).is_empty(),
+        "native result joins are validated across the full retained body"
+    );
+}

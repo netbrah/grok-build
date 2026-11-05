@@ -558,6 +558,35 @@ pub fn validate_and_encode_messages_request(
         request,
         &crate::request_builder::RequestObligations::closed_set(),
     )?;
+    let mut native_calls = std::collections::BTreeSet::new();
+    let mut native_answers = std::collections::BTreeSet::new();
+    for message in request.messages() {
+        let crate::messages::MessageContent::Blocks(blocks) = &message.content else {
+            continue;
+        };
+        for block in blocks {
+            let invalid = match block {
+                crate::messages::ContentBlock::ServerToolUse { id, .. } => {
+                    !matches!(message.role, crate::messages::MessageRole::Assistant)
+                        || id.is_empty()
+                        || !native_calls.insert(id.as_str())
+                }
+                crate::messages::ContentBlock::ToolSearchToolResult { tool_use_id, .. } => {
+                    !matches!(message.role, crate::messages::MessageRole::Assistant)
+                        || !native_answers.insert(tool_use_id.as_str())
+                }
+                crate::messages::ContentBlock::ToolResult { tool_use_id, .. } => {
+                    native_calls.contains(tool_use_id.as_str())
+                }
+                _ => false,
+            };
+            if invalid {
+                return Err(RequestValidationError::NativeHistory {
+                    reason: crate::conversation::native_search_history::NativePlanRefusal::InvalidHistory,
+                });
+            }
+        }
+    }
     encode_caps(request)
 }
 

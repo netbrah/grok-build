@@ -2009,3 +2009,1598 @@ async fn messages_replay_plan_checked_on_all_sends() {
         .await;
 }
 
+
+use xai_grok_sampling_types::conversation::native_search_history as k2_history;
+use xai_grok_sampling_types::conversation::projection as k2_replay;
+
+type K2Checkpoint = xai_chat_state::persistence::native::NativeCheckpoint;
+
+#[derive(Clone, Debug)]
+struct K2ClientTool {
+    name: &'static str,
+    executions: Arc<std::sync::Mutex<Vec<String>>>,
+    entered: tokio::sync::mpsc::UnboundedSender<String>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+impl xai_grok_tools::types::tool_metadata::ToolMetadata for K2ClientTool {
+    fn kind(&self) -> xai_grok_tools::types::tool::ToolKind {
+        xai_grok_tools::types::tool::ToolKind::Other
+    }
+    fn tool_namespace(&self) -> xai_grok_tools::types::tool::ToolNamespace {
+        xai_grok_tools::types::tool::ToolNamespace::MCP
+    }
+    fn description_template(&self) -> &str {
+        "Bounded offline K2 client tool"
+    }
+}
+
+impl xai_tool_runtime::Tool for K2ClientTool {
+    type Args = Value;
+    type Output = xai_grok_tools::types::output::ToolOutput;
+    fn id(&self) -> xai_tool_protocol::ToolId {
+        xai_tool_protocol::ToolId::new(self.name).unwrap()
+    }
+    fn description(
+        &self,
+        _: &xai_tool_runtime::ListToolsContext,
+    ) -> xai_tool_types::ToolDescription {
+        xai_tool_types::ToolDescription::new(self.name, "Bounded offline K2 client tool")
+    }
+    async fn run(
+        &self,
+        _: xai_tool_runtime::ToolCallContext,
+        arguments: Value,
+    ) -> Result<Self::Output, xai_tool_runtime::ToolError> {
+        self.executions.lock().unwrap().push(self.name.into());
+        self.entered.send(self.name.into()).unwrap();
+        self.release.acquire().await.unwrap().forget();
+        Ok(xai_grok_tools::types::output::ToolOutput::Text(format!(
+            "{} actual result: {}",
+            self.name, arguments["value"]
+        ).into()))
+    }
+}
+
+struct K2ReplaySession {
+    actor: Arc<SessionActor>,
+    persistence: crate::session::persistence::PersistenceHandle,
+    directory: tempfile::TempDir,
+    _models: tempfile::TempDir,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    executions: Arc<std::sync::Mutex<Vec<String>>>,
+    entered: tokio::sync::mpsc::UnboundedReceiver<String>,
+    releases: [Arc<tokio::sync::Semaphore>; 2],
+    source_acks: tokio::sync::mpsc::UnboundedReceiver<k2_history::NativeResponseStatus>,
+}
+
+impl Drop for K2ReplaySession {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+impl K2ReplaySession {
+    async fn new(server: &MockInferenceServer) -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let config = xai_grok_sampler::SamplerConfig {
+            base_url: server.url(),
+            model: "k2-replay".into(),
+            api_key: Some("nonsecret-k2-key".into()),
+            api_backend: xai_grok_sampler::ApiBackend::Messages,
+            max_completion_tokens: Some(4096),
+            max_retries: Some(0),
+            ..Default::default()
+        };
+        let info = crate::session::info::Info {
+            id: acp::SessionId::new(format!(
+                "k2-{}",
+                directory.path().file_name().unwrap().to_string_lossy()
+            )),
+            cwd: directory.path().to_string_lossy().into_owned(),
+        };
+        let persistence = crate::session::persistence::new_with_explicit_dir(
+            &info,
+            directory.path().to_path_buf(),
+            acp::ModelId::new("k2-replay"),
+            xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(),
+            "k2-replay".into(),
+            crate::session::persistence::ExplicitSessionOpen::New {
+                identity: None,
+                next_trace_turn: None,
+            },
+        )
+        .await
+        .unwrap();
+        let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        let gateway = tokio::task::spawn_local(async move {
+            while let Some(message) = gateway_rx.recv().await {
+                if let xai_acp_lib::AcpClientMessage::SessionNotification(arguments) = message {
+                    let _ = arguments.response_tx.send(Ok(()));
+                }
+            }
+        });
+        let (mut actor, _) = create_test_actor_with_chat_persistence(
+            0,
+            256_000,
+            85,
+            gateway_tx,
+            persistence.tx.clone(),
+            Box::new(
+                crate::session::chat_persistence::ChannelChatPersistence::new(
+                    persistence.tx.clone(),
+                ),
+            ),
+        )
+        .await;
+        actor.session_info = info;
+        actor.attach_non_interactive.set(true);
+        actor.max_retries = 0;
+        actor.compaction.compaction_mode = xai_chat_state::CompactionMode::Summary;
+        {
+            let mut slot = actor.agent.borrow_mut();
+            let mut policy = slot.compaction_policy().clone();
+            policy.two_pass_enabled = false;
+            policy.remote_compaction_v2 = false;
+            policy.memory_flush_enabled = false;
+            *slot = xai_grok_agent::Agent::new(
+                slot.definition().clone(),
+                slot.prompt_context().clone(),
+                slot.system_prompt().to_string(),
+                slot.tool_bridge().clone(),
+                slot.reminder_policy().clone(),
+                policy,
+                Vec::new(),
+                true,
+            );
+        }
+        actor.memory.flush_config.enabled = false;
+        actor.memory.dream_config.enabled = false;
+        actor.memory.save_on_end = false;
+        let (manager, models) = manager_with_entries();
+        let mut entry = entry_with_search_flag("k2-replay", true);
+        entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+        entry.api_base_url = Some(server.url());
+        entry.api_key = Some("nonsecret-k2-key".into());
+        manager.insert_test_entry("k2-replay", entry);
+        manager.set_current_model_id(acp::ModelId::new("k2-replay"));
+        actor.models_manager = manager;
+        let mut binding = actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap();
+        binding.config.base_url = server.url();
+        binding.config.model = "k2-replay".into();
+        binding.config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+        binding.config.supports_search_tool = true;
+        binding.config.max_completion_tokens = Some(4096);
+        binding.config.max_retries = Some(0);
+        binding.credentials.api_key = Some("nonsecret-k2-key".into());
+        binding.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+        actor
+            .chat_state_handle
+            .install_transport_binding(binding)
+            .await
+            .unwrap();
+        let executions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (entered_tx, entered) = tokio::sync::mpsc::unbounded_channel();
+        let releases = [
+            Arc::new(tokio::sync::Semaphore::new(16)),
+            Arc::new(tokio::sync::Semaphore::new(16)),
+        ];
+        for (index, name) in ["alpha__lookup", "zeta__fetch"].into_iter().enumerate() {
+            actor.agent.borrow().tool_bridge().register_mcp_tools(name.into(), K2ClientTool { name, executions: executions.clone(), entered: entered_tx.clone(), release: releases[index].clone() }, Some(json!({"type":"object","description":"Exact K2 original schema","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}))).unwrap();
+        }
+        {
+            let mut mcp = actor.mcp_state.lock().await;
+            mcp.finish_init();
+            mcp.complete_init();
+        }
+        actor
+            .workspace_ops
+            .bind_local_session(
+                &actor.session_id_string(),
+                actor.tool_context.cwd.as_path().to_path_buf(),
+                actor.tool_context.hunk_tracker_handle.clone(),
+                actor.agent.borrow().tool_bridge().toolset(),
+                None,
+            )
+            .unwrap();
+        let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+        actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+            config,
+            xai_grok_sampler::RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            },
+            sampler_tx,
+        );
+        let actor = Arc::new(actor);
+        let drainer = actor.clone();
+        let (source_tx, source_acks) = tokio::sync::mpsc::unbounded_channel();
+        let sampler = tokio::task::spawn_local(async move {
+            while let Some(event) = sampler_rx.recv().await {
+                let status = match &event {
+                    xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                        evidence: k2_history::NativeEvidenceEvent::Attempt(attempt),
+                        ..
+                    } => Some(attempt.status),
+                    _ => None,
+                };
+                drainer.handle_sampling_event(event).await;
+                if let Some(status) = status {
+                    source_tx.send(status).unwrap();
+                }
+            }
+        });
+        Self {
+            actor,
+            persistence,
+            directory,
+            _models: models,
+            tasks: vec![gateway, sampler],
+            executions,
+            entered,
+            releases,
+            source_acks,
+        }
+    }
+
+    fn domain(&self, server: &MockInferenceServer) -> k2_replay::NativeReplayDomain {
+        k2_replay::NativeReplayDomain {
+            backend: xai_grok_sampling_types::ApiBackend::Messages,
+            dialect: k2_replay::NativeReplayDialect::Messages,
+            model: "k2-replay".into(),
+            row: "k2-replay".into(),
+            provider: "offline".into(),
+            deployment: "loopback".into(),
+            deployment_revision: "1".into(),
+            endpoint: format!("{}/messages", server.url()),
+            principal: "nonsecret-fixture".into(),
+        }
+    }
+
+    async fn turn(
+        &self,
+        requirement: k2_history::NativeHistoryRequirement,
+        server: &MockInferenceServer,
+        label: &str,
+    ) -> Result<TurnOutcome, acp::Error> {
+        self.actor
+            .chat_state_handle
+            .push_user_message_and_ack(ConversationItem::user(label))
+            .await;
+        let selected = requirement == k2_history::NativeHistoryRequirement::Selected;
+        self.actor
+            .session_turn_active
+            .store(selected, std::sync::atomic::Ordering::SeqCst);
+        let result = super::switch_projection::HISTORY_S3_TEST_DOMAIN
+            .scope(
+                self.domain(server),
+                super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                    requirement,
+                    self.actor.process_conversation_turn_with_recovery(
+                        label,
+                        None,
+                        None,
+                        None,
+                        &mut super::length_salvage::LengthSalvage::new(None),
+                        &mut Default::default(),
+                    ),
+                ),
+            )
+            .await;
+        self.actor
+            .session_turn_active
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        result
+    }
+
+    async fn reload(&self) -> (K2Checkpoint, Vec<ConversationItem>) {
+        use crate::session::storage::StorageAdapter;
+        let (respond_to, flushed) = tokio::sync::oneshot::channel();
+        self.persistence
+            .tx
+            .send(PersistenceMsg::FlushAndAck { respond_to })
+            .unwrap();
+        flushed.await.unwrap().unwrap();
+        let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+            self.directory.path().to_path_buf(),
+        );
+        let full = adapter
+            .load_session(&self.actor.session_info)
+            .await
+            .unwrap();
+        let light = adapter
+            .load_session_without_updates(&self.actor.session_info)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&full.chat_history).unwrap(),
+            serde_json::to_value(&light.chat_history).unwrap(),
+            "K2 full/light disk readers agree"
+        );
+        let disk = adapter
+            .read_native_history(&self.actor.session_info)
+            .await
+            .unwrap()
+            .checkpoint
+            .unwrap();
+        let live = self
+            .actor
+            .chat_state_handle
+            .read_native_history()
+            .await
+            .unwrap()
+            .checkpoint
+            .unwrap();
+        assert_eq!(
+            disk.source, live.source,
+            "K2 actor source is the reloaded source"
+        );
+        assert_eq!(
+            disk.ledger, live.ledger,
+            "K2 actor ledger is the reloaded ledger"
+        );
+        assert_eq!(
+            disk.bytes.as_ref(),
+            std::fs::read(self.directory.path().join("native_history/current.json")).unwrap()
+        );
+        disk.matches_history(&full.chat_history).unwrap();
+        ((*disk).clone(), full.chat_history)
+    }
+}
+
+fn k2_script(frames: Vec<Value>) -> ScriptedResponse {
+    ScriptedResponse::sse(
+        frames
+            .into_iter()
+            .map(|frame| SseEvent::data(frame.to_string()))
+            .collect(),
+    )
+}
+
+fn k2_frames(id: &str, blocks: Vec<(Value, Vec<Value>)>, stop: &str) -> Vec<Value> {
+    let mut frames = vec![
+        json!({"type":"message_start","message":{"id":id,"type":"message","role":"assistant","model":"k2-replay","content":[],"stop_reason":null,"usage":{"input_tokens":17,"output_tokens":0}}}),
+    ];
+    for (index, (block, deltas)) in blocks.into_iter().enumerate() {
+        frames.push(json!({"type":"content_block_start","index":index,"content_block":block}));
+        for delta in deltas {
+            frames.push(json!({"type":"content_block_delta","index":index,"delta":delta}));
+        }
+        frames.push(json!({"type":"content_block_stop","index":index}));
+    }
+    frames.extend([json!({"type":"message_delta","delta":{"stop_reason":stop},"usage":{"input_tokens":17,"output_tokens":7}}),json!({"type":"message_stop"})]);
+    frames
+}
+
+fn k2_call(id: &str, caller: Option<Value>) -> (Value, Vec<Value>) {
+    let mut block =
+        json!({"type":"server_tool_use","id":id,"name":"tool_search_tool_regex","input":{}});
+    if let Some(caller) = caller {
+        block["caller"] = caller;
+    }
+    (
+        block,
+        vec![json!({"type":"input_json_delta","partial_json":"{\"query\":\"exact K2 search\"}"})],
+    )
+}
+
+fn k2_result(id: &str, name: &str) -> (Value, Vec<Value>) {
+    (
+        json!({"type":"tool_search_tool_result","tool_use_id":id,"content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":name}]}}),
+        Vec::new(),
+    )
+}
+
+async fn k2_seed(session: &mut K2ReplaySession, server: &MockInferenceServer) {
+    server.enqueue_response(
+        "/v1/messages",
+        k2_script(k2_frames(
+            "msg_k2_seed",
+            vec![
+                k2_call("srvtoolu_k2_seed", None),
+                k2_result("srvtoolu_k2_seed", "alpha__lookup"),
+                (json!({"type":"text","text":"K2 seed complete"}), Vec::new()),
+            ],
+            "end_turn",
+        )),
+    );
+    session
+        .turn(
+            k2_history::NativeHistoryRequirement::Inactive,
+            server,
+            "seed exactly one completed native group",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(K0_TIMEOUT, session.source_acks.recv())
+            .await
+            .unwrap(),
+        Some(k2_history::NativeResponseStatus::Accepted)
+    );
+    assert!(session.source_acks.try_recv().is_err());
+    let (checkpoint, _) = session.reload().await;
+    assert_eq!(
+        checkpoint
+            .ledger
+            .groups
+            .iter()
+            .map(|group| group.state.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Completed"],
+        "K2 Selected scenarios start after the H-S3F-R6 Inactive seed"
+    );
+    assert_eq!(server.messages_request_count(), 1);
+}
+
+fn k2_citation(text: &str, start: u64) -> Value {
+    json!({"type":"char_location","cited_text":text,"document_index":0,"document_title":null,"file_id":null,"start_char_index":start,"end_char_index":start+1})
+}
+
+fn k2_ordered_frames() -> Vec<Value> {
+    k2_frames(
+        "msg_k2_ordered",
+        vec![
+            (
+                json!({"type":"text","text":"missing citations"}),
+                Vec::new(),
+            ),
+            (
+                json!({"type":"text","text":"null citations","citations":null}),
+                Vec::new(),
+            ),
+            (
+                json!({"type":"text","text":"ordered citations","citations":[]}),
+                vec![
+                    json!({"type":"citations_delta","citation":k2_citation("first",0)}),
+                    json!({"type":"citations_delta","citation":k2_citation("second",1)}),
+                ],
+            ),
+            k2_call("srvtoolu_k2_s1", None),
+            (
+                json!({"type":"thinking","thinking":""}),
+                vec![
+                    json!({"type":"thinking_delta","thinking":"ordered reasoning"}),
+                    json!({"type":"signature_delta","signature":"opaque-k2-signature"}),
+                ],
+            ),
+            k2_call(
+                "srvtoolu_k2_s2",
+                Some(json!({"type":"direct","retained":"K2 caller"})),
+            ),
+            k2_result("srvtoolu_k2_s2", "zeta__fetch"),
+            (json!({"type":"text","text":"between results"}), Vec::new()),
+            k2_result("srvtoolu_k2_s1", "alpha__lookup"),
+            (json!({"type":"text","text":"ordered suffix"}), Vec::new()),
+        ],
+        "end_turn",
+    )
+}
+
+#[derive(Clone, Copy)]
+enum K2Receipt {
+    Matching,
+    None,
+    WrongShape,
+    Foreign,
+}
+
+fn k2_core(
+    checkpoint: &K2Checkpoint,
+    request: &ConversationRequest,
+    domain: &k2_replay::NativeReplayDomain,
+    receipt: K2Receipt,
+) -> Result<k2_history::NativeHistoryCore, k2_history::NativeHistoryRefusal> {
+    use k2_history::*;
+    use k2_replay::*;
+    let selected: Vec<_> = checkpoint
+        .source
+        .ordered_blocks
+        .iter()
+        .map(|block| block.coordinates.clone())
+        .collect();
+    let authorship = checkpoint
+        .source
+        .ordered_blocks
+        .iter()
+        .map(|block| (block.coordinates.occurrence, NativeIdAuthorship::Provider))
+        .collect();
+    let target = TargetRoute::new(
+        xai_grok_sampling_types::ApiBackend::Messages,
+        Boundary::Vertex,
+        request.search_admission.unwrap(),
+    );
+    let origins = checkpoint
+        .source
+        .producing_bindings
+        .iter()
+        .map(|binding| (binding.origin_ref.digest.clone(), domain.clone()))
+        .collect();
+    prepare_native_history_core(
+        &NativePureHistory {
+            record: &checkpoint.record,
+            source: &checkpoint.source,
+            ledger: &checkpoint.ledger,
+            identity: &checkpoint.identity,
+            blobs: &checkpoint.blobs,
+            authorship: &authorship,
+        },
+        &NativeProjectionInputs {
+            target_model_id: "k2-replay",
+            target: &target,
+            tools: &request.tools,
+            current: request.native_eligible_inputs.as_deref(),
+            selected: &selected,
+            origin_domains: &origins,
+            pending: &Default::default(),
+            prior_f: None,
+        },
+        |group| {
+            let result = group
+                .members
+                .iter()
+                .filter_map(|coordinate| {
+                    checkpoint
+                        .source
+                        .ordered_blocks
+                        .iter()
+                        .find(|block| &block.coordinates == coordinate)
+                })
+                .map(|block| {
+                    serde_json::from_slice::<Value>(&checkpoint.blobs[&block.block.digest]).unwrap()
+                })
+                .find(|raw| raw["type"] == "tool_search_tool_result")
+                .unwrap();
+            let shape = NativeReplayShape {
+                family: NativeReplayFamily::MessagesServer,
+                keyless_server: false,
+                output_id_present: false,
+                completed: true,
+                result_error: false,
+                referenced_members: native_candidate_references(&result).unwrap().len() as u64,
+            };
+            let mut receipt_shape = shape.clone();
+            let mut receipt_target = domain.clone();
+            if matches!(receipt, K2Receipt::WrongShape) {
+                receipt_shape.referenced_members += 1;
+            }
+            if matches!(receipt, K2Receipt::Foreign) {
+                receipt_target.row = "foreign-K2-row".into();
+            }
+            (
+                DiscoveryOrigin {
+                    boundary: Boundary::Vertex,
+                    owner_model_id: Some("k2-replay".into()),
+                },
+                NativeQualification {
+                    source: Some(domain.clone()),
+                    target: Some(domain.clone()),
+                    request: Some(domain.clone()),
+                    original_admission: request.search_admission.unwrap(),
+                    shape,
+                    receipt: (!matches!(receipt, K2Receipt::None)).then_some(NativeShapeReceipt {
+                        target: receipt_target,
+                        shape: receipt_shape,
+                        receipt_id: "K2-synthetic-offline-receipt".into(),
+                    }),
+                    intact_membership: true,
+                    current_backing: true,
+                    faithful_identity: true,
+                },
+            )
+        },
+    )
+}
+
+async fn k2_shared_request(
+    session: &K2ReplaySession,
+    server: &MockInferenceServer,
+    checkpoint: &K2Checkpoint,
+    history: Vec<ConversationItem>,
+) -> (ConversationRequest, k2_history::NativeHistoryRequestContext) {
+    use k2_history::*;
+    session
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let owner = session
+        .actor
+        .chat_state_handle
+        .register_native_history_owner(
+            session.actor.session_id_string(),
+            "K2-shared-boundary".into(),
+            session.domain(server),
+            NativeProjectionOwner::OwningPrimary,
+            session.actor.session_turn_active.clone(),
+        )
+        .await
+        .unwrap();
+    let (prepared, _) = session.actor.prepare_native_tool_candidates_timed().await;
+    let bundle = session.actor.prepared_tool_bundle(&prepared);
+    let projection = super::sampler_turn::BridgeDeclarationProjection::prepared(
+        bundle,
+        prepared
+            .mcp_specs
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect(),
+    );
+    let candidates = projection
+        .candidates()
+        .with_history_entry(xai_chat_state::NativeHistoryEntry::captured(
+            NativeHistoryRequirement::Selected,
+            xai_chat_state::NativeHistoryEntryIntent::OwningPrimary(owner.token()),
+        ))
+        .unwrap();
+    let (mut request, _) = session
+        .actor
+        .chat_state_handle
+        .build_request_with_binding(
+            candidates,
+            None,
+            false,
+            None,
+            session.actor.session_id_string(),
+            "K2-shared-boundary".into(),
+        )
+        .await
+        .unwrap();
+    let capture = request
+        .native_bound_preparation
+        .as_ref()
+        .unwrap()
+        .context()
+        .unwrap()
+        .capture()
+        .clone();
+    request.items = history;
+    checkpoint.matches_history(&request.items).unwrap();
+    let context = NativeHistoryRequestContext::captured(
+        NativeHistoryRequirement::Selected,
+        capture,
+        NativeHistoryWriteAuthority::SendOnly,
+    );
+    drop(owner);
+    session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    (request, context)
+}
+
+fn k2_projected_request(
+    checkpoint: &K2Checkpoint,
+    mut request: ConversationRequest,
+    context: &k2_history::NativeHistoryRequestContext,
+    core: &k2_history::NativeHistoryCore,
+) -> ConversationRequest {
+    let mut replacements = std::collections::BTreeMap::new();
+    for member in &core.decision.members {
+        let link = checkpoint
+            .ledger
+            .accounting
+            .iter()
+            .find(|link| link.source == member.source)
+            .unwrap();
+        if let Some(index) = link.view_item {
+            let item = member.raw.as_ref().map(|raw| ConversationItem::Discovery { item: xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(raw.clone()).unwrap() })
+                .or_else(|| member.neutral.as_ref().map(|neutral| ConversationItem::assistant(neutral.text.clone())));
+            replacements.insert(index as usize, item);
+        }
+    }
+    request.items = request
+        .items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, item)| replacements.get(&index).cloned().unwrap_or(Some(item)))
+        .collect();
+    request.native_history = Some(
+        xai_grok_sampling_types::request_validation::NativeHistoryRequest::new(
+            context.clone(),
+            None,
+        ),
+    );
+    request
+}
+
+fn k2_shared_plan(
+    checkpoint: &K2Checkpoint,
+    request: &ConversationRequest,
+    context: k2_history::NativeHistoryRequestContext,
+    core: k2_history::NativeHistoryCore,
+    carrier: k2_history::NativeFinalCarrier,
+) -> Result<k2_history::NativeHistoryPlan, k2_history::NativePlanRefusal> {
+    use k2_history::*;
+    use xai_chat_state::persistence::native::digest;
+    let binding: Arc<[u8]> = serde_json::to_vec(&json!({"request":context.capture().issued_request,"generation":context.capture().binding_generation,"origin":{"status":"Captured"}})).unwrap().into();
+    let binding_ref = NativeBlobRef {
+        kind: "producing_binding".into(),
+        byte_len: binding.len() as u64,
+        digest: digest(&binding),
+    };
+    let declarations: Vec<Value> = carrier
+        .declarations()
+        .map(|bytes| serde_json::from_slice(bytes).unwrap())
+        .unwrap_or_default();
+    let identities = declarations
+        .iter()
+        .enumerate()
+        .filter_map(|(index, declaration)| {
+            let schema = declaration.get("input_schema")?;
+            let name = declaration["name"].as_str().unwrap();
+            let entry = request.native_eligible_inputs.as_ref().and_then(|inputs| {
+                inputs
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.declaration().name == name)
+            });
+            let (kind, namespace, child) = if let Some(entry) = entry {
+                (
+                    entry.namespace_kind(),
+                    entry.qualified_namespace().to_owned(),
+                    entry.child_name().to_owned(),
+                )
+            } else {
+                assert_eq!(name, "DeferredToolPlaceholder");
+                (
+                    NativeNamespaceKind::GrokBuild,
+                    "grok_build".into(),
+                    name.into(),
+                )
+            };
+            let schema_bytes: Arc<[u8]> = serde_json::to_vec(schema).unwrap().into();
+            let schema_ref = NativeBlobRef {
+                kind: "eligible_schema".into(),
+                byte_len: schema_bytes.len() as u64,
+                digest: digest(&schema_bytes),
+            };
+            let snapshot = NativeEligibleSnapshot {
+                version: 1,
+                namespace_kind: kind,
+                qualified_namespace: namespace.clone(),
+                child_name: child.clone(),
+                schema: schema_ref.clone(),
+                binding: binding_ref.clone(),
+            };
+            let provenance_bytes: Arc<[u8]> = serde_json::to_vec(&snapshot).unwrap().into();
+            Some(NativeDeclarationIdentity {
+                declaration_index: index as u64,
+                child_index: None,
+                namespace_kind: kind,
+                qualified_namespace: namespace,
+                child_name: child,
+                declaration: declaration.clone(),
+                schema: schema_ref,
+                schema_bytes,
+                provenance: NativeBlobRef {
+                    kind: "eligible_snapshot".into(),
+                    byte_len: provenance_bytes.len() as u64,
+                    digest: digest(&provenance_bytes),
+                },
+                provenance_bytes,
+                binding_bytes: Some(binding.clone()),
+            })
+        })
+        .collect();
+    let finalization =
+        NativeFinalizationEvidence::checked_native_messages(request, &core, carrier.clone())?;
+    NativeHistoryPlan::checked_finalized(
+        context,
+        NativeHistoryPlanInput {
+            record: checkpoint.record.clone(),
+            input_history_bytes: serde_json::to_vec(&request.items).unwrap().into(),
+            ledger_bytes: checkpoint.blobs[&checkpoint.record.ledger.digest].clone(),
+            lowering_request: request,
+            post_history_bytes: serde_json::to_vec(&request.items).unwrap().into(),
+            carrier,
+            identities,
+            qualification: core.accounting.qualification.clone(),
+            core,
+        },
+        finalization,
+    )?
+    .send_only()
+}
+
+fn k2_source_blocks(checkpoint: &K2Checkpoint, response_id: &str) -> Vec<Value> {
+    let response = checkpoint
+        .source
+        .responses
+        .iter()
+        .find(|response| {
+            response
+                .provider_response_id
+                .as_ref()
+                .and_then(Value::as_str)
+                == Some(response_id)
+        })
+        .unwrap();
+    checkpoint.source.ordered_blocks[response.block_start as usize..response.block_end as usize]
+        .iter()
+        .map(|block| serde_json::from_slice(&checkpoint.blobs[&block.block.digest]).unwrap())
+        .collect()
+}
+
+fn k2_body_blocks(body: &Value) -> Vec<Value> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().unwrap())
+        .cloned()
+        .collect()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_ordered_replay_survives_checkpoint() {
+    use k2_history::*;
+    tokio::task::LocalSet::new().run_until(async {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut session = K2ReplaySession::new(&server).await;
+        k2_seed(&mut session, &server).await;
+        server.enqueue_response("/v1/messages", k2_script(k2_ordered_frames()));
+        session.turn(NativeHistoryRequirement::Selected, &server, "K2 ordered real decode and checkpoint").await.unwrap();
+        assert_eq!(tokio::time::timeout(K0_TIMEOUT, session.source_acks.recv()).await.unwrap(), Some(NativeResponseStatus::Accepted));
+        assert!(session.source_acks.try_recv().is_err());
+        assert_eq!(server.messages_request_count(), 2);
+        let (checkpoint, history) = session.reload().await;
+        let mut s1 = k2_call("srvtoolu_k2_s1", None).0;
+        s1["input"] = json!({"query":"exact K2 search"});
+        let mut s2 = k2_call("srvtoolu_k2_s2", Some(json!({"type":"direct","retained":"K2 caller"}))).0;
+        s2["input"] = json!({"query":"exact K2 search"});
+        let expected = vec![
+            json!({"type":"text","text":"missing citations"}),
+            json!({"type":"text","text":"null citations","citations":null}),
+            json!({"type":"text","text":"ordered citations","citations":[k2_citation("first",0),k2_citation("second",1)]}),
+            s1.clone(), json!({"type":"thinking","thinking":"ordered reasoning","signature":"opaque-k2-signature"}),
+            s2.clone(), k2_result("srvtoolu_k2_s2", "zeta__fetch").0,
+            json!({"type":"text","text":"between results"}), k2_result("srvtoolu_k2_s1", "alpha__lookup").0,
+            json!({"type":"text","text":"ordered suffix"}),
+        ];
+        assert_eq!(k2_source_blocks(&checkpoint, "msg_k2_ordered"), expected, "K2 real delta assembly and ordered raw fields survive actor/disk/reload unchanged");
+        assert_eq!(checkpoint.source.responses.len(), 2);
+        assert_eq!(checkpoint.ledger.usage.len(), 2, "K2 retains usage per response occurrence, never sums it");
+        assert!(matches!(checkpoint.messages_metadata, NativeMessagesMetadataState::Revision3 { .. }));
+        let (request, context) = k2_shared_request(&session, &server, &checkpoint, history).await;
+        let core = k2_core(&checkpoint, &request, &session.domain(&server), K2Receipt::Matching).unwrap();
+        assert_eq!(core.decision.groups.iter().filter(|group| group.action == k2_replay::NativeHistoryAction::Keep).count(), 2);
+        let request = k2_projected_request(&checkpoint, request, &context, &core);
+        let lowered = xai_grok_sampling_types::conversation::build_messages_request(&request);
+        let encoded = xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(&lowered).unwrap();
+        let body: Value = serde_json::from_slice(encoded.as_bytes()).unwrap();
+        let blocks = k2_body_blocks(&body);
+        let native: Vec<_> = blocks.iter().filter(|block| matches!(block["type"].as_str(), Some("server_tool_use" | "tool_search_tool_result"))).cloned().collect();
+        assert_eq!(native, vec![s1, s2, k2_result("srvtoolu_k2_s2", "zeta__fetch").0, k2_result("srvtoolu_k2_s1", "alpha__lookup").0], "K2 shared-boundary native emission preserves order and caller once");
+        let carrier = NativeFinalCarrier::capture(encoded.as_bytes().to_vec().into()).unwrap();
+        let plan = k2_shared_plan(&checkpoint, &request, context.clone(), core.clone(), carrier.clone()).unwrap();
+        assert_eq!(xai_grok_sampling_types::request_validation::validate_native_messages_send(&context, Some(&plan), &carrier, Some(&carrier)), Ok(NativeHistoryReady::SendOnly));
+        let citation_blocks: Vec<_> = blocks.iter().filter(|block| block["text"].as_str().is_some_and(|text| text.contains("citations"))).cloned().collect();
+        let ordered_message = body["messages"].as_array().unwrap().iter().find(|message| {
+            message["content"].as_array().unwrap().iter().any(|block| block["type"] == "server_tool_use" && block["id"] == "srvtoolu_k2_s1")
+        }).unwrap();
+        let ordered_content = ordered_message["content"].as_array().unwrap();
+        let ordinary_blocks: Vec<_> = ordered_content.iter().filter(|block| !matches!(block["type"].as_str(), Some("server_tool_use" | "tool_search_tool_result" | "thinking"))).cloned().collect();
+        let ordinary_text = expected.iter().filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join("\n");
+        let block_types: Vec<_> = ordered_content.iter().map(|block| block["type"].as_str().unwrap()).collect();
+        println!("{}", json!({"K2_ordered_checkpoint":true,"source_response_count":checkpoint.source.responses.len(),"raw_text_blocks":&expected[..3],"lowered_citation_blocks":citation_blocks,"block_types":block_types,"ordinary_replay":"PARENT_PINNED_STAGED_NOT_CREDITED","ready":"SendOnly","owning_primary_KEEP":"STAGED_NOT_CREDITED"}));
+        assert_eq!(ordinary_blocks, vec![json!({"type":"text","text":ordinary_text})], "PARENT BEHAVIOUR, not K2 fidelity: one flattened text block, citations missing; ordinary ordered-content replay fidelity is STAGED (K2-U4 erratum section 4)");
+        let text_position = ordered_content.iter().position(|block| block["type"] == "text").unwrap();
+        let last_native_position = ordered_content.iter().rposition(|block| matches!(block["type"].as_str(), Some("server_tool_use" | "tool_search_tool_result"))).unwrap();
+        assert!(text_position > last_native_position, "PARENT BEHAVIOUR, not K2 fidelity: flattened text follows the native blocks; ordinary ordered-content replay fidelity is STAGED");
+        for receipt in [K2Receipt::None, K2Receipt::WrongShape, K2Receipt::Foreign] {
+            let twin = k2_core(&checkpoint, &request, &session.domain(&server), receipt).unwrap();
+            assert!(twin.decision.groups.iter().all(|group| group.action != k2_replay::NativeHistoryAction::Keep), "K2 missing/mismatched receipt twin demotes for qualification, not checkpoint refusal");
+        }
+        server.enqueue_response("/v1/messages", k2_script(k2_frames("msg_k2_no_input_twin", vec![(json!({"type":"text","text":"no-input twin complete"}), Vec::new())], "end_turn")));
+        session.turn(NativeHistoryRequirement::Selected, &server, "K2 no-input owning-primary twin").await.unwrap();
+        assert_eq!(tokio::time::timeout(K0_TIMEOUT, session.source_acks.recv()).await.unwrap(), Some(NativeResponseStatus::Accepted));
+        let (after, _) = session.reload().await;
+        for group in &checkpoint.ledger.groups {
+            assert_eq!(after.active.dispositions.get(&group.key).map(String::as_str), Some("F"), "K2 parent no-input owning-primary demotes completed groups");
+        }
+        assert!(session.executions.lock().unwrap().is_empty());
+
+        for fault in ["completed-signature-missing", "unknown-start", "wrong-index", "singular-citation"] {
+            let server = MockInferenceServer::start().await.unwrap();
+            let mut session = K2ReplaySession::new(&server).await;
+            k2_seed(&mut session, &server).await;
+            let (seed_checkpoint, _) = session.reload().await;
+            let prior = seed_checkpoint.source.responses;
+            let mut frames = k2_ordered_frames();
+            match fault {
+                "completed-signature-missing" => frames.retain(|frame| frame.pointer("/delta/type").and_then(Value::as_str) != Some("signature_delta")),
+                "unknown-start" => frames[1]["content_block"]["future_default"] = json!(""),
+                "wrong-index" => {
+                    let frame = frames.iter_mut().find(|frame| frame.pointer("/delta/type").and_then(Value::as_str) == Some("citations_delta")).unwrap();
+                    frame["index"] = json!(99);
+                }
+                "singular-citation" => {
+                    let frame = frames.iter_mut().find(|frame| frame.pointer("/delta/type").and_then(Value::as_str) == Some("citations_delta")).unwrap();
+                    frame["delta"]["type"] = json!("citation_delta");
+                }
+                _ => unreachable!(),
+            }
+            server.enqueue_response("/v1/messages", k2_script(frames));
+            let outcome = session.turn(NativeHistoryRequirement::Selected, &server, fault).await;
+            let status = tokio::time::timeout(K0_TIMEOUT, session.source_acks.recv()).await.unwrap().unwrap();
+            assert!(outcome.is_err() || status != NativeResponseStatus::Accepted, "K2 completed-only mismatch and malformed events cannot become faithful KEEP: {fault}");
+            let (checkpoint, _) = session.reload().await;
+            assert!(checkpoint.source.responses.len() >= prior.len(), "K2 pre-turn native responses cannot be removed: {fault}");
+            assert_eq!(&checkpoint.source.responses[..prior.len()], prior.as_slice(), "K2 pre-turn native responses remain unchanged after malformed attempt: {fault}");
+            let appended = &checkpoint.source.responses[prior.len()..];
+            let branch = if appended.is_empty() { "ABSENT" } else { "PRESENT" };
+            let statuses: Vec<_> = appended.iter().map(|response| response.status).collect();
+            println!("{}", json!({"K2_malformed_checkpoint":true,"fault":fault,"branch":branch,"statuses":statuses,"prior_responses":prior.len(),"pre_turn_responses_unchanged":true}));
+            assert!(appended.iter().all(|response| response.status != NativeResponseStatus::Accepted), "K2 malformed completed capture remains incomplete after disk reload: {fault}");
+        }
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_split_server_pair_joins_across_responses() {
+    use k2_history::*;
+    tokio::task::LocalSet::new().run_until(async {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut session = K2ReplaySession::new(&server).await;
+        k2_seed(&mut session, &server).await;
+        let client = json!({"type":"tool_use","id":"client_k2_split","name":"alpha__lookup","input":{"value":"split actual"}});
+        server.enqueue_response("/v1/messages", k2_script(k2_frames("msg_k2_split_1", vec![
+            k2_call("srvtoolu_k2_split_s2", Some(json!({"type":"direct","retained":"split caller"}))),
+            k2_call("srvtoolu_k2_split_s1", None), (client.clone(), Vec::new()),
+        ], "tool_use")));
+        server.enqueue_response("/v1/messages", k2_script(k2_frames("msg_k2_split_2", vec![
+            k2_result("srvtoolu_k2_split_s1", "alpha__lookup"),
+            k2_result("srvtoolu_k2_split_s2", "zeta__fetch"),
+            (json!({"type":"text","text":"split suffix"}), Vec::new()),
+        ], "end_turn")));
+        session.turn(NativeHistoryRequirement::Selected, &server, "K2 two live split calls with an actual client result").await.unwrap();
+        for _ in 0..2 {
+            assert_eq!(tokio::time::timeout(K0_TIMEOUT, session.source_acks.recv()).await.unwrap(), Some(NativeResponseStatus::Accepted));
+        }
+        assert!(session.source_acks.try_recv().is_err());
+        assert_eq!(server.messages_request_count(), 3, "K2 split has one seed and exactly two real Selected requests");
+        assert_eq!(*session.executions.lock().unwrap(), vec!["alpha__lookup"]);
+        let (checkpoint, history) = session.reload().await;
+        let mut s2 = k2_call("srvtoolu_k2_split_s2", Some(json!({"type":"direct","retained":"split caller"}))).0;
+        s2["input"] = json!({"query":"exact K2 search"});
+        let mut s1 = k2_call("srvtoolu_k2_split_s1", None).0;
+        s1["input"] = json!({"query":"exact K2 search"});
+        let r1 = k2_result("srvtoolu_k2_split_s1", "alpha__lookup").0;
+        let r2 = k2_result("srvtoolu_k2_split_s2", "zeta__fetch").0;
+        assert_eq!(k2_source_blocks(&checkpoint, "msg_k2_split_1"), vec![s2.clone(), s1.clone(), client]);
+        assert_eq!(k2_source_blocks(&checkpoint, "msg_k2_split_2"), vec![r1.clone(), r2.clone(), json!({"type":"text","text":"split suffix"})]);
+        assert_eq!(checkpoint.source.responses.len(), 3);
+        assert_eq!(checkpoint.ledger.usage.len(), 3, "K2 split retains per-response usage occurrence linkage");
+        assert_eq!(checkpoint.source.responses.iter().map(|response| response.source_stop_reason.as_deref()).collect::<Vec<_>>(), vec![Some("end_turn"), Some("tool_use"), Some("end_turn")]);
+        assert!(matches!(checkpoint.messages_metadata, NativeMessagesMetadataState::Revision3 { .. }));
+        assert_eq!(checkpoint.ledger.groups.len(), 3, "K2 split has the seed and two joined groups, no result-only group");
+        let mut joined_keys = Vec::new();
+        for id in ["srvtoolu_k2_split_s1", "srvtoolu_k2_split_s2"] {
+            let groups: Vec<_> = checkpoint.ledger.groups.iter().filter(|group| {
+                group.members.iter().any(|member| {
+                    let raw: Value = serde_json::from_slice(&checkpoint.blobs[&checkpoint.source.ordered_blocks[member.occurrence as usize].block.digest]).unwrap();
+                    raw["type"] == "server_tool_use" && raw["id"] == id
+                })
+            }).collect();
+            assert_eq!(groups.len(), 1, "K2 split joins each real server id into one group");
+            let group = groups[0];
+            assert_eq!(group.state, "Completed");
+            assert_eq!(checkpoint.ledger.lifecycle.groups.get(&group.key).map(String::as_str), Some("Completed"));
+            assert_eq!(group.members.len(), 2);
+            assert_ne!(group.members[0].response, group.members[1].response, "K2 split joined members span both responses");
+            assert_eq!(group.validated_join.as_deref(), Some(id));
+            assert!(!checkpoint.active.dispositions.contains_key(&group.key), "K2 both live groups survive the S3F continuation without premature F");
+            joined_keys.push(group.key.clone());
+        }
+        let requests: Vec<_> = server.requests().into_iter().filter(|request| request.path == "/v1/messages").collect();
+        let continuation = requests[2].body.as_ref().unwrap();
+        let actual_result = json!({"type":"tool_result","tool_use_id":"client_k2_split","content":"alpha__lookup actual result: \"split actual\"","cache_control":{"type":"ephemeral"}});
+        assert_eq!(continuation["messages"].as_array().unwrap().last().unwrap(), &json!({"role":"user","content":[actual_result.clone()]}), "K2 split continuation is the actual results-only client message");
+        let (request, context) = k2_shared_request(&session, &server, &checkpoint, history).await;
+        let core = k2_core(&checkpoint, &request, &session.domain(&server), K2Receipt::Matching).unwrap();
+        let kept: Vec<_> = core.decision.groups.iter().filter(|group| group.action == k2_replay::NativeHistoryAction::Keep).collect();
+        assert_eq!(kept.len(), 2, "K2 matching split core keeps both joined groups");
+        let request = k2_projected_request(&checkpoint, request, &context, &core);
+        let lowered = xai_grok_sampling_types::conversation::build_messages_request(&request);
+        let encoded = xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(&lowered).unwrap();
+        let body: Value = serde_json::from_slice(encoded.as_bytes()).unwrap();
+        let blocks = k2_body_blocks(&body);
+        let native: Vec<_> = blocks.iter().filter(|block| matches!(block["type"].as_str(), Some("server_tool_use" | "tool_search_tool_result"))).cloned().collect();
+        assert_eq!(native, vec![s2, s1, r1, r2], "K2 split item-3 native equality preserves both id joins, raw fields and native-relative order once");
+        let replay_results: Vec<_> = blocks.iter().filter(|block| block["type"] == "tool_result" && block["tool_use_id"] == "client_k2_split").cloned().collect();
+        assert_eq!(replay_results, vec![actual_result], "K2 split leaves the intervening actual client result unmoved and unchanged");
+        let call_message = body["messages"].as_array().unwrap().iter().position(|message| message["content"].as_array().unwrap().iter().any(|block| block["id"] == "srvtoolu_k2_split_s1")).unwrap();
+        let client_message = body["messages"].as_array().unwrap().iter().position(|message| message["content"].as_array().unwrap().iter().any(|block| block["type"] == "tool_result" && block["tool_use_id"] == "client_k2_split")).unwrap();
+        let result_message = body["messages"].as_array().unwrap().iter().position(|message| message["content"].as_array().unwrap().iter().any(|block| block["type"] == "tool_search_tool_result" && block["tool_use_id"] == "srvtoolu_k2_split_s1")).unwrap();
+        assert!(call_message < client_message && client_message < result_message, "K2 split preserves the intervening user result between source responses");
+        let result_content = body["messages"][result_message]["content"].as_array().unwrap();
+        let ordinary: Vec<_> = result_content.iter().filter(|block| !matches!(block["type"].as_str(), Some("server_tool_use" | "tool_search_tool_result" | "thinking"))).cloned().collect();
+        assert_eq!(ordinary, vec![json!({"type":"text","text":"split suffix"})], "PARENT BEHAVIOUR, not K2 fidelity: split ordinary replay follows the existing Assistant arm");
+        let text_position = result_content.iter().position(|block| block["type"] == "text").unwrap();
+        let last_native = result_content.iter().rposition(|block| block["type"] == "tool_search_tool_result").unwrap();
+        assert!(text_position > last_native, "PARENT BEHAVIOUR, not K2 fidelity: split flattened text follows native blocks");
+        let carrier = NativeFinalCarrier::capture(encoded.as_bytes().to_vec().into()).unwrap();
+        let plan = k2_shared_plan(&checkpoint, &request, context.clone(), core.clone(), carrier.clone()).unwrap();
+        assert_eq!(xai_grok_sampling_types::request_validation::validate_native_messages_send(&context, Some(&plan), &carrier, Some(&carrier)), Ok(NativeHistoryReady::SendOnly));
+        for receipt in [K2Receipt::None, K2Receipt::WrongShape, K2Receipt::Foreign] {
+            let twin = k2_core(&checkpoint, &request, &session.domain(&server), receipt).unwrap();
+            assert!(twin.decision.groups.iter().all(|group| group.action != k2_replay::NativeHistoryAction::Keep), "K2 split receipt twin demotes for qualification on the same valid joined checkpoint");
+        }
+        println!("{}", json!({"K2_split_checkpoint":true,"joined_keys":joined_keys,"responses":checkpoint.source.responses,"groups":checkpoint.ledger.groups,"lifecycle":checkpoint.ledger.lifecycle,"native_replay":native,"ready":"SendOnly","ordinary_replay":"PARENT_PINNED_STAGED_NOT_CREDITED","owning_primary_KEEP":"STAGED_NOT_CREDITED"}));
+        server.enqueue_response("/v1/messages", k2_script(k2_frames("msg_k2_split_no_input", vec![(json!({"type":"text","text":"split no-input twin"}), Vec::new())], "end_turn")));
+        session.turn(NativeHistoryRequirement::Selected, &server, "K2 split no-input owning-primary twin").await.unwrap();
+        assert_eq!(tokio::time::timeout(K0_TIMEOUT, session.source_acks.recv()).await.unwrap(), Some(NativeResponseStatus::Accepted));
+        let (after, _) = session.reload().await;
+        for group in &checkpoint.ledger.groups {
+            assert_eq!(after.active.dispositions.get(&group.key).map(String::as_str), Some("F"), "K2 parent split no-input owning-primary demotes completed groups");
+        }
+        assert_eq!(*session.executions.lock().unwrap(), vec!["alpha__lookup"]);
+
+        let invalid_server = MockInferenceServer::start().await.unwrap();
+        let mut invalid = K2ReplaySession::new(&invalid_server).await;
+        k2_seed(&mut invalid, &invalid_server).await;
+        invalid_server.enqueue_response("/v1/messages", k2_script(k2_frames("msg_k2_result_before_call", vec![
+            k2_result("srvtoolu_k2_result_before_call", "alpha__lookup"),
+            k2_call("srvtoolu_k2_result_before_call", None),
+        ], "end_turn")));
+        let invalid_outcome = invalid.turn(NativeHistoryRequirement::Selected, &invalid_server, "K2 result before its own server call").await;
+        let invalid_status = tokio::time::timeout(K0_TIMEOUT, invalid.source_acks.recv()).await.unwrap().unwrap();
+        let (invalid_checkpoint, _) = invalid.reload().await;
+        let request_count = invalid_server.messages_request_count();
+        if invalid_outcome.is_ok() && invalid_status == NativeResponseStatus::Accepted {
+            let next = invalid.turn(NativeHistoryRequirement::Selected, &invalid_server, "K2 refuses invalid retained result-before-call").await;
+            assert!(next.is_err(), "K2 result-before-own-call is invalid at the real subsequent core");
+            assert_eq!(invalid_server.messages_request_count(), request_count, "K2 invalid result-before-own-call cannot reach continuation HTTP");
+        }
+        println!("{}", json!({"K2_result_before_call":true,"turn_refused":invalid_outcome.is_err(),"capture_status":invalid_status,"persisted_responses":invalid_checkpoint.source.responses.len(),"subsequent_HTTP":invalid_server.messages_request_count()-request_count}));
+    }).await;
+}
+
+#[derive(Default)]
+struct K2U5Trace {
+    check_waiting: bool,
+    check_tools: bool,
+    builds: Vec<(ConversationRequest, xai_chat_state::RequestTransportBinding)>,
+    submitted: Vec<(
+        ConversationRequest,
+        xai_chat_state::RequestTransportBinding,
+        k2_history::NativeFinalCarrier,
+    )>,
+}
+
+tokio::task_local! {
+    static K2_U5_TRACE: std::rc::Rc<std::cell::RefCell<K2U5Trace>>;
+}
+
+pub(super) fn k2_u5_observe_bound(
+    request: &ConversationRequest,
+    binding: &xai_chat_state::RequestTransportBinding,
+) {
+    let _ = K2_U5_TRACE.try_with(|trace| {
+        let mut trace = trace.borrow_mut();
+        assert!(trace.builds.len() < 2, "K2 mixed handoff has exactly two bound builds");
+        if let Some((original, original_binding)) = trace.builds.first()
+            && trace.check_tools
+        {
+            assert_eq!(serde_json::to_value(&request.tools).unwrap(), serde_json::to_value(&original.tools).unwrap(), "K2 pending retains the whole original bound tool array, including schemas, order and deferred entries");
+            assert_eq!(request.model, original.model, "K2 pending never rebuilds its model from the selected row");
+            assert_eq!(request.search_admission, original.search_admission, "K2 pending retains original admission");
+            assert_eq!(serde_json::to_value(&binding.config).unwrap(), serde_json::to_value(&original_binding.config).unwrap(), "K2 pending retains the original transport binding");
+            assert!(binding.credentials == original_binding.credentials, "K2 pending retains original credential authority without printing it");
+        }
+        let pending = request.items.iter().any(|item| matches!(item, ConversationItem::Discovery { item }
+            if item.kind() == xai_grok_sampling_types::conversation::tool_search::ToolSearchKind::ServerToolUse
+                && item.raw()["id"] == "srvtoolu_k2_pending"));
+        if pending {
+            if trace.check_waiting {
+                for missing in ["client_k2_c1", "client_k2_c2"] {
+                    let mut partial = request.clone();
+                    partial.items.retain(|item| !matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == missing));
+                    let lowered = xai_grok_sampling_types::conversation::build_messages_request(&partial);
+                    let result = xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(&lowered);
+                    assert!(matches!(result, Err(xai_grok_sampling_types::request_validation::RequestValidationError::UnansweredToolUse { ref id }) if id == missing), "K2 waiting set is checked before cleanup: a missing actual result cannot erase its obligated client id: {missing}");
+                }
+                let mut duplicate = request.clone();
+                let result = duplicate.items.iter().find(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c1")).unwrap().clone();
+                duplicate.items.push(result);
+                assert!(xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(&xai_grok_sampling_types::conversation::build_messages_request(&duplicate)).is_err(), "K2 duplicate actual client result cannot be a continuation");
+                let mut foreign = request.clone();
+                let result = foreign.items.iter_mut().find_map(|item| match item { ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c2" => Some(result), _ => None }).unwrap();
+                result.tool_call_id = "client_k2_foreign".into();
+                assert!(xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(&xai_grok_sampling_types::conversation::build_messages_request(&foreign)).is_err(), "K2 foreign result cannot fill a waiting hole");
+            }
+            let body = serde_json::to_value(xai_grok_sampling_types::conversation::build_messages_request(request)).unwrap();
+            let message = body["messages"].as_array().unwrap().iter().find(|message| message["content"].as_array().unwrap().iter().any(|block| block["id"] == "srvtoolu_k2_pending")).expect("K2 pending native server call survives the real bound lowerer");
+            assert_eq!(message["content"], json!(k2_u5_expected_blocks()), "K2 pending native work and both real client calls replay unchanged, not cleaned or summarized");
+        }
+        trace.builds.push((request.clone(), binding.clone()));
+    });
+}
+
+fn k2_u5_expected_blocks() -> Vec<Value> {
+    vec![
+        json!({"type":"server_tool_use","id":"srvtoolu_k2_pending","name":"tool_search_tool_regex","input":{"query":"exact K2 search"},"caller":{"type":"direct","retained":"pending caller"}}),
+        json!({"type":"tool_use","id":"client_k2_c1","name":"alpha__lookup","input":{"value":"first actual"}}),
+        json!({"type":"tool_use","id":"client_k2_c2","name":"zeta__fetch","input":{"value":"second actual"}}),
+    ]
+}
+
+fn k2_u5_frames() -> Vec<Value> {
+    let blocks = k2_u5_expected_blocks();
+    k2_frames(
+        "msg_k2_pending",
+        vec![
+            k2_call(
+                "srvtoolu_k2_pending",
+                Some(json!({"type":"direct","retained":"pending caller"})),
+            ),
+            (blocks[1].clone(), Vec::new()),
+            (blocks[2].clone(), Vec::new()),
+        ],
+        "tool_use",
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum K2U5Change {
+    None,
+    SelectedRow,
+    InstalledRow,
+    RevokedDefinition,
+}
+
+struct K2U5Handoff {
+    session: K2ReplaySession,
+    server: MockInferenceServer,
+    other: MockInferenceServer,
+    checkpoint: K2Checkpoint,
+    before_result: Vec<ConversationItem>,
+    trace: std::rc::Rc<std::cell::RefCell<K2U5Trace>>,
+    outcome: Result<TurnOutcome, acp::Error>,
+}
+
+async fn k2_u5_handoff(check_waiting: bool, check_tools: bool, change: K2U5Change) -> K2U5Handoff {
+    use k2_history::*;
+    let server = MockInferenceServer::start().await.unwrap();
+    let other = MockInferenceServer::start().await.unwrap();
+    let mut session = K2ReplaySession::new(&server).await;
+    k2_seed(&mut session, &server).await;
+    session.releases[1]
+        .clone()
+        .acquire_many_owned(16)
+        .await
+        .unwrap()
+        .forget();
+    server.enqueue_response("/v1/messages", k2_script(k2_u5_frames()));
+    server.enqueue_response(
+        "/v1/messages",
+        k2_script(k2_frames(
+            "msg_k2_pending_done",
+            vec![(
+                json!({"type":"text","text":"K2 continuation complete"}),
+                Vec::new(),
+            )],
+            "end_turn",
+        )),
+    );
+    session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user("K2 real mixed pending handoff"))
+        .await;
+    session
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let trace = std::rc::Rc::new(std::cell::RefCell::new(K2U5Trace {
+        check_waiting,
+        check_tools,
+        ..Default::default()
+    }));
+    let run_trace = trace.clone();
+    let actor = session.actor.clone();
+    let domain = session.domain(&server);
+    let mut running = tokio::task::spawn_local(async move {
+        let capture = run_trace.clone();
+        let mut prepare =
+            move |request: &mut ConversationRequest,
+                  binding: &xai_chat_state::RequestTransportBinding| {
+                let encoded = request
+                    .encoded
+                    .as_ref()
+                    .expect("K2 Selected submit has the real finalized carrier");
+                let carrier =
+                    NativeFinalCarrier::capture(encoded.as_bytes().to_vec().into()).unwrap();
+                let mut trace = capture.borrow_mut();
+                assert!(
+                    trace.submitted.len() < 2,
+                    "K2 real mixed turn submits at most two requests"
+                );
+                trace
+                    .submitted
+                    .push((request.clone(), binding.clone(), carrier));
+                Ok(())
+            };
+        super::switch_projection::HISTORY_S3_TEST_DOMAIN
+            .scope(
+                domain,
+                super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                    NativeHistoryRequirement::Selected,
+                    K2_U5_TRACE.scope(
+                        run_trace,
+                        actor.process_conversation_turn_for_native_history_test(
+                            "K2-live-pending",
+                            None,
+                            None,
+                            None,
+                            &mut super::length_salvage::LengthSalvage::new(None),
+                            &mut Default::default(),
+                            &mut prepare,
+                        ),
+                    ),
+                ),
+            )
+            .await
+    });
+    assert_eq!(
+        tokio::time::timeout(K0_TIMEOUT, session.source_acks.recv())
+            .await
+            .unwrap(),
+        Some(NativeResponseStatus::Accepted),
+        "K2 mixed response is actually decoded and committed before client execution"
+    );
+    let mut entered = Vec::new();
+    for _ in 0..2 {
+        entered.push(
+            tokio::time::timeout(K0_TIMEOUT, session.entered.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    entered.sort();
+    assert_eq!(
+        entered,
+        vec!["alpha__lookup", "zeta__fetch"],
+        "K2 executes every real waiting client exactly once"
+    );
+    let before_result = tokio::time::timeout(K0_TIMEOUT, async {
+        loop {
+            let items = session.actor.chat_state_handle.get_conversation().await;
+            if items.iter().any(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c1")) {
+                break items;
+            }
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    assert!(!before_result.iter().any(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c2")), "K2 second actual result is held at its deterministic barrier");
+    assert_eq!(
+        server.messages_request_count(),
+        2,
+        "K2 has zero continuation HTTP while one real waiting result is missing"
+    );
+    assert!(
+        !running.is_finished(),
+        "K2 cannot settle or continue before every waiting result"
+    );
+    let (checkpoint, _) = session.reload().await;
+    assert_eq!(
+        k2_source_blocks(&checkpoint, "msg_k2_pending"),
+        k2_u5_expected_blocks(),
+        "K2 mixed source is retained before cleanup"
+    );
+    let live = checkpoint
+        .ledger
+        .groups
+        .iter()
+        .find(|group| {
+            group.members.iter().any(|member| {
+                let raw: Value = serde_json::from_slice(
+                    &checkpoint.blobs[&checkpoint.source.ordered_blocks
+                        [member.occurrence as usize]
+                        .block
+                        .digest],
+                )
+                .unwrap();
+                raw["id"] == "srvtoolu_k2_pending"
+            })
+        })
+        .unwrap();
+    assert_eq!(live.state, "LivePending");
+    assert_eq!(
+        checkpoint
+            .ledger
+            .lifecycle
+            .groups
+            .get(&live.key)
+            .map(String::as_str),
+        Some("LivePending")
+    );
+    let origin = checkpoint.source.producing_bindings.last().unwrap();
+    let mut waiting: Vec<_> = checkpoint
+        .ledger
+        .lifecycle
+        .waiting_clients
+        .iter()
+        .filter(|client| client.source.producing_binding == origin.request)
+        .map(|client| (client.client_id.as_str(), client.delivery.as_str()))
+        .collect();
+    waiting.sort();
+    assert_eq!(
+        waiting,
+        vec![("client_k2_c1", "Waiting"), ("client_k2_c2", "Waiting")],
+        "K2 captures the entire persisted waiting map before item or block cleanup"
+    );
+    assert!(
+        !native_results_continuation(
+            &checkpoint.source,
+            &checkpoint.ledger,
+            &before_result,
+            origin
+        ),
+        "K2 owner refuses the actual partial result snapshot"
+    );
+    if change != K2U5Change::None {
+        let mut row = entry_with_search_flag("k2-selected-b", false);
+        row.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+        row.api_base_url = Some(other.url());
+        row.api_key = Some("nonsecret-k2-b-key".into());
+        session
+            .actor
+            .models_manager
+            .insert_test_entry("k2-selected-b", row);
+        session
+            .actor
+            .models_manager
+            .set_current_model_id(acp::ModelId::new("k2-selected-b"));
+        assert_eq!(
+            session.actor.models_manager.current_model_id(),
+            acp::ModelId::new("k2-selected-b")
+        );
+        if change == K2U5Change::InstalledRow {
+            let mut binding = session
+                .actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .unwrap();
+            binding.config.model = "k2-selected-b".into();
+            binding.config.base_url = other.url();
+            binding.config.supports_search_tool = false;
+            binding.credentials.api_key = Some("nonsecret-k2-b-key".into());
+            session
+                .actor
+                .chat_state_handle
+                .install_transport_binding(binding)
+                .await
+                .unwrap();
+        }
+        if change == K2U5Change::RevokedDefinition {
+            assert!(
+                session
+                    .actor
+                    .agent
+                    .borrow()
+                    .tool_bridge()
+                    .unregister_tool_by_name("zeta__fetch")
+            );
+        }
+    }
+    session.releases[1].add_permits(1);
+    let outcome = match tokio::time::timeout(K0_TIMEOUT, &mut running).await {
+        Ok(result) => result.unwrap(),
+        Err(error) => {
+            running.abort();
+            panic!("K2 released real result must finish the bounded handoff: {error}");
+        }
+    };
+    session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        other.messages_request_count(),
+        0,
+        "K2 never reconstructs or submits the pending exchange on B"
+    );
+    K2U5Handoff {
+        session,
+        server,
+        other,
+        checkpoint,
+        before_result,
+        trace,
+        outcome,
+    }
+}
+
+fn k2_u5_assert_continuation(handoff: &K2U5Handoff) {
+    assert!(
+        handoff.outcome.is_ok(),
+        "K2 all real waiting results permit exactly one continuation"
+    );
+    assert_eq!(
+        handoff.server.messages_request_count(),
+        3,
+        "K2 final actual result permits exactly one continuation HTTP"
+    );
+    assert_eq!(handoff.other.messages_request_count(), 0);
+    let executions = handoff.session.executions.lock().unwrap().clone();
+    let mut names = executions.clone();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["alpha__lookup", "zeta__fetch"],
+        "K2 client execution is once-only, never re-executed or fabricated"
+    );
+    let requests: Vec<_> = handoff
+        .server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path == "/v1/messages")
+        .collect();
+    let continuation = requests[2].body.as_ref().unwrap();
+    let expected = json!({"role":"user","content":[
+        {"type":"tool_result","tool_use_id":"client_k2_c1","content":"alpha__lookup actual result: \"first actual\""},
+        {"type":"tool_result","tool_use_id":"client_k2_c2","content":"zeta__fetch actual result: \"second actual\"","cache_control":{"type":"ephemeral"}}
+    ]});
+    assert_eq!(
+        continuation["messages"].as_array().unwrap().last().unwrap(),
+        &expected,
+        "K2 exactly one nonempty results-only user message contains one actual result per waiting id and no synthetic tail"
+    );
+    let pending = continuation["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|block| block["id"] == "srvtoolu_k2_pending")
+        })
+        .expect("K2 actual HTTP retains the pending native assistant work");
+    assert_eq!(
+        pending["content"],
+        json!(k2_u5_expected_blocks()),
+        "K2 actual continuation replays the entire mixed native/client assistant unchanged"
+    );
+    let trace = handoff.trace.borrow();
+    assert_eq!(trace.builds.len(), 2);
+    assert_eq!(trace.submitted.len(), 2);
+    let (_, _, carrier) = &trace.submitted[1];
+    assert_eq!(
+        serde_json::from_slice::<Value>(carrier.bytes()).unwrap(),
+        *continuation,
+        "K2 captured finalized bytes are the actual HTTP body"
+    );
+    let typed: xai_grok_sampling_types::messages::Message =
+        serde_json::from_value(expected).unwrap();
+    let bytes = serde_json::to_vec(&typed).unwrap();
+    let ranges: Vec<_> = carrier
+        .bytes()
+        .windows(bytes.len())
+        .enumerate()
+        .filter_map(|(offset, window)| (window == bytes).then_some(offset))
+        .collect();
+    assert_eq!(
+        ranges.len(),
+        1,
+        "K2 actual results-only body range is unique"
+    );
+    println!(
+        "{}",
+        json!({"K2_U5_submitted":true,"waiting_before_cleanup":["client_k2_c1","client_k2_c2"],"zero_early_continuation_http":true,"continuation_http":1,"executions":executions,"body_digest":carrier.digest(),"body_bytes":carrier.bytes().len(),"tools_range":carrier.tools(),"results_only_range":{"offset":ranges[0],"bytes":bytes.len(),"digest":native_content_digest(&bytes)},"pre_client_hook":"SessionActor::execute_tool_calls_with_native_recovery","owning_primary_KEEP":"STAGED_NOT_CREDITED"})
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_pending_search_survives_client_results() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let handoff = k2_u5_handoff(false, false, K2U5Change::None).await;
+            k2_u5_assert_continuation(&handoff);
+            let server = MockInferenceServer::start().await.unwrap();
+            let mut session = K2ReplaySession::new(&server).await;
+            k2_seed(&mut session, &server).await;
+            let mut frames = k2_u5_frames();
+            frames.insert(
+                2,
+                json!({"type":"k2_unknown_semantic_event","payload":"unclassified"}),
+            );
+            server.enqueue_response("/v1/messages", k2_script(frames));
+            let outcome = session
+                .turn(
+                    k2_history::NativeHistoryRequirement::Selected,
+                    &server,
+                    "K2 unknown semantic event must fail explicitly",
+                )
+                .await;
+            assert!(
+                outcome.is_err(),
+                "K2 unknown semantic events end incomplete, never an implicit successful handoff"
+            );
+            assert_eq!(
+                server.messages_request_count(),
+                2,
+                "K2 unknown semantic event cannot authorize a continuation"
+            );
+            assert!(
+                session.executions.lock().unwrap().is_empty(),
+                "K2 unknown semantic event cannot authorize client execution"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_live_handoff_requires_all_waiting_results() {
+    tokio::task::LocalSet::new().run_until(async {
+        let handoff = k2_u5_handoff(true, false, K2U5Change::None).await;
+        k2_u5_assert_continuation(&handoff);
+        let trace = handoff.trace.borrow();
+        let actual = &trace.builds[1].0.items;
+        let origin = handoff.checkpoint.source.producing_bindings.last().unwrap();
+        assert!(k2_history::native_results_continuation(&handoff.checkpoint.source, &handoff.checkpoint.ledger, actual, origin), "K2 committed owner accepts the exact actual result snapshot");
+        let mut text_tail = actual.clone();
+        text_tail.push(ConversationItem::user("extra non-result tail"));
+        assert!(!k2_history::native_results_continuation(&handoff.checkpoint.source, &handoff.checkpoint.ledger, &text_tail, origin), "K2 results-only grammar excludes text, reminders and synthetic tails");
+        assert!(!k2_history::native_results_continuation(&handoff.checkpoint.source, &handoff.checkpoint.ledger, &handoff.before_result, origin), "K2 cannot forget the withheld actual result");
+        let mut duplicate = actual.clone();
+        let first = duplicate.iter().find(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c1")).unwrap().clone();
+        duplicate.push(first);
+        assert!(!k2_history::native_results_continuation(&handoff.checkpoint.source, &handoff.checkpoint.ledger, &duplicate, origin), "K2 actual result duplication never satisfies a waiting obligation twice");
+        println!("{}", json!({"K2_U5_waiting":true,"waiting_ids":["client_k2_c1","client_k2_c2"],"source_delivery":"Waiting","actual_result_before_release":"client_k2_c1","withheld_actual_result":"client_k2_c2","raw_snapshot_checked_before_cleanup":true,"exact_results_only_messages":1}));
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_pending_retains_bound_tool_array() {
+    tokio::task::LocalSet::new().run_until(async {
+        let handoff = k2_u5_handoff(false, true, K2U5Change::SelectedRow).await;
+        k2_u5_assert_continuation(&handoff);
+        {
+            let trace = handoff.trace.borrow();
+            let original = &trace.submitted[0];
+            let continuation = &trace.submitted[1];
+            let first: Value = serde_json::from_slice(original.2.bytes()).unwrap();
+            let second: Value = serde_json::from_slice(continuation.2.bytes()).unwrap();
+            assert_eq!(first["tools"], second["tools"], "K2 complete original wire tools array survives a selected-row change");
+            assert_eq!(original.2.declarations(), continuation.2.declarations(), "K2 original declaration bytes, not merely names, remain identical");
+            for name in ["alpha__lookup", "zeta__fetch"] {
+                let tool = first["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == name).unwrap();
+                assert_eq!(tool["defer_loading"], json!(true), "K2 full-array proof includes the original deferred definitions");
+                assert!(tool["input_schema"].is_object());
+            }
+            assert!(original.1.credentials == continuation.1.credentials, "K2 bound credentials do not change or print their values");
+            assert_eq!(original.1.config.model, "k2-replay");
+            assert_eq!(continuation.1.config.base_url, handoff.server.url());
+            assert_eq!(handoff.session.actor.models_manager.current_model_id(), acp::ModelId::new("k2-selected-b"));
+            println!("{}", json!({"K2_U5_binding":true,"selected_row":"k2-selected-b","submitted_bound_row":"k2-replay","selection_changed_without_installing_B":true,"original_authority_still_installed":true,"original_tools_digest":original.2.tools().unwrap().digest,"continuation_tools_digest":continuation.2.tools().unwrap().digest,"whole_array_equal":true,"deferred_entries_retained":true,"body_and_transport_binding":"A"}));
+        }
+        for change in [K2U5Change::InstalledRow, K2U5Change::RevokedDefinition] {
+            let refused = k2_u5_handoff(false, false, change).await;
+            let outcome_kind = match &refused.outcome {
+                Err(_) => "ERROR",
+                Ok(TurnOutcome::Completed { .. }) => "COMPLETED",
+                Ok(TurnOutcome::Cancelled { .. }) => "CANCELLED",
+                Ok(TurnOutcome::MaxTurnsReached { .. }) => "MAX_TURNS",
+                Ok(TurnOutcome::StationarityEnded) => "STATIONARITY",
+            };
+            println!("{}", json!({"K2_U5_refusal_outcome":true,"outcome":outcome_kind,
+                "installed_B":change == K2U5Change::InstalledRow,"revoked_definition":change == K2U5Change::RevokedDefinition,
+                "messages_HTTP_A":refused.server.messages_request_count(),"messages_HTTP_B":refused.other.messages_request_count()}));
+            assert!(refused.outcome.is_err(), "K2 unavailable or revoked original authority ends incomplete, never rebuilds the pending exchange on B");
+            assert_eq!(refused.server.messages_request_count(), 2, "K2 revoked authority has zero continuation HTTP on A");
+            assert_eq!(refused.other.messages_request_count(), 0, "K2 revoked authority has zero continuation HTTP on B");
+            println!("{}", json!({"K2_U5_unavailable":true,"installed_B":change == K2U5Change::InstalledRow,"revoked_definition":change == K2U5Change::RevokedDefinition,"incomplete":true,"continuation_http_A":0,"continuation_http_B":0}));
+        }
+    }).await;
+}

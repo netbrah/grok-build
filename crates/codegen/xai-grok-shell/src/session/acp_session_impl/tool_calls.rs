@@ -399,6 +399,92 @@ impl SessionActor {
         if let Some(cfg) = self.chat_state_handle.get_sampling_config().await {
             tracing::Span::current().record("model_id", cfg.model.as_str());
         }
+        let native_handoff = if super::switch_projection::select_native_history()
+            == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
+        {
+            self.chat_state_handle
+                .read_native_history()
+                .await
+                .map_err(|reason| {
+                    crate::sampling::error::local_error(
+                        "native_history_read_refused",
+                        format!("native history read refused: {reason:?}"),
+                    )
+                })?
+                .checkpoint
+                .and_then(|checkpoint| {
+                    let origin = checkpoint.source.producing_bindings.last()?.clone();
+                    (checkpoint.ledger.lifecycle.exchanges.get(&origin.request).map(String::as_str)
+                        == Some("LiveBound")
+                        && checkpoint.ledger.groups.iter().any(|group| {
+                            group.state == "LivePending" && group.origin_ref == origin.origin_ref
+                        }))
+                    .then_some((checkpoint, origin))
+                })
+        } else {
+            None
+        };
+        let native_handoff = if let Some((checkpoint, origin)) = native_handoff {
+            let waiting: Vec<_> = checkpoint
+                .ledger
+                .lifecycle
+                .waiting_clients
+                .iter()
+                .filter(|client| {
+                    client.source.producing_binding == origin.request
+                        && client.delivery == "Waiting"
+                })
+                .map(|client| client.client_id.as_str())
+                .collect();
+            let expected: std::collections::BTreeSet<_> = waiting.iter().copied().collect();
+            let actual: std::collections::BTreeSet<_> =
+                tool_calls.iter().map(|call| call.id.as_str()).collect();
+            if expected.is_empty()
+                || expected.contains("")
+                || expected.len() != waiting.len()
+                || actual.len() != tool_calls.len()
+                || actual != expected
+            {
+                return Err(crate::sampling::error::local_error(
+                    "native_waiting_set_refused",
+                    "native handoff requires every original waiting client exactly once",
+                ));
+            }
+            let inventory = self.agent.borrow().tool_bridge().tools_with_identity();
+            if tool_calls.iter().any(|call| {
+                !inventory
+                    .iter()
+                    .any(|(definition, _, _)| definition.function.name == call.function.name)
+            }) {
+                return Err(crate::sampling::error::local_error(
+                    "native_bound_tool_unavailable",
+                    "original native client declaration is unavailable",
+                ));
+            }
+            let toolset = self.agent.borrow().tool_bridge().toolset();
+            let instances = inventory
+                .iter()
+                .map(|(definition, _, _)| {
+                    let name = definition.function.name.clone();
+                    let metadata = toolset.get_tool_metadata(&name).ok_or_else(|| {
+                        crate::sampling::error::local_error(
+                            "native_bound_tool_unavailable",
+                            "original native registration is unavailable",
+                        )
+                    })?;
+                    Ok((name, metadata))
+                })
+                .collect::<Result<Vec<_>, acp::Error>>()?;
+            let definitions = serde_json::to_value(&inventory).map_err(|_| {
+                crate::sampling::error::local_error(
+                    "native_bound_tool_unavailable",
+                    "original native declaration identity cannot be captured",
+                )
+            })?;
+            Some((checkpoint, origin, definitions, instances))
+        } else {
+            None
+        };
         let mut final_result: Option<ToolLoop> = None;
         let mut deferred_followups: Vec<ConversationItem> = Vec::new();
         let tool_calls = self.reject_excess_media_gen_calls(tool_calls).await?;
@@ -452,11 +538,57 @@ impl SessionActor {
         }
         self.drain_interjections_at_safe_point().await;
         self.flush_pending_skill_reminders().await;
-        if let Some(final_result) = final_result {
+        if matches!(
+            final_result.as_ref(),
+            Some(ToolLoop::PermissionReject { .. } | ToolLoop::Cancelled)
+        ) && let Some(final_result) = final_result.take()
+        {
             return Ok(final_result);
         }
-        Ok(ToolLoop::Continue)
+        if let Some((checkpoint, origin, definitions, instances)) = native_handoff {
+            let items = self.chat_state_handle.get_conversation().await;
+            if !xai_grok_sampling_types::conversation::native_search_history::native_results_continuation(
+                &checkpoint.source, &checkpoint.ledger, &items, &origin,
+            ) {
+                return Err(crate::sampling::error::local_error(
+                    "native_waiting_results_refused", "native continuation requires one actual result per original waiting client and no other input",
+                ));
+            }
+            let inventory = self.agent.borrow().tool_bridge().tools_with_identity();
+            let toolset = self.agent.borrow().tool_bridge().toolset();
+            // Equal declarations do not revive a revoked registration instance.
+            if instances.iter().any(|(name, original)| {
+                toolset
+                    .get_tool_metadata(name)
+                    .is_none_or(|current| !std::sync::Arc::ptr_eq(original, &current))
+            }) {
+                return Err(crate::sampling::error::local_error(
+                    "native_bound_tool_unavailable",
+                    "original native registration authority changed during client execution",
+                ));
+            }
+            let current = serde_json::to_value(&inventory).map_err(|_| {
+                crate::sampling::error::local_error(
+                    "native_bound_tool_unavailable",
+                    "original native declaration identity cannot be verified",
+                )
+            })?;
+            if definitions.as_array().is_none_or(|original| {
+                current.as_array().is_none_or(|current| {
+                    original
+                        .iter()
+                        .any(|definition| !current.contains(definition))
+                })
+            }) {
+                return Err(crate::sampling::error::local_error(
+                    "native_bound_tool_unavailable",
+                    "original native declaration authority changed during client execution",
+                ));
+            }
+        }
+        Ok(final_result.unwrap_or(ToolLoop::Continue))
     }
+
     /// Per-name media-gen counts that exceed this session's cap.
     pub(super) fn media_gen_over_cap(
         &self,

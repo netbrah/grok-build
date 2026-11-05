@@ -3034,6 +3034,8 @@ impl SessionActor {
                 self.project_bound_bridge_declarations(&mut request, &binding, projection)
                     .map_err(crate::sampling::error::map_sampling_err_to_acp)?;
             }
+            #[cfg(test)]
+            super::native_messages_replay_tests::k2_u5_observe_bound(&request, &binding);
             if native_requirement == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive {
                 self.publish_bound_projection(&request, &binding, selected_functions).await;
             }
@@ -4068,6 +4070,11 @@ impl SessionActor {
                 )
                 .await
             };
+            if native_requirement == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
+                && let Err(error) = execute_tool_calls_result
+            {
+                return Err(error);
+            }
             match execute_tool_calls_result {
                 Ok(ToolLoop::PermissionReject { tool_name, reason }) => {
                     return Ok(TurnOutcome::Cancelled {
