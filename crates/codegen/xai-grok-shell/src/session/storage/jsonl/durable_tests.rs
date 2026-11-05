@@ -1895,6 +1895,13 @@ async fn native_section7_boundary_probe(
     );
 }
 
+/// A3 section 7 ledger boundary, run for `corrected` false and true; despite its name, it shows the declared full count does not fit.
+/// Arm 1 pads a 750-response state (12,000 members / 1,500 groups) to a measured ledger pool of exactly `NATIVE_LEDGER_BYTES` and asserts acceptance.
+/// Arm 2 runs the declared full count, 1,024 responses (16,384 members / 2,048 groups), unpadded, and asserts `NativeUnavailable::Capacity`.
+/// The refusal leaves head, mirror and checkpoint unchanged; the probe branches on the measured pool, so arm 2 would assert acceptance if it fit.
+/// A3 section 7 declared 16,384 members / 2,048 groups to fit, but on this projection path their computed all-strip lower bound is 16,782,556 bytes.
+/// Even this underestimate is 5,340 over the 16,777,216-byte limit: the pre-projection checkpoint's full ledger stays charged beside the new one.
+/// Arm 1's +1 counterpart is `native_projection_a3_section7_ledger_plus_one_refuses`; this test keeps its name because a signed selector list pins it.
 #[tokio::test(flavor = "current_thread")]
 async fn native_projection_a3_section7_full_count_ledger_fits() {
     tokio::task::LocalSet::new()
