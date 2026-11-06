@@ -2279,6 +2279,10 @@ fn native_lowered_body(request: &ConversationRequest, backend: &ApiBackend) -> s
             xai_grok_sampling_types::ChatCompletionRequest::from(request.clone()),
         )
         .unwrap(),
+        ApiBackend::GenerateContent => serde_json::to_value(
+            xai_grok_sampling_types::conversation::build_generate_content_request(request),
+        )
+        .unwrap(),
     }
 }
 
@@ -3761,6 +3765,9 @@ fn parent_golden_capture_body(
         xai_grok_sampling_types::ApiBackend::Messages => "/v1/messages",
         xai_grok_sampling_types::ApiBackend::Responses => "/v1/responses",
         xai_grok_sampling_types::ApiBackend::ChatCompletions => "/v1/chat/completions",
+        xai_grok_sampling_types::ApiBackend::GenerateContent => {
+            unreachable!("fixture backends are path-only (no GenerateContent row)")
+        }
     };
     assert_eq!(exchange.path, expected_path);
     assert_eq!(exchange.parsed_body["model"], fixture.binding.config.model);
@@ -4941,6 +4948,14 @@ async fn a2_received_body(
         ApiBackend::ChatCompletions => {
             unreachable!("Chat preservation uses its ordinary serializer")
         }
+        ApiBackend::GenerateContent => {
+            let (stream, _) = client
+                .conversation_stream_generate_content(request.clone())
+                .await
+                .unwrap();
+            let events: Vec<_> = futures::TryStreamExt::try_collect(stream).await.unwrap();
+            assert!(!events.is_empty());
+        }
     }
     let exchanges = wire.exchanges.borrow();
     assert_eq!(
@@ -5531,6 +5546,13 @@ async fn a3_unprojected_wire(
             let (stream, _) = client.conversation_stream(original).await.unwrap();
             let _: Vec<_> = futures::TryStreamExt::try_collect(stream).await.unwrap();
         }
+        ApiBackend::GenerateContent => {
+            let (stream, _) = client
+                .conversation_stream_generate_content(original)
+                .await
+                .unwrap();
+            let _: Vec<_> = futures::TryStreamExt::try_collect(stream).await.unwrap();
+        }
     }
     let requests = server.requests();
     assert_eq!(
@@ -5570,6 +5592,9 @@ fn a3_backend_path(backend: &ApiBackend) -> &'static str {
         ApiBackend::Responses => "/v1/responses",
         ApiBackend::Messages => "/v1/messages",
         ApiBackend::ChatCompletions => "/v1/chat/completions",
+        ApiBackend::GenerateContent => {
+            unreachable!("A3 fixtures are path-only (no GenerateContent row)")
+        }
     }
 }
 
