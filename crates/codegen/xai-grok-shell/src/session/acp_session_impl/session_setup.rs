@@ -340,23 +340,97 @@ impl SessionActor {
             self.persist_announcement_state().await;
         }
     }
-    /// Flush buffered native (v2) agent messages into chat state as tool
-    /// results. Provenance: open-grok@240c99c9 session_setup.rs
-    /// `flush_native_agent_messages`. Returns whether anything was flushed.
-    pub(super) fn flush_native_agent_messages(&self) -> bool {
-        let items = match self.pending_native_agent_messages.lock() {
-            Ok(mut buffered) => std::mem::take(&mut *buffered),
-            Err(_) => Vec::new(),
-        };
-        let has_items = !items.is_empty();
-        for item in items {
-            self.chat_state_handle.push_tool_result(item);
+    /// Flush buffered native (v2) agent messages into chat state. Provenance:
+    /// open-grok@240c99c9 session_setup.rs `flush_native_agent_messages`.
+    /// Returns whether anything was submitted.
+    ///
+    /// Inactive keeps the plain flush. Under Selected the resident prefix stays
+    /// put while this session's turn is in flight, still heads its queue and
+    /// K2's continuation is owed; otherwise it is copied, submitted as one
+    /// fallible batch, and only the submitted prefix is removed. An unreadable
+    /// native history never retains.
+    pub(super) async fn flush_native_agent_messages(&self) -> bool {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+        if super::switch_projection::select_native_history() != NativeHistoryRequirement::Selected {
+            let items = match self.pending_native_agent_messages.lock() {
+                Ok(mut buffered) => std::mem::take(&mut *buffered),
+                Err(_) => Vec::new(),
+            };
+            let has_items = !items.is_empty();
+            for item in items {
+                self.chat_state_handle.push_tool_result(item);
+            }
+            return has_items;
         }
-        has_items
+        match self.pending_native_agent_messages.lock() {
+            Ok(buffered) if !buffered.is_empty() => {}
+            _ => return false,
+        }
+        let turn_heads_queue = self
+            .session_turn_active
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && {
+                let state = self.state.lock().await;
+                state.running_prompt_id().is_some_and(|running| {
+                    state
+                        .pending_inputs
+                        .front()
+                        .is_some_and(|front| front.prompt_id == running)
+                })
+            };
+        if turn_heads_queue
+            && self
+                .chat_state_handle
+                .read_native_history()
+                .await
+                .is_ok_and(|read| {
+                    read.checkpoint.is_some_and(|checkpoint| {
+                        checkpoint
+                            .source
+                            .producing_bindings
+                            .last()
+                            .is_some_and(|origin| {
+                                checkpoint
+                                    .ledger
+                                    .lifecycle
+                                    .exchanges
+                                    .get(&origin.request)
+                                    .map(String::as_str)
+                                    == Some("LiveBound")
+                                    && checkpoint.ledger.groups.iter().any(|group| {
+                                        group.state == "LivePending"
+                                            && group.origin_ref == origin.origin_ref
+                                    })
+                            })
+                    })
+                })
+        {
+            return false;
+        }
+        let Ok(prefix) = self
+            .pending_native_agent_messages
+            .lock()
+            .map(|buffered| buffered.clone())
+        else {
+            return false;
+        };
+        let submitted = prefix.len();
+        if self
+            .chat_state_handle
+            .try_push_user_messages_batch(prefix)
+            .is_err()
+        {
+            return false;
+        }
+        if let Ok(mut buffered) = self.pending_native_agent_messages.lock() {
+            let submitted = submitted.min(buffered.len());
+            buffered.drain(..submitted);
+        }
+        true
     }
     #[tracing::instrument(level = "debug", skip_all)]
     pub(super) async fn flush_pending_skill_reminders(&self) {
-        self.flush_native_agent_messages();
+        self.flush_native_agent_messages().await;
         let activation = self.plan_mode.lock().take_pending_activation();
         if let Some(text) = activation {
             self.chat_state_handle

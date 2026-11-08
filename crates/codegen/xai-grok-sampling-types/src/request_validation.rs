@@ -277,6 +277,14 @@ pub fn check_native_history_request(
     plan: Option<&crate::conversation::native_search_history::NativeHistoryPlan>,
 ) -> Result<(), crate::conversation::native_search_history::NativePlanRefusal> {
     use crate::conversation::native_search_history::{NativeHistoryRequirement, NativePlanRefusal};
+    if request
+        .native_bound_preparation
+        .as_ref()
+        .is_some_and(|preparation| preparation.requirement() == NativeHistoryRequirement::Selected)
+        && context.requirement() != NativeHistoryRequirement::Selected
+    {
+        return Err(NativePlanRefusal::MissingPlan);
+    }
     let plan = match (context.requirement(), plan) {
         (NativeHistoryRequirement::Inactive, None) => return Ok(()),
         (NativeHistoryRequirement::Inactive, Some(_)) => {

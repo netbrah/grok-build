@@ -5434,6 +5434,95 @@ mod tests {
         );
     }
 
+    async fn k2lg_pending_shell_bridge() {
+        const NAME: &str = "session::acp_session::native_messages_replay_tests::messages_replay_plan_checked_on_all_sends";
+        let digest = native_content_digest;
+        let expected = serde_json::json!({
+            "sampler": digest(include_bytes!("client.rs")),
+            "validation": digest(include_bytes!("../../xai-grok-sampling-types/src/request_validation.rs")),
+            "fixture": digest(include_bytes!("../../xai-grok-shell/src/session/acp_session_tests/native_messages_replay_tests.rs")),
+        });
+        let directory = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let mut candidates: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("xai_grok_shell-")
+                    && matches!(
+                        path.extension().and_then(|extension| extension.to_str()),
+                        None | Some("exe")
+                    )
+            })
+            .collect();
+        candidates.sort();
+        let mut matching = None;
+        for binary in candidates {
+            let path = binary.clone();
+            let output = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(path)
+                    .env("K2LG_SOURCE_PROBE", "1")
+                    .args(["--exact", NAME, "--nocapture"])
+                    .stdin(std::process::Stdio::null())
+                    .output()
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            if !output.status.success() {
+                continue;
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout
+                .lines()
+                .filter_map(|line| line.strip_prefix("K2LG_BUILD "))
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .any(|stamp| stamp == expected)
+            {
+                matching = Some(binary);
+                break;
+            }
+        }
+        let binary = matching.expect("K2LG pending fixture requires the shell lib selector built on these exact sampler, validator, and fixture bytes");
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(binary)
+                .args(["--exact", NAME, "--nocapture"])
+                .stdin(std::process::Stdio::null())
+                .output()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines().filter(|line| line.starts_with("K2LG_")) {
+            println!("{line}");
+        }
+        println!(
+            "K2LG_P {}",
+            serde_json::json!({"producer":"real K2 shell handoff", "source_stamp":expected, "selected_shell_test":NAME, "bridge_source_matched":true, "child_success":output.status.success()})
+        );
+        assert!(
+            output.status.success(),
+            "K2LG boundary real pending producer failed in the source-matched shell fixture"
+        );
+        assert!(
+            stdout.contains("running 1 test")
+                && stdout.lines().any(|line| line.starts_with("K2LG_V "))
+        );
+    }
+    #[tokio::test]
+    async fn messages_k2lg_pending_checked_on_all_sends() {
+        k2lg_pending_shell_bridge().await;
+    }
+
     #[tokio::test]
     async fn messages_replay_plan_checked_on_all_sends() {
         use xai_grok_sampling_types::{ConversationItem as Item, ToolSpec};

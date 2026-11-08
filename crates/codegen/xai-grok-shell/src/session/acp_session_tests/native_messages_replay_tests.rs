@@ -1984,6 +1984,13 @@ fn k1_isolated_shell_test() -> bool {
 
 #[tokio::test(flavor = "current_thread")]
 async fn messages_replay_plan_checked_on_all_sends() {
+    if k2lg_selector_prelude().await {
+        return;
+    }
+    const CHILD_SELECTOR: &str = "session::acp_session::native_messages_replay_tests::messages_replay_plan_checked_on_all_sends";
+    if std::env::var("GROK_TEST_K1_SHELL_CHILD").as_deref() != Ok(CHILD_SELECTOR) {
+        k2lg_pending_isolated().await;
+    }
     if k1_isolated_shell_test() {
         return;
     }
@@ -3603,4 +3610,2833 @@ async fn messages_pending_retains_bound_tool_array() {
             println!("{}", json!({"K2_U5_unavailable":true,"installed_B":change == K2U5Change::InstalledRow,"revoked_definition":change == K2U5Change::RevokedDefinition,"incomplete":true,"continuation_http_A":0,"continuation_http_B":0}));
         }
     }).await;
+}
+
+fn k2lg_compiled_sources() -> Value {
+    json!({
+        "sampler": native_content_digest(include_bytes!("../../../../xai-grok-sampler/src/client.rs")),
+        "validation": native_content_digest(include_bytes!("../../../../xai-grok-sampling-types/src/request_validation.rs")),
+        "fixture": native_content_digest(include_bytes!("native_messages_replay_tests.rs")),
+    })
+}
+
+async fn k2lg_selector_prelude() -> bool {
+    if std::env::var_os("K2LG_SOURCE_PROBE").is_some() {
+        println!("K2LG_BUILD {}", k2lg_compiled_sources());
+        return true;
+    }
+    if std::env::var_os("K2LG_PENDING_CHILD").is_some() {
+        tokio::task::LocalSet::new().run_until(k2lg_v_cases()).await;
+        return true;
+    }
+    false
+}
+
+async fn k2lg_pending_isolated() {
+    let home = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.env("K2LG_PENDING_CHILD", "1").env("GROK_HOME", home.path())
+        .env_remove("GROK_CONFIG").env_remove("GROK_CONFIG_PATH")
+        .args(["--exact", "session::acp_session::native_messages_replay_tests::messages_replay_plan_checked_on_all_sends", "--nocapture"])
+        .stdin(std::process::Stdio::null());
+    xai_tty_utils::detach_std_command(&mut command);
+    let output = tokio::task::spawn_blocking(move || command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().filter(|line| line.starts_with("K2LG_")) {
+        println!("{line}");
+    }
+    let assertion: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("K2LG boundary"))
+        .collect();
+    assert!(
+        output.status.success(),
+        "K2LG boundary child failed: {}",
+        assertion.join("; ")
+    );
+    assert!(stdout.contains("running 1 test"));
+}
+
+fn k2lg_start_command_loop(
+    session: &mut K2ReplaySession,
+) -> tokio::sync::mpsc::UnboundedSender<SessionCommand> {
+    let (commands, command_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (chat_tx, chat_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let actor = session.actor.clone();
+    session.tasks.push(tokio::task::spawn_local(async move {
+        let _keep_channels = (chat_tx, event_tx);
+        super::run_session(
+            actor,
+            command_rx,
+            chat_rx,
+            event_rx,
+            None,
+            Arc::new(parking_lot::Mutex::new(
+                xai_grok_workspace::file_system::CodebaseIndexManager::new(),
+            )),
+            std::env::temp_dir(),
+            crate::session::fs_watch::FsWatchCapabilities::none(),
+        )
+        .await;
+    }));
+    commands
+}
+
+fn k2lg_v_corrupt(
+    request: &mut ConversationRequest,
+    binding: &xai_chat_state::RequestTransportBinding,
+    case: &str,
+) {
+    use k2_history::*;
+    match case {
+        "valid" | "live-defensive" | "W1" | "W3" => {}
+        "missing-native" => {
+            assert_eq!(request.native_bound_preparation.as_ref().unwrap().requirement(), NativeHistoryRequirement::Selected);
+            request.native_history = None;
+        }
+        "missing-plan" => request.native_history.as_mut().unwrap().invalidate_plan(),
+        "stale-context" => {
+            let native = request.native_history.as_ref().unwrap();
+            let mut capture = native.context().capture().clone();
+            capture.history_revision += 1;
+            request.native_history = Some(NativeHistoryRequest::new(NativeHistoryRequestContext::captured(
+                NativeHistoryRequirement::Selected, capture, native.context().authority().clone()), native.plan().cloned()));
+        }
+        "stale-carrier" => {
+            let mut changed = request.clone();
+            changed.max_output_tokens = Some(4097);
+            let client = SamplingClient::new(xai_grok_sampler::SamplerConfig {
+                base_url: binding.config.base_url.clone(), model: binding.config.model.clone(),
+                api_backend: xai_grok_sampler::ApiBackend::Messages, max_completion_tokens: Some(4096),
+                ..Default::default()
+            }).unwrap();
+            request.encoded = Some(client.encode_conversation_messages(&changed).unwrap());
+        }
+        "tools" => request.tools.reverse(),
+        "schema" => request.tools[0].parameters = json!({"type":"object","properties":{"changed":{"type":"number"}}}),
+        "text" => request.items.push(ConversationItem::user("K2LG extra non-result text")),
+        "missing-result" => request.items.retain(|item| !matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c2")),
+        "duplicate-result" => {
+            let item = request.items.iter().find(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c1")).unwrap().clone();
+            request.items.push(item);
+        }
+        "foreign-result" => {
+            let result = request.items.iter_mut().find_map(|item| match item { ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c2" => Some(result), _ => None }).unwrap();
+            result.tool_call_id = "client_k2_foreign".into();
+        }
+        _ => unreachable!(),
+    }
+}
+
+async fn k2lg_v_drive(case: &'static str) -> K2U5Handoff {
+    use k2_history::*;
+    let server = MockInferenceServer::start().await.unwrap();
+    let other = MockInferenceServer::start().await.unwrap();
+    let mut session = K2ReplaySession::new(&server).await;
+    k2_seed(&mut session, &server).await;
+    session.releases[1]
+        .clone()
+        .acquire_many_owned(16)
+        .await
+        .unwrap()
+        .forget();
+    server.enqueue_response("/v1/messages", k2_script(k2_u5_frames()));
+    if !matches!(case, "live-defensive" | "W3") {
+        server.enqueue_response(
+            "/v1/messages",
+            k2_script(k2_frames(
+                "msg_k2lg_done",
+                vec![(json!({"type":"text","text":"K2LG done"}), Vec::new())],
+                "end_turn",
+            )),
+        );
+    }
+    session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user("K2LG real pending producer"))
+        .await;
+    session
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let trace = std::rc::Rc::new(std::cell::RefCell::new(K2U5Trace {
+        check_tools: true,
+        ..Default::default()
+    }));
+    let run_trace = trace.clone();
+    let actor = session.actor.clone();
+    let domain = session.domain(&server);
+    let mut running = tokio::task::spawn_local(async move {
+        let capture = run_trace.clone();
+        let mut prepare =
+            move |request: &mut ConversationRequest,
+                  binding: &xai_chat_state::RequestTransportBinding| {
+                let carrier = NativeFinalCarrier::capture(
+                    request.encoded.as_ref().unwrap().as_bytes().to_vec().into(),
+                )
+                .unwrap();
+                let pending = capture.borrow().submitted.len() == 1;
+                capture
+                    .borrow_mut()
+                    .submitted
+                    .push((request.clone(), binding.clone(), carrier));
+                if pending {
+                    k2lg_v_corrupt(request, binding, case);
+                }
+                Ok(())
+            };
+        super::switch_projection::HISTORY_S3_TEST_DOMAIN
+            .scope(
+                domain,
+                super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                    NativeHistoryRequirement::Selected,
+                    K2_U5_TRACE.scope(
+                        run_trace,
+                        actor.process_conversation_turn_for_native_history_test(
+                            "K2LG-live-pending",
+                            None,
+                            None,
+                            None,
+                            &mut super::length_salvage::LengthSalvage::new(None),
+                            &mut Default::default(),
+                            &mut prepare,
+                        ),
+                    ),
+                ),
+            )
+            .await
+    });
+    let epoch = session.actor.turn_report.start_next_turn();
+    {
+        let mut state = session.actor.state.lock().await;
+        state.running_task = Some(AgentTask::new_at_epoch(
+            "K2LG-live-pending",
+            epoch,
+            running.abort_handle(),
+        ));
+        state
+            .pending_inputs
+            .push_front(user_item("K2LG-live-pending", "K2LG"));
+    }
+    *session.actor.current_prompt_id.lock().unwrap() = Some("K2LG-live-pending".into());
+    assert_eq!(
+        tokio::time::timeout(K0_TIMEOUT, session.source_acks.recv())
+            .await
+            .unwrap(),
+        Some(NativeResponseStatus::Accepted)
+    );
+    let mut entered = Vec::new();
+    for _ in 0..2 {
+        entered.push(
+            tokio::time::timeout(K0_TIMEOUT, session.entered.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    entered.sort();
+    assert_eq!(entered, vec!["alpha__lookup", "zeta__fetch"]);
+    let before_result = tokio::time::timeout(K0_TIMEOUT, async {
+        loop {
+            let items = session.actor.chat_state_handle.get_conversation().await;
+            if items.iter().any(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c1")) { break items; }
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    let (checkpoint, _) = session.reload().await;
+    let origin = checkpoint.source.producing_bindings.last().unwrap();
+    assert_eq!(
+        checkpoint
+            .ledger
+            .lifecycle
+            .exchanges
+            .get(&origin.request)
+            .map(String::as_str),
+        Some("LiveBound")
+    );
+    assert!(
+        checkpoint
+            .ledger
+            .groups
+            .iter()
+            .any(|group| group.state == "LivePending" && group.origin_ref == origin.origin_ref)
+    );
+    assert_eq!(server.messages_request_count(), 2);
+    if case == "W1" {
+        let commands = k2lg_start_command_loop(&mut session);
+        commands
+            .send(SessionCommand::Interject {
+                text: "K2LG W1 real late user".into(),
+                id: None,
+                images: Vec::new(),
+            })
+            .unwrap();
+        tokio::time::timeout(K0_TIMEOUT, async {
+            while session.actor.pending_interjections.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let mut defensive_failures = Vec::new();
+    let mut defensive_delta = 0;
+    let mut held = matches!(case, "live-defensive" | "W3").then(|| {
+        server.expect_response_blocked(
+            "K2LG live pending continuation",
+            xai_grok_test_support::InferenceRequestMatcher::foreground(
+                xai_grok_test_support::InferenceEndpoint::Messages,
+            ),
+            k2_script(k2_frames(
+                "msg_k2lg_done",
+                vec![(json!({"type":"text","text":"K2LG done"}), Vec::new())],
+                "end_turn",
+            )),
+        )
+    });
+    session.releases[1].add_permits(1);
+    if let Some(expectation) = held.as_mut() {
+        tokio::time::timeout(K0_TIMEOUT, expectation.wait_blocked())
+            .await
+            .unwrap();
+        assert!(
+            !running.is_finished(),
+            "K2LG setup producer remains active at the terminal barrier"
+        );
+        let (saved, _, carrier) = trace.borrow().submitted[1].clone();
+        let native = saved.native_history.as_ref().unwrap();
+        assert!(
+            validate_native_history_plan(native.context(), native.plan(), &carrier).is_ok(),
+            "K2LG setup direct routes require the original still-live bound authority"
+        );
+        if case == "W3" {
+            let commands = k2lg_start_command_loop(&mut session);
+            commands
+                .send(SessionCommand::Interject {
+                    text: "K2LG W3 real late user".into(),
+                    id: None,
+                    images: Vec::new(),
+                })
+                .unwrap();
+            tokio::time::timeout(K0_TIMEOUT, async {
+                while !session
+                    .actor
+                    .pending_interjections
+                    .snapshot()
+                    .iter()
+                    .any(|entry| entry.text == "K2LG W3 real late user")
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let requests = server.requests();
+            let submitted = requests
+                .iter()
+                .filter(|request| request.path == "/v1/messages")
+                .nth(2)
+                .unwrap()
+                .body
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                server.messages_request_count(),
+                3,
+                "K2LG boundary W3 continuation sends exactly once"
+            );
+            assert_eq!(
+                *submitted,
+                serde_json::from_slice::<Value>(carrier.bytes()).unwrap(),
+                "K2LG boundary W3 actual carrier is the original bound body"
+            );
+            let origin = checkpoint.source.producing_bindings.last().unwrap();
+            let mut waiting: Vec<_> = checkpoint
+                .ledger
+                .lifecycle
+                .waiting_clients
+                .iter()
+                .filter(|client| {
+                    client.source.producing_binding == origin.request
+                        && client.delivery == "Waiting"
+                })
+                .map(|client| client.client_id.as_str())
+                .collect();
+            waiting.sort();
+            let blocks = submitted["messages"].as_array().unwrap().last().unwrap()["content"]
+                .as_array()
+                .unwrap();
+            let mut delivered: Vec<_> = blocks
+                .iter()
+                .map(|block| {
+                    assert_eq!(
+                        block["type"], "tool_result",
+                        "K2LG boundary W3 results-only user tail"
+                    );
+                    block["tool_use_id"].as_str().unwrap()
+                })
+                .collect();
+            delivered.sort();
+            assert!(
+                !waiting.is_empty(),
+                "K2LG boundary W3 waiting set is real and nonempty"
+            );
+            assert_eq!(
+                delivered, waiting,
+                "K2LG boundary W3 contains all and only real waiting IDs"
+            );
+            assert_eq!(
+                trace.borrow().builds.len(),
+                2,
+                "K2LG boundary W3 uses only the original and continuation builds"
+            );
+            assert_eq!(
+                trace.borrow().submitted.len(),
+                2,
+                "K2LG boundary W3 captured exactly two bound requests"
+            );
+            assert_eq!(
+                session.executions.lock().unwrap().len(),
+                2,
+                "K2LG boundary W3 clients execute once-only"
+            );
+            assert!(
+                !saved
+                    .items
+                    .iter()
+                    .any(|item| item.text_content().contains("K2LG W3 real late user")),
+                "K2LG boundary W3 input is queued, not in the bound send"
+            );
+            assert_eq!(
+                other.messages_request_count(),
+                0,
+                "K2LG boundary W3 never rebuilds on B"
+            );
+            running.abort();
+            assert!(
+                matches!(running.await, Err(error) if error.is_cancelled()),
+                "K2LG setup W3 bounded test stop aborts its own turn"
+            );
+            expectation.release();
+            session
+                .actor
+                .session_turn_active
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                session
+                    .actor
+                    .pending_interjections
+                    .snapshot()
+                    .iter()
+                    .any(|entry| entry.text == "K2LG W3 real late user"),
+                "K2LG boundary W3 undelivered ordinary input remains queued after the bounded stop"
+            );
+            let (after, _) = session.reload().await;
+            assert_eq!(
+                k2_source_blocks(&after, "msg_k2_pending"),
+                k2_source_blocks(&checkpoint, "msg_k2_pending"),
+                "K2LG boundary W3 immutable native source survives"
+            );
+            println!(
+                "K2LG_V {}",
+                json!({"route":"V2","case":"W3","window":"W3",
+                "producer":"SessionCommand::Interject through real run loop after continuation HTTP",
+                "continuation_http":1,"input_queued":true,"input_transmitted":false,
+                "source_unchanged":true,"client_executions":2,"controlled_test_stop":true,
+                "turn_completion_credit":false,"body_digest":carrier.digest()})
+            );
+            let outcome = Err(crate::sampling::error::local_error(
+                "k2lg_w3_controlled_stop",
+                "test stopped after observing the live W3 boundary",
+            ));
+            return K2U5Handoff {
+                session,
+                server,
+                other,
+                checkpoint,
+                before_result,
+                trace,
+                outcome,
+            };
+        }
+        let before = server.messages_request_count();
+        for route in ["V3", "V4"] {
+            for corruption in [
+                "valid",
+                "missing-plan",
+                "missing-native",
+                "stale-context",
+                "tools",
+                "schema",
+                "text",
+                "missing-result",
+                "duplicate-result",
+                "foreign-result",
+            ] {
+                let label = format!("{route}/{corruption}");
+                if !k2lg_v_arm(
+                    &label,
+                    k2lg_v_transport(&session, &server, &trace, route, corruption),
+                )
+                .await
+                {
+                    defensive_failures.push(label);
+                }
+            }
+        }
+        defensive_delta = server.messages_request_count() - before;
+        expectation.release();
+    }
+    let outcome = match tokio::time::timeout(K0_TIMEOUT, &mut running).await {
+        Ok(result) => result.unwrap(),
+        Err(error) => {
+            running.abort();
+            panic!("K2LG boundary bounded handoff: {error}");
+        }
+    };
+    if let Some(expectation) = held.as_mut() {
+        tokio::time::timeout(K0_TIMEOUT, expectation.wait_satisfied())
+            .await
+            .unwrap();
+        expectation.assert_satisfied();
+    }
+    session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let requests = server.requests();
+    let continuation = requests
+        .iter()
+        .filter(|request| request.path == "/v1/messages")
+        .nth(2);
+    println!(
+        "K2LG_V {}",
+        json!({"route":"V1","case":case,"producer":"K2 decoded mixed handoff","builds":trace.borrow().builds.len(),"continuation_http":usize::from(continuation.is_some()),"executions":session.executions.lock().unwrap().clone(),"body_digest":continuation.and_then(|request| request.body.as_ref()).map(|body| native_content_digest(&serde_json::to_vec(body).unwrap()))})
+    );
+    let (after, _) = session.reload().await;
+    assert_eq!(
+        k2_source_blocks(&after, "msg_k2_pending"),
+        k2_source_blocks(&checkpoint, "msg_k2_pending"),
+        "K2LG boundary native source stays immutable after every valid or refused send"
+    );
+    assert_eq!(
+        other.messages_request_count(),
+        0,
+        "K2LG boundary never reconstructs on B"
+    );
+    let usage: Vec<_> = after
+        .ledger
+        .usage
+        .iter()
+        .map(|item| {
+            json!({
+                "request":item.request,"response_occurrence":item.response_occurrence,
+                "outcome":item.outcome,"http_dispatches":item.http_dispatches,
+            })
+        })
+        .collect();
+    println!(
+        "K2LG_V_SOURCE {}",
+        json!({"case":case,"source_unchanged":true,"HTTP_B":0,
+        "native_usage":usage,"defensive_http_delta":defensive_delta})
+    );
+    let success = matches!(case, "valid" | "live-defensive" | "W3");
+    assert_eq!(
+        server.messages_request_count(),
+        if success { 3 + defensive_delta } else { 2 },
+        "K2LG boundary V1 invalid pending continuation must send zero HTTP: {case}"
+    );
+    assert_eq!(outcome.is_ok(), success, "K2LG boundary V1 outcome: {case}");
+    assert_eq!(
+        session.executions.lock().unwrap().len(),
+        2,
+        "K2LG boundary client execution stays once-only"
+    );
+    if case == "W1" {
+        let history = session.actor.chat_state_handle.get_conversation().await;
+        assert!(
+            history
+                .iter()
+                .any(|item| item.text_content().contains("K2LG W1 real late user")),
+            "K2LG boundary W1 input stays in history and untransmitted"
+        );
+        let (after, _) = session.reload().await;
+        assert_eq!(
+            k2_source_blocks(&after, "msg_k2_pending"),
+            k2_source_blocks(&checkpoint, "msg_k2_pending")
+        );
+        println!(
+            "K2LG_V {}",
+            json!({"route":"V2","window":"W1","status":"OBSERVED_PRESERVATION","site":"tool_calls.rs native_waiting_results_refused","K2LG_kill":false,"L16_credit":false,"input_in_history":true,"continuation_http":0})
+        );
+    }
+    assert!(
+        defensive_failures.is_empty(),
+        "K2LG boundary failed live defensive arms: {defensive_failures:?}"
+    );
+    K2U5Handoff {
+        session,
+        server,
+        other,
+        checkpoint,
+        before_result,
+        trace,
+        outcome,
+    }
+}
+
+async fn k2lg_v_transport(
+    session: &K2ReplaySession,
+    server: &MockInferenceServer,
+    trace: &std::rc::Rc<std::cell::RefCell<K2U5Trace>>,
+    route: &'static str,
+    case: &'static str,
+) {
+    let (saved, mut binding, original) = trace.borrow().submitted[1].clone();
+    let mut request = saved;
+    request.x_grok_req_id = Some(format!("K2LG-{route}-{case}"));
+    request.encoded = None;
+    k2lg_v_corrupt(&mut request, &binding, case);
+    let client = session
+        .actor
+        .prepare_chat_completion_from_binding(&mut binding, false)
+        .await
+        .unwrap();
+    let before = server.messages_request_count();
+    let result: Result<(), String> = tokio::time::timeout(K0_TIMEOUT, async {
+        match route {
+            "V3" => {
+                let (mut stream, _) = client
+                    .conversation_stream_messages(request)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                while let Some(event) = stream.next().await {
+                    event.map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            }
+            "V4" => client
+                .conversation_collect(request)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            _ => unreachable!(),
+        }
+    })
+    .await
+    .unwrap();
+    let delta = server.messages_request_count() - before;
+    println!(
+        "K2LG_V {}",
+        json!({"route":route,"case":case,"producer":"saved real K2 continuation","credit":"DEFENSIVE_TRANSPORT","http_delta":delta,"expected_digest":original.digest(),"client_executions":session.executions.lock().unwrap().len()})
+    );
+    if case == "valid" {
+        assert!(
+            result.is_ok(),
+            "K2LG boundary direct positive {route}: {result:?}"
+        );
+        assert_eq!(delta, 1, "K2LG boundary direct positive sends once {route}");
+        let requests = server.requests();
+        let sent = requests
+            .iter()
+            .filter(|request| request.path == "/v1/messages")
+            .last()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            *sent,
+            serde_json::from_slice::<Value>(original.bytes()).unwrap(),
+            "K2LG boundary direct actual body equals the original bound carrier"
+        );
+        let primary = requests
+            .iter()
+            .filter(|request| request.path == "/v1/messages")
+            .nth(2)
+            .unwrap();
+        let direct = requests
+            .iter()
+            .filter(|request| request.path == "/v1/messages")
+            .last()
+            .unwrap();
+        for header in [
+            "authorization",
+            "x-api-key",
+            "anthropic-version",
+            "anthropic-beta",
+        ] {
+            assert!(
+                primary.header(header) == direct.header(header),
+                "K2LG boundary defensive transport preserves captured headers without printing values: {header}"
+            );
+        }
+        println!(
+            "K2LG_V_TRANSPORT {}",
+            json!({"route":route,"case":case,
+            "bound_client_preparation":true,"captured_headers_equal":true,"credential_values_printed":false})
+        );
+    } else {
+        assert_eq!(
+            delta, 0,
+            "K2LG boundary direct invalid proof sends zero {route}/{case}"
+        );
+        assert!(
+            result.is_err(),
+            "K2LG boundary direct invalid proof refuses {route}/{case}"
+        );
+    }
+    assert_eq!(
+        session.executions.lock().unwrap().len(),
+        2,
+        "K2LG boundary defensive transport never re-executes clients"
+    );
+}
+
+async fn k2lg_v_arm(label: &str, arm: impl std::future::Future<Output = ()>) -> bool {
+    use futures_util::FutureExt;
+    match std::panic::AssertUnwindSafe(arm).catch_unwind().await {
+        Ok(()) => {
+            println!("\nK2LG_ARM {}", json!({"label":label,"passed":true}));
+            true
+        }
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            if !message.contains("K2LG boundary") {
+                std::panic::resume_unwind(payload);
+            }
+            println!(
+                "\nK2LG_ARM {}",
+                json!({"label":label,"passed":false,"assertion":message})
+            );
+            false
+        }
+    }
+}
+
+async fn k2lg_v_cases() {
+    println!("K2LG_BUILD {}", k2lg_compiled_sources());
+    let valid = k2lg_v_drive("valid").await;
+    k2_u5_assert_continuation(&valid);
+    let mut failures = Vec::new();
+    if !k2lg_v_arm("V3-V4/live-binding", async {
+        k2lg_v_drive("live-defensive").await;
+    })
+    .await
+    {
+        failures.push("V3-V4/live-binding".into());
+    }
+    for case in [
+        "missing-plan",
+        "missing-native",
+        "stale-context",
+        "stale-carrier",
+        "tools",
+        "schema",
+        "text",
+        "missing-result",
+        "duplicate-result",
+        "foreign-result",
+        "W1",
+        "W3",
+    ] {
+        let label = format!("V1/{case}");
+        if !k2lg_v_arm(&label, async {
+            let handoff = k2lg_v_drive(case).await;
+            if case == "W3" {
+                assert!(
+                    handoff.outcome.is_err(),
+                    "K2LG setup W3 is an explicitly bounded live snapshot, not a completed turn"
+                );
+            }
+        })
+        .await
+        {
+            failures.push(label);
+        }
+    }
+    println!(
+        "K2LG_V {}",
+        json!({"route":"V2","window":"W2","status":"UNSCHEDULABLE_GAP","reason":"no committed rendezvous between tool_calls.rs:539 and turn.rs:2844; no new product hook","K2LG_kill":false,"L16_credit":false})
+    );
+    assert!(
+        failures.is_empty(),
+        "K2LG boundary failed pending arms: {failures:?}"
+    );
+}
+
+const K2LG_N_SELECTOR: &str = "session::acp_session::native_messages_replay_tests::messages_native_agent_grammar_uses_real_mailbox_producer";
+const K2LG_N_ROOT: &str = "k2lg-root";
+const K2LG_N_WORKER: &str = "k2lg-worker";
+const K2LG_N_PROMPT: &str = "K2LG-N-live";
+const K2LG_N_TARGET: &str = "/root/worker";
+
+type K2lgNLog = Arc<std::sync::Mutex<Vec<(String, Value)>>>;
+
+#[derive(Clone, Copy, Default)]
+struct K2lgNOptions {
+    retries: u32,
+    max_turns: Option<usize>,
+}
+
+/// Forwards every chat-state persistence call to the real channel writer and records the
+/// item-level appends and replacements the native arms observe.
+struct K2lgNPersistence {
+    inner: crate::session::chat_persistence::ChannelChatPersistence,
+    log: K2lgNLog,
+}
+
+impl xai_chat_state::ChatPersistence for K2lgNPersistence {
+    fn persist_message(&mut self, item: &ConversationItem) {
+        self.log
+            .lock()
+            .unwrap()
+            .push(("persist".into(), serde_json::to_value(item).unwrap()));
+        xai_chat_state::ChatPersistence::persist_message(&mut self.inner, item);
+    }
+    fn persist_working_directory_switch_and_ack(
+        &mut self,
+        item: &ConversationItem,
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<xai_chat_state::StrictAppendAck, xai_chat_state::StrictAppendError>,
+    > {
+        xai_chat_state::ChatPersistence::persist_working_directory_switch_and_ack(
+            &mut self.inner,
+            item,
+        )
+    }
+    fn replace_history(&mut self, items: &[ConversationItem]) {
+        self.log
+            .lock()
+            .unwrap()
+            .push(("replace".into(), serde_json::to_value(items).unwrap()));
+        xai_chat_state::ChatPersistence::replace_history(&mut self.inner, items);
+    }
+    fn replace_history_for_strip_and_ack(
+        &mut self,
+        items: &[ConversationItem],
+    ) -> tokio::sync::oneshot::Receiver<std::io::Result<()>> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(("strip".into(), serde_json::to_value(items).unwrap()));
+        xai_chat_state::ChatPersistence::replace_history_for_strip_and_ack(&mut self.inner, items)
+    }
+    fn flush(&mut self) {
+        xai_chat_state::ChatPersistence::flush(&mut self.inner);
+    }
+    fn read_native_history(
+        &mut self,
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<xai_chat_state::persistence::native::NativeRead, k2_history::NativeUnavailable>,
+    > {
+        xai_chat_state::ChatPersistence::read_native_history(&mut self.inner)
+    }
+    fn persist_native_generation_and_ack(
+        &mut self,
+        write: xai_chat_state::persistence::native::NativeWrite,
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<xai_chat_state::persistence::native::NativeAppendAck, k2_history::NativeUnavailable>,
+    > {
+        self.log
+            .lock()
+            .unwrap()
+            .push(("native".into(), json!("generation")));
+        xai_chat_state::ChatPersistence::persist_native_generation_and_ack(&mut self.inner, write)
+    }
+    fn persist_native_projection_and_ack(
+        &mut self,
+        write: xai_chat_state::persistence::native::NativeProjectionWrite,
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<k2_history::NativeCompoundAck, k2_history::NativeUnavailable>,
+    > {
+        self.log
+            .lock()
+            .unwrap()
+            .push(("native".into(), json!("projection")));
+        xai_chat_state::ChatPersistence::persist_native_projection_and_ack(&mut self.inner, write)
+    }
+    fn persist_native_checkpoint_and_ack(
+        &mut self,
+        write: xai_chat_state::persistence::native::NativeWrite,
+        pending: xai_chat_state::persistence::native::NativePendingProtection,
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<xai_chat_state::persistence::native::NativeAppendAck, k2_history::NativeUnavailable>,
+    > {
+        self.log
+            .lock()
+            .unwrap()
+            .push(("native".into(), json!("checkpoint")));
+        xai_chat_state::ChatPersistence::persist_native_checkpoint_and_ack(
+            &mut self.inner,
+            write,
+            pending,
+        )
+    }
+}
+
+/// Registers the receiver session as an active same-team child whose control is the
+/// production `ShellChildRuntime`, so coordinator delivery uses the real follow-up seam.
+struct K2lgNRunner {
+    commands: tokio::sync::mpsc::UnboundedSender<SessionCommand>,
+    started: std::rc::Rc<tokio::sync::Notify>,
+}
+
+impl k0_coordinator::ChildRunner for K2lgNRunner {
+    type Control = crate::agent::subagent::ShellChildRuntime;
+    type CompletionData = ();
+    type RunFuture = k0_coordinator::LocalBoxFuture<k0_coordinator::ChildRunOutput<()>>;
+    type ValidateFuture = std::future::Pending<k0_task::SubagentValidateTypeOutcome>;
+    type DescribeFuture = std::future::Pending<k0_task::SubagentDescribeOutcome>;
+
+    fn run(&self, request: k0_coordinator::ChildRunRequest<Self::Control>) -> Self::RunFuture {
+        let commands = self.commands.clone();
+        let started = self.started.clone();
+        Box::pin(async move {
+            let id = request.request.id.clone();
+            let (receipt_sink, _receipts) = tokio::sync::mpsc::channel(1);
+            assert!(
+                request
+                    .reporter
+                    .started(k0_coordinator::StartedChild {
+                        child_session_id: id.clone(),
+                        persona: None,
+                        resumed_from: None,
+                        child_cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+                        worktree_path: None,
+                        effective_model_id: "k2-replay".into(),
+                        definition_background: false,
+                        control: crate::agent::subagent::ShellChildRuntime {
+                            message_delivery:
+                                crate::session::message_delivery::MessageDeliveryHandle::new(
+                                    commands.clone(),
+                                    id.clone(),
+                                ),
+                            child_cmd_tx: commands,
+                            active_message_target_session_id: id,
+                            child_signals: SessionSignalsHandle::new(),
+                            _child_thread: None,
+                            receipt_sink,
+                            force_queue_envelope: false,
+                            active_message_parent_session_id: K2LG_N_ROOT.into(),
+                            active_message_parent_prompt_index: Arc::new(
+                                std::sync::atomic::AtomicUsize::new(0),
+                            ),
+                        },
+                    })
+                    .await,
+                "K2LG setup worker registers as the active same-team child"
+            );
+            started.notify_one();
+            std::future::pending().await
+        })
+    }
+    fn validate_type(&self, _: String, _: String) -> Self::ValidateFuture {
+        std::future::pending()
+    }
+    fn describe_type(&self, _: String, _: Option<String>, _: String) -> Self::DescribeFuture {
+        std::future::pending()
+    }
+    fn supports_wake(&self) -> bool {
+        false
+    }
+    fn on_completed(
+        &self,
+        _: k0_coordinator::ChildCompletion<()>,
+        published: Box<dyn FnOnce() + Send>,
+    ) {
+        published();
+    }
+}
+
+struct K2lgN {
+    session: K2ReplaySession,
+    server: MockInferenceServer,
+    root: xai_grok_agent::Agent,
+    loop_tx: tokio::sync::mpsc::UnboundedSender<SessionCommand>,
+    loop_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SessionCommand>>,
+    log: K2lgNLog,
+    chat_token: tokio_util::sync::CancellationToken,
+    agent_wide: Arc<std::sync::atomic::AtomicBool>,
+    calls: usize,
+}
+
+struct K2lgNTurn {
+    running: tokio::task::JoinHandle<Result<TurnOutcome, acp::Error>>,
+    epoch: TurnEpoch,
+    identity: std::rc::Rc<()>,
+    submits: std::rc::Rc<std::cell::RefCell<Vec<Value>>>,
+    turn_start_ops: usize,
+}
+
+struct K2lgNObserved {
+    fx: K2lgN,
+    barrier: Vec<ConversationItem>,
+    barrier_ops: usize,
+    turn_start_ops: usize,
+    submits: std::rc::Rc<std::cell::RefCell<Vec<Value>>>,
+}
+
+/// K2's replay session with three declared differences: the agent-wide turn flag is shared
+/// with the sender, the chat-state actor runs on a retained cancellation token with the
+/// recording persistence, and retries/max-turns come from `options`.
+async fn k2lg_n_session(
+    server: &MockInferenceServer,
+    options: K2lgNOptions,
+    agent_wide: &Arc<std::sync::atomic::AtomicBool>,
+    chat_token: &tokio_util::sync::CancellationToken,
+    log: &K2lgNLog,
+) -> K2ReplaySession {
+    let directory = tempfile::tempdir().unwrap();
+    let config = xai_grok_sampler::SamplerConfig {
+        base_url: server.url(),
+        model: "k2-replay".into(),
+        api_key: Some("nonsecret-k2-key".into()),
+        api_backend: xai_grok_sampler::ApiBackend::Messages,
+        max_completion_tokens: Some(4096),
+        max_retries: Some(options.retries),
+        ..Default::default()
+    };
+    let info = crate::session::info::Info {
+        id: acp::SessionId::new(format!(
+            "k2lg-n-{}",
+            directory.path().file_name().unwrap().to_string_lossy()
+        )),
+        cwd: directory.path().to_string_lossy().into_owned(),
+    };
+    let persistence = crate::session::persistence::new_with_explicit_dir(
+        &info,
+        directory.path().to_path_buf(),
+        acp::ModelId::new("k2-replay"),
+        xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(),
+        "k2-replay".into(),
+        crate::session::persistence::ExplicitSessionOpen::New {
+            identity: None,
+            next_trace_turn: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+    let gateway = tokio::task::spawn_local(async move {
+        while let Some(message) = gateway_rx.recv().await {
+            if let xai_acp_lib::AcpClientMessage::SessionNotification(arguments) = message {
+                let _ = arguments.response_tx.send(Ok(()));
+            }
+        }
+    });
+    let (mut actor, _) = create_test_actor_with_chat_persistence(
+        0,
+        256_000,
+        85,
+        gateway_tx,
+        persistence.tx.clone(),
+        Box::new(xai_chat_state::NullChatPersistence),
+    )
+    .await;
+    let sampling = actor
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .expect("K2LG setup chat-state sampling config");
+    let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
+    actor.chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+        vec![],
+        sampling,
+        Box::new(K2lgNPersistence {
+            inner: crate::session::chat_persistence::ChannelChatPersistence::new(
+                persistence.tx.clone(),
+            ),
+            log: log.clone(),
+        }),
+        chat_event_tx,
+        chat_token.clone(),
+    );
+    actor.tool_context.is_turn_active = Some(agent_wide.clone());
+    actor.max_turns = options.max_turns;
+    actor.session_info = info;
+    actor.attach_non_interactive.set(true);
+    actor.max_retries = 0;
+    actor.compaction.compaction_mode = xai_chat_state::CompactionMode::Summary;
+    {
+        let mut slot = actor.agent.borrow_mut();
+        let mut policy = slot.compaction_policy().clone();
+        policy.two_pass_enabled = false;
+        policy.remote_compaction_v2 = false;
+        policy.memory_flush_enabled = false;
+        *slot = xai_grok_agent::Agent::new(
+            slot.definition().clone(),
+            slot.prompt_context().clone(),
+            slot.system_prompt().to_string(),
+            slot.tool_bridge().clone(),
+            slot.reminder_policy().clone(),
+            policy,
+            Vec::new(),
+            true,
+        );
+    }
+    actor.memory.flush_config.enabled = false;
+    actor.memory.dream_config.enabled = false;
+    actor.memory.save_on_end = false;
+    let (manager, models) = manager_with_entries();
+    let mut entry = entry_with_search_flag("k2-replay", true);
+    entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    entry.api_base_url = Some(server.url());
+    entry.api_key = Some("nonsecret-k2-key".into());
+    manager.insert_test_entry("k2-replay", entry);
+    manager.set_current_model_id(acp::ModelId::new("k2-replay"));
+    actor.models_manager = manager;
+    let mut binding = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    binding.config.base_url = server.url();
+    binding.config.model = "k2-replay".into();
+    binding.config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    binding.config.supports_search_tool = true;
+    binding.config.max_completion_tokens = Some(4096);
+    binding.config.max_retries = Some(options.retries);
+    binding.credentials.api_key = Some("nonsecret-k2-key".into());
+    binding.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+    actor
+        .chat_state_handle
+        .install_transport_binding(binding)
+        .await
+        .unwrap();
+    let executions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (entered_tx, entered) = tokio::sync::mpsc::unbounded_channel();
+    let releases = [
+        Arc::new(tokio::sync::Semaphore::new(16)),
+        Arc::new(tokio::sync::Semaphore::new(16)),
+    ];
+    for (index, name) in ["alpha__lookup", "zeta__fetch"].into_iter().enumerate() {
+        actor
+            .agent
+            .borrow()
+            .tool_bridge()
+            .register_mcp_tools(
+                name.into(),
+                K2ClientTool {
+                    name,
+                    executions: executions.clone(),
+                    entered: entered_tx.clone(),
+                    release: releases[index].clone(),
+                },
+                Some(json!({"type":"object","description":"Exact K2 original schema","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false})),
+            )
+            .unwrap();
+    }
+    {
+        let mut mcp = actor.mcp_state.lock().await;
+        mcp.finish_init();
+        mcp.complete_init();
+    }
+    actor
+        .workspace_ops
+        .bind_local_session(
+            &actor.session_id_string(),
+            actor.tool_context.cwd.as_path().to_path_buf(),
+            actor.tool_context.hunk_tracker_handle.clone(),
+            actor.agent.borrow().tool_bridge().toolset(),
+            None,
+        )
+        .unwrap();
+    let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+    actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+        config,
+        xai_grok_sampler::RetryPolicy {
+            max_retries: options.retries,
+            ..Default::default()
+        },
+        sampler_tx,
+    );
+    let actor = Arc::new(actor);
+    let drainer = actor.clone();
+    let (source_tx, source_acks) = tokio::sync::mpsc::unbounded_channel();
+    let sampler = tokio::task::spawn_local(async move {
+        while let Some(event) = sampler_rx.recv().await {
+            let status = match &event {
+                xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                    evidence: k2_history::NativeEvidenceEvent::Attempt(attempt),
+                    ..
+                } => Some(attempt.status),
+                _ => None,
+            };
+            drainer.handle_sampling_event(event).await;
+            if let Some(status) = status {
+                let _ = source_tx.send(status);
+            }
+        }
+    });
+    K2ReplaySession {
+        actor,
+        persistence,
+        directory,
+        _models: models,
+        tasks: vec![gateway, sampler],
+        executions,
+        entered,
+        releases,
+        source_acks,
+    }
+}
+
+/// Builds the sending root through the production `AgentRebuildSpec`, so the normal
+/// `native_agents_enabled_for` gate decides `NativeAgentsEnabled` from declared offline
+/// inputs (subagents on, v2 feature tier on, own Messages row `multi_agent_v2 = true`).
+async fn k2lg_n_root(
+    server: &MockInferenceServer,
+    sender: xai_grok_tools::implementations::grok_build::task::backend::SubagentCoordinatorSender,
+) -> xai_grok_agent::Agent {
+    let mut spec = crate::session::agent_rebuild::test_rebuild_spec_default();
+    {
+        let spec = Arc::get_mut(&mut spec).expect("K2LG setup root rebuild spec uniquely owned");
+        spec.subagents_enabled = true;
+        spec.multi_agent_v2_feature = true;
+        spec.subagent_event_tx = Some(sender.event_sender().0);
+        spec.subagent_coordinator_sender = Some(sender);
+        spec.session_id_str = K2LG_N_ROOT.into();
+        spec.team_scope_id = K2LG_N_ROOT.into();
+    }
+    let mut row = entry_with_search_flag("k2lg-root-row", true);
+    row.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    row.info.multi_agent_v2 = Some(true);
+    row.api_base_url = Some(server.url());
+    row.api_key = Some("nonsecret-k2lg-root-key".into());
+    spec.models_manager.insert_test_entry("k2lg-root-row", row);
+    *spec
+        .session_model_id
+        .write()
+        .expect("K2LG setup session model lock") = acp::ModelId::new("k2lg-root-row");
+    let root = spec
+        .build_agent(AgentDefinition::default_grok_build())
+        .await
+        .expect("K2LG setup root agent builds through the normal host gate");
+    let gate = root
+        .tool_bridge()
+        .toolset()
+        .resources
+        .lock()
+        .await
+        .get::<k0_task::NativeAgentsEnabled>()
+        .map(|gate| gate.0);
+    assert_eq!(
+        gate,
+        Some(true),
+        "K2LG setup native_agents_enabled_for arms the root on its declared Messages v2 row"
+    );
+    assert!(
+        root.tool_bridge()
+            .toolset()
+            .get_tool_metadata("send_message")
+            .is_some(),
+        "K2LG setup the armed host gate adds the real send_message tool"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"producer":"host_gate","native_agents_enabled_for":{"subagents_enabled":true,"subagent_depth":0,"multi_agent_v2_feature":true,"model_row":true},"NativeAgentsEnabled":true,"send_message_tool":true,"row":"k2lg-root-row","api_backend":"messages"})
+    );
+    root
+}
+
+async fn k2lg_n_register_worker(root: &xai_grok_agent::Agent, started: &tokio::sync::Notify) {
+    use xai_grok_tools::implementations::grok_build::task::backend::{
+        SubagentBackend, SubagentBackendResource,
+    };
+    let backend = root
+        .tool_bridge()
+        .read_resource::<SubagentBackendResource>()
+        .await
+        .expect("K2LG setup root carries its real coordinator backend");
+    let spawned = tokio::time::timeout(
+        K0_TIMEOUT,
+        backend.backend().spawn(
+            k0_task::SubagentRequest {
+                id: K2LG_N_WORKER.into(),
+                prompt: "K2LG receiver worker".into(),
+                description: "worker".into(),
+                subagent_type: "general-purpose".into(),
+                parent_session_id: K2LG_N_ROOT.into(),
+                parent_prompt_id: None,
+                resume_from: None,
+                cwd: None,
+                runtime_overrides: k0_task::SubagentRuntimeOverrides {
+                    native_agent: Some(k0_task::NativeAgentSpawn {
+                        task_name: "worker".into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                run_in_background: true,
+                surface_completion: false,
+                await_to_completion: false,
+                fork_context: false,
+                context: Default::default(),
+                owner: Default::default(),
+                cancel_token: Default::default(),
+                spawn_root: Default::default(),
+            },
+            None,
+        ),
+    )
+    .await
+    .expect("K2LG setup worker spawn returns")
+    .expect("K2LG setup worker spawn accepted");
+    assert!(
+        spawned.success,
+        "K2LG setup named worker spawn succeeds: {:?}",
+        spawned.error
+    );
+    tokio::time::timeout(K0_TIMEOUT, started.notified())
+        .await
+        .expect("K2LG setup worker becomes active");
+}
+
+async fn k2lg_n_fixture(options: K2lgNOptions) -> K2lgN {
+    let server = MockInferenceServer::start().await.unwrap();
+    let agent_wide = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let chat_token = tokio_util::sync::CancellationToken::new();
+    let log = K2lgNLog::default();
+    let mut session = k2lg_n_session(&server, options, &agent_wide, &chat_token, &log).await;
+    let (loop_tx, loop_rx) = tokio::sync::mpsc::unbounded_channel();
+    let started = std::rc::Rc::new(tokio::sync::Notify::new());
+    let (sender, receiver) = k0_coordinator::SubagentCoordinator::<K2lgNRunner>::channel();
+    session.tasks.push(tokio::task::spawn_local(
+        k0_coordinator::SubagentCoordinator::from_channel(
+            receiver,
+            K2lgNRunner {
+                commands: loop_tx.clone(),
+                started: started.clone(),
+            },
+            Default::default(),
+        )
+        .run(),
+    ));
+    let root = k2lg_n_root(&server, sender).await;
+    k2lg_n_register_worker(&root, &started).await;
+    K2lgN {
+        session,
+        server,
+        root,
+        loop_tx,
+        loop_rx: Some(loop_rx),
+        log,
+        chat_token,
+        agent_wide,
+        calls: 0,
+    }
+}
+
+/// R5-1 harness setup: the turn under test heads the queue with `current_prompt_id` pinned
+/// and `session_turn_active` stored; the receiver run loop starts on the first install.
+async fn k2lg_n_running(
+    fx: &mut K2lgN,
+    handle: tokio::task::AbortHandle,
+) -> (TurnEpoch, std::rc::Rc<()>) {
+    let epoch = fx.session.actor.turn_report.start_next_turn();
+    let identity = {
+        let mut state = fx.session.actor.state.lock().await;
+        state.running_task = Some(AgentTask::new_at_epoch(K2LG_N_PROMPT, epoch, handle));
+        state
+            .pending_inputs
+            .push_front(user_item(K2LG_N_PROMPT, "K2LGN"));
+        state.running_task.as_ref().unwrap().identity.clone()
+    };
+    *fx.session.actor.current_prompt_id.lock().unwrap() = Some(K2LG_N_PROMPT.into());
+    fx.session
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(command_rx) = fx.loop_rx.take() {
+        let (chat_tx, chat_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let actor = fx.session.actor.clone();
+        fx.session.tasks.push(tokio::task::spawn_local(async move {
+            let _keep_channels = (chat_tx, event_tx);
+            super::run_session(
+                actor,
+                command_rx,
+                chat_rx,
+                event_rx,
+                None,
+                Arc::new(parking_lot::Mutex::new(
+                    xai_grok_workspace::file_system::CodebaseIndexManager::new(),
+                )),
+                std::env::temp_dir(),
+                crate::session::fs_watch::FsWatchCapabilities::none(),
+            )
+            .await;
+        }));
+    }
+    (epoch, identity)
+}
+
+async fn k2lg_n_stub_running(fx: &mut K2lgN) -> (TurnEpoch, std::rc::Rc<()>) {
+    let stub = tokio::task::spawn_local(std::future::pending::<()>());
+    let handle = stub.abort_handle();
+    fx.session.tasks.push(stub);
+    k2lg_n_running(fx, handle).await
+}
+
+fn k2lg_n_native_text(body: &str) -> String {
+    format!("Untrusted message from agent /root to {K2LG_N_TARGET} (not user consent):\n{body}")
+}
+
+fn k2lg_n_is_native(item: &ConversationItem) -> bool {
+    matches!(item, ConversationItem::User(user)
+        if user.synthetic_reason == Some(xai_grok_sampling_types::SyntheticReason::SystemReminder))
+        && item
+            .text_content()
+            .starts_with("Untrusted message from agent /root to /root/worker (not user consent):")
+}
+
+fn k2lg_n_natives(items: &[ConversationItem]) -> Vec<String> {
+    items
+        .iter()
+        .filter(|item| k2lg_n_is_native(item))
+        .map(ConversationItem::text_content)
+        .collect()
+}
+
+fn k2lg_n_values(items: &[ConversationItem]) -> Vec<Value> {
+    items
+        .iter()
+        .map(|item| serde_json::to_value(item).unwrap())
+        .collect()
+}
+
+fn k2lg_n_resident(session: &K2ReplaySession) -> Vec<ConversationItem> {
+    session
+        .actor
+        .pending_native_agent_messages
+        .lock()
+        .unwrap()
+        .clone()
+}
+
+fn k2lg_n_ops(fx: &K2lgN) -> Vec<(String, Value)> {
+    fx.log.lock().unwrap().clone()
+}
+
+fn k2lg_n_native_persists(ops: &[(String, Value)]) -> usize {
+    ops.iter()
+        .filter(|(op, value)| {
+            op == "persist"
+                && serde_json::from_value::<ConversationItem>(value.clone())
+                    .is_ok_and(|item| k2lg_n_is_native(&item))
+        })
+        .count()
+}
+
+fn k2lg_n_bodies(server: &MockInferenceServer) -> Vec<Value> {
+    server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path == "/v1/messages")
+        .filter_map(|request| request.body)
+        .collect()
+}
+
+fn k2lg_n_text_count(body: &Value, native_body: &str) -> usize {
+    let needle = serde_json::to_string(&k2lg_n_native_text(native_body)).unwrap();
+    serde_json::to_string(body)
+        .unwrap()
+        .matches(&needle[1..needle.len() - 1])
+        .count()
+}
+
+fn k2lg_n_pending_group(checkpoint: &K2Checkpoint) -> Option<String> {
+    checkpoint
+        .ledger
+        .groups
+        .iter()
+        .find(|group| {
+            group.members.iter().any(|member| {
+                let raw: Value = serde_json::from_slice(
+                    &checkpoint.blobs[&checkpoint.source.ordered_blocks
+                        [member.occurrence as usize]
+                        .block
+                        .digest],
+                )
+                .unwrap();
+                raw["id"] == "srvtoolu_k2_pending"
+            })
+        })
+        .map(|group| group.state.clone())
+}
+
+fn k2lg_n_live(checkpoint: &K2Checkpoint) -> bool {
+    checkpoint
+        .source
+        .producing_bindings
+        .last()
+        .is_some_and(|origin| {
+            checkpoint
+                .ledger
+                .lifecycle
+                .exchanges
+                .get(&origin.request)
+                .map(String::as_str)
+                == Some("LiveBound")
+                && checkpoint.ledger.groups.iter().any(|group| {
+                    group.state == "LivePending" && group.origin_ref == origin.origin_ref
+                })
+        })
+}
+
+async fn k2lg_n_disk(session: &K2ReplaySession) -> Vec<ConversationItem> {
+    use crate::session::storage::StorageAdapter;
+    let (respond_to, flushed) = tokio::sync::oneshot::channel();
+    session
+        .persistence
+        .tx
+        .send(PersistenceMsg::FlushAndAck { respond_to })
+        .unwrap();
+    flushed.await.unwrap().unwrap();
+    crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+        session.directory.path().to_path_buf(),
+    )
+    .load_session(&session.actor.session_info)
+    .await
+    .unwrap()
+    .chat_history
+}
+
+async fn k2lg_n_selected<F: std::future::Future>(fx: &K2lgN, future: F) -> F::Output {
+    super::switch_projection::HISTORY_S3_TEST_DOMAIN
+        .scope(
+            fx.session.domain(&fx.server),
+            super::switch_projection::HISTORY_S3_TEST_REQUIREMENT
+                .scope(k2_history::NativeHistoryRequirement::Selected, future),
+        )
+        .await
+}
+
+async fn k2lg_n_close_mailbox(fx: &K2lgN) {
+    fx.chat_token.cancel();
+    tokio::time::timeout(K0_TIMEOUT, async {
+        while fx
+            .session
+            .actor
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .is_some()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("K2LG setup the real chat-state receiver closes");
+}
+
+/// One real `send_message` from the gated root: tool -> coordinator -> `ShellChildRuntime`
+/// -> `SessionCommand::AgentMessage` -> `message_item` -> resident buffer.
+async fn k2lg_n_send(fx: &mut K2lgN, body: &str) {
+    fx.calls += 1;
+    let before = k2lg_n_resident(&fx.session).len();
+    let result = fx
+        .root
+        .tool_bridge()
+        .call(
+            "send_message",
+            json!({"target": K2LG_N_TARGET, "message": body}),
+            &format!("k2lg_n_send_{}", fx.calls),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("K2LG boundary real send_message tool call failed: {error}")
+        });
+    let xai_grok_tools::types::output::ToolOutput::Dynamic(output) = &result.output else {
+        panic!("K2LG boundary send_message returns its coordinator receipt");
+    };
+    assert_eq!(
+        output.value["status"]
+            .as_str()
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("delivered"),
+        "K2LG boundary the real coordinator delivers live to the worker: {}",
+        output.value
+    );
+    tokio::time::timeout(K0_TIMEOUT, async {
+        while k2lg_n_resident(&fx.session).len() <= before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("K2LG boundary the receiver run loop buffers the real native message");
+    println!(
+        "\nK2LG_N {}",
+        json!({"producer":"send_message->coordinator->ShellChildRuntime->AgentMessage->message_item->resident","call":fx.calls,"status":output.value["status"],"resident":k2lg_n_resident(&fx.session).len()})
+    );
+}
+
+fn k2lg_n_closure_frames() -> Vec<Value> {
+    k2_frames(
+        "msg_k2lg_n_closed",
+        vec![
+            k2_result("srvtoolu_k2_pending", "alpha__lookup"),
+            (
+                json!({"type":"text","text":"K2LG N continuation closes the pending search"}),
+                Vec::new(),
+            ),
+        ],
+        "end_turn",
+    )
+}
+
+fn k2lg_n_after_frames(id: &str) -> Vec<Value> {
+    k2_frames(
+        id,
+        vec![(
+            json!({"type":"text","text":"K2LG N after the native release"}),
+            Vec::new(),
+        )],
+        "end_turn",
+    )
+}
+
+fn k2lg_n_results_tail() -> Value {
+    json!({"role":"user","content":[
+        {"type":"tool_result","tool_use_id":"client_k2_c1","content":"alpha__lookup actual result: \"first actual\""},
+        {"type":"tool_result","tool_use_id":"client_k2_c2","content":"zeta__fetch actual result: \"second actual\"","cache_control":{"type":"ephemeral"}}
+    ]})
+}
+
+/// Seeds K2's completed group, then drives K2's real mixed pending handoff under Selected
+/// with the second client held, the turn installed per R5-1 and the receiver loop running.
+async fn k2lg_n_handoff(fx: &mut K2lgN, continuation: Option<ScriptedResponse>) -> K2lgNTurn {
+    use k2_history::*;
+    k2_seed(&mut fx.session, &fx.server).await;
+    fx.session.releases[1]
+        .clone()
+        .acquire_many_owned(16)
+        .await
+        .unwrap()
+        .forget();
+    fx.server
+        .enqueue_response("/v1/messages", k2_script(k2_u5_frames()));
+    if let Some(continuation) = continuation {
+        fx.server.enqueue_response("/v1/messages", continuation);
+    }
+    fx.session.actor.chat_state_handle.begin_turn_capture();
+    let _ = fx.session.actor.chat_state_handle.get_conversation().await;
+    let turn_start_ops = fx.log.lock().unwrap().len();
+    fx.session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user(
+            "K2LG N real native producer during the live handoff",
+        ))
+        .await;
+    fx.session
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let submits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let record = submits.clone();
+    let log = fx.log.clone();
+    let actor = fx.session.actor.clone();
+    let domain = fx.session.domain(&fx.server);
+    let running = tokio::task::spawn_local(async move {
+        let mut prepare =
+            move |request: &mut ConversationRequest,
+                  _: &xai_chat_state::RequestTransportBinding| {
+                record.borrow_mut().push(json!({
+                    "items": serde_json::to_value(&request.items).unwrap(),
+                    "history_revision": request
+                        .native_bound_preparation
+                        .as_ref()
+                        .and_then(|preparation| preparation.history_revision()),
+                    "persistence_ops": log.lock().unwrap().len(),
+                }));
+                Ok(())
+            };
+        super::switch_projection::HISTORY_S3_TEST_DOMAIN
+            .scope(
+                domain,
+                super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                    NativeHistoryRequirement::Selected,
+                    actor.process_conversation_turn_for_native_history_test(
+                        K2LG_N_PROMPT,
+                        None,
+                        None,
+                        None,
+                        &mut super::length_salvage::LengthSalvage::new(None),
+                        &mut Default::default(),
+                        &mut prepare,
+                    ),
+                ),
+            )
+            .await
+    });
+    let (epoch, identity) = k2lg_n_running(fx, running.abort_handle()).await;
+    assert_eq!(
+        tokio::time::timeout(K0_TIMEOUT, fx.session.source_acks.recv())
+            .await
+            .unwrap(),
+        Some(NativeResponseStatus::Accepted),
+        "K2LG setup K2's mixed response is decoded and committed before client execution"
+    );
+    let mut entered = Vec::new();
+    for _ in 0..2 {
+        entered.push(
+            tokio::time::timeout(K0_TIMEOUT, fx.session.entered.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    entered.sort();
+    assert_eq!(entered, vec!["alpha__lookup", "zeta__fetch"]);
+    tokio::time::timeout(K0_TIMEOUT, async {
+        loop {
+            let items = fx.session.actor.chat_state_handle.get_conversation().await;
+            if items.iter().any(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c1")) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fx.server.messages_request_count(), 2);
+    let (checkpoint, _) = fx.session.reload().await;
+    assert!(
+        k2lg_n_live(&checkpoint),
+        "K2LG setup K2's exchange is LiveBound with a LivePending group while clients execute"
+    );
+    K2lgNTurn {
+        running,
+        epoch,
+        identity,
+        submits,
+        turn_start_ops,
+    }
+}
+
+async fn k2lg_n_n1() -> K2lgNObserved {
+    const BODY: &str = "K2LG N native body during the live handoff";
+    let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+    let mut turn = k2lg_n_handoff(&mut fx, None).await;
+    let sender_turn = super::turn_task::TurnActiveGuard::activate(Some(&fx.agent_wide));
+    assert!(
+        fx.agent_wide.load(std::sync::atomic::Ordering::SeqCst),
+        "K2LG setup the sender session's turn is in flight on the agent-wide flag"
+    );
+    k2lg_n_send(&mut fx, BODY).await;
+    assert_eq!(
+        k2lg_n_natives(&k2lg_n_resident(&fx.session)),
+        vec![k2lg_n_native_text(BODY)],
+        "K2LG boundary N1 the real plaintext reminder is resident while K2's continuation is owed"
+    );
+    assert!(
+        k2lg_n_natives(&fx.session.actor.chat_state_handle.get_conversation().await).is_empty(),
+        "K2LG boundary N1 no native item reaches history while pending"
+    );
+    drop(sender_turn);
+    assert!(
+        !fx.agent_wide.load(std::sync::atomic::Ordering::SeqCst),
+        "K2LG setup the sender session's turn ended and cleared the agent-wide flag"
+    );
+    let mut held = fx.server.expect_response_blocked(
+        "K2LG N continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ),
+        k2_script(k2lg_n_closure_frames()),
+    );
+    fx.session.releases[1].add_permits(1);
+    tokio::time::timeout(K0_TIMEOUT, held.wait_blocked())
+        .await
+        .expect("K2LG boundary N1 the legitimate results-only continuation reaches HTTP while the native prefix stays resident");
+    let barrier = fx.session.actor.chat_state_handle.get_conversation().await;
+    let barrier_ops = fx.log.lock().unwrap().len();
+    assert_eq!(
+        k2lg_n_natives(&k2lg_n_resident(&fx.session)),
+        vec![k2lg_n_native_text(BODY)],
+        "K2LG boundary N1 per-session rule keeps the receiver's prefix resident after the sender's turn ended"
+    );
+    assert!(
+        k2lg_n_natives(&barrier).is_empty(),
+        "K2LG boundary N1 history holds no native item before closure"
+    );
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 3);
+    assert_eq!(
+        bodies[2]["messages"].as_array().unwrap().last().unwrap(),
+        &k2lg_n_results_tail(),
+        "K2LG boundary N1 the continuation is the exact results-only message"
+    );
+    assert_eq!(
+        k2lg_n_text_count(&bodies[2], BODY),
+        0,
+        "K2LG boundary N1 the native reminder is not transmitted before closure"
+    );
+    fx.server.enqueue_response(
+        "/v1/messages",
+        k2_script(k2lg_n_after_frames("msg_k2lg_n_after")),
+    );
+    held.release();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running)
+        .await
+        .expect("K2LG boundary N1 the turn finishes after closure")
+        .unwrap();
+    fx.session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        outcome.is_ok(),
+        "K2LG boundary N1 closure release completes the same turn: {:?}",
+        outcome.err()
+    );
+    let after = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(
+        k2lg_n_natives(&after),
+        vec![k2lg_n_native_text(BODY)],
+        "K2LG boundary N1 the unchanged native prefix is released exactly once after closure"
+    );
+    assert!(
+        k2lg_n_resident(&fx.session).is_empty(),
+        "K2LG boundary N1 the released prefix leaves the resident buffer"
+    );
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(
+        bodies.len(),
+        4,
+        "K2LG boundary N1 exactly one same-turn model round follows the release"
+    );
+    assert_eq!(
+        k2lg_n_text_count(&bodies[3], BODY),
+        1,
+        "K2LG boundary N1 the model sees the native reminder once, only after closure"
+    );
+    let (checkpoint, _) = fx.session.reload().await;
+    assert_eq!(
+        k2lg_n_pending_group(&checkpoint).as_deref(),
+        Some("Completed"),
+        "K2LG boundary N1 the matching server closure was decoded before the release"
+    );
+    let prompts: Vec<String> = fx
+        .session
+        .actor
+        .state
+        .lock()
+        .await
+        .pending_inputs
+        .iter()
+        .map(|input| input.prompt_id.clone())
+        .collect();
+    assert_eq!(
+        prompts,
+        vec![K2LG_N_PROMPT.to_string()],
+        "K2LG boundary N1 the release opens no new prompt"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N1","closure":"Completed","continuation_http":1,"post_release_rounds":1,"native_occurrences":1,"per_session":{"agent_wide_flag_after_sender_turn":false,"receiver_prefix_resident":true},"W_TE":"U6-owned, not asserted"})
+    );
+    K2lgNObserved {
+        fx,
+        barrier,
+        barrier_ops,
+        turn_start_ops: turn.turn_start_ops,
+        submits: turn.submits,
+    }
+}
+
+async fn k2lg_n_n6_i(observed: &K2lgNObserved) {
+    let ops = k2lg_n_ops(&observed.fx);
+    let natives: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, (op, value))| {
+            op == "persist"
+                && serde_json::from_value::<ConversationItem>(value.clone())
+                    .is_ok_and(|item| k2lg_n_is_native(&item))
+        })
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        natives.len(),
+        1,
+        "K2LG boundary N6/i one persistence append for the one occurrence"
+    );
+    let release = natives[0];
+    assert!(
+        release > observed.barrier_ops,
+        "K2LG boundary N6/i the native append follows closure"
+    );
+    // The release is one chat-state command: a repair inside it would replace history just
+    // before the append, a prune just after it.
+    assert_ne!(
+        ops[release - 1].0,
+        "replace",
+        "K2LG boundary N6/i no integrity repair precedes the native append"
+    );
+    assert!(
+        ops.get(release + 1).is_none_or(|(op, _)| op != "replace"),
+        "K2LG boundary N6/i no prune replacement follows the native append"
+    );
+    let appended: ConversationItem = serde_json::from_value(ops[release].1.clone()).unwrap();
+    assert_eq!(
+        k2lg_n_natives(std::slice::from_ref(&appended)),
+        vec![k2lg_n_native_text(
+            "K2LG N native body during the live handoff"
+        )],
+        "K2LG boundary N6/i the native prefix is appended unchanged"
+    );
+    let between = &ops[observed.barrier_ops..release];
+    assert!(
+        between
+            .iter()
+            .all(|(op, _)| op == "persist" || op == "native"),
+        "K2LG boundary N6/i no history replacement between closure and the release"
+    );
+    let closure_appends = between.iter().filter(|(op, _)| op == "persist").count();
+    let live = observed
+        .fx
+        .session
+        .actor
+        .chat_state_handle
+        .get_conversation()
+        .await;
+    assert_eq!(
+        live.iter().position(k2lg_n_is_native),
+        Some(observed.barrier.len() + closure_appends),
+        "K2LG boundary N6/i the native item lands exactly where a plain append lands"
+    );
+    let names: Vec<&str> = ops[observed.barrier_ops..]
+        .iter()
+        .map(|(op, _)| op.as_str())
+        .collect();
+    let revisions: Vec<Value> = observed
+        .submits
+        .borrow()
+        .iter()
+        .map(|submit| json!({"history_revision":submit["history_revision"],"persistence_ops":submit["persistence_ops"]}))
+        .collect();
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N6/i","release_op_index":release,"closure_appends":closure_appends,"ops_after_closure":names,"plain_append_equivalent":true,"native_persists":1,"repair_before":false,"prune_after":false,"submit_revisions":revisions})
+    );
+}
+
+async fn k2lg_n_n6_iv(observed: &K2lgNObserved) {
+    let appended: Vec<Value> = k2lg_n_ops(&observed.fx)[observed.turn_start_ops..]
+        .iter()
+        .filter(|(op, _)| op == "persist")
+        .map(|(_, value)| value.clone())
+        .collect();
+    let capture = observed
+        .fx
+        .session
+        .actor
+        .chat_state_handle
+        .take_turn_messages()
+        .await
+        .expect("K2LG boundary N6/iv the active turn capture is present");
+    assert!(
+        !capture.compaction_occurred,
+        "K2LG boundary N6/iv no compaction occurred in the turn"
+    );
+    assert_eq!(
+        k2lg_n_values(&capture.messages),
+        appended,
+        "K2LG boundary N6/iv pre_replacement_messages plus tail equal the turn's ordered content"
+    );
+    assert_eq!(
+        k2lg_n_natives(&capture.messages).len(),
+        1,
+        "K2LG boundary N6/iv the capture holds the native occurrence once"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N6/iv","observer":"TakeTurnMessages (consuming, last read)","captured_items":capture.messages.len(),"turn_appends":appended.len()})
+    );
+}
+
+async fn k2lg_n_turn_end() {
+    const FIRST: &str = "K2LG N turn-end first";
+    const SECOND: &str = "K2LG N turn-end second";
+    let mut fx = k2lg_n_fixture(K2lgNOptions {
+        max_turns: Some(1),
+        ..Default::default()
+    })
+    .await;
+    let mut turn = k2lg_n_handoff(&mut fx, None).await;
+    k2lg_n_send(&mut fx, FIRST).await;
+    k2lg_n_send(&mut fx, SECOND).await;
+    fx.session.releases[1].add_permits(1);
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running)
+        .await
+        .expect("K2LG boundary N1 turn-end leg the turn returns at its max-turns limit")
+        .unwrap();
+    assert!(
+        matches!(outcome, Ok(TurnOutcome::MaxTurnsReached { .. })),
+        "K2LG boundary N1 turn-end leg the turn ends with K2's continuation still owed"
+    );
+    assert_eq!(
+        k2lg_n_natives(&k2lg_n_resident(&fx.session)),
+        vec![k2lg_n_native_text(FIRST), k2lg_n_native_text(SECOND)],
+        "K2LG boundary N1 turn-end leg the prefix is resident when the turn returns"
+    );
+    assert!(
+        k2lg_n_natives(&fx.session.actor.chat_state_handle.get_conversation().await).is_empty(),
+        "K2LG boundary N1 turn-end leg no native item reached history during the turn"
+    );
+    assert_eq!(fx.server.messages_request_count(), 2);
+    let (checkpoint, _) = fx.session.reload().await;
+    assert!(
+        k2lg_n_live(&checkpoint),
+        "K2LG boundary N1 turn-end leg the exchange is still LiveBound with a LivePending group"
+    );
+    fx.session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let ops_before = k2lg_n_ops(&fx).len();
+    let owned = k2lg_n_selected(
+        &fx,
+        fx.session.actor.handle_completion(
+            K2LG_N_PROMPT.into(),
+            turn.epoch,
+            &turn.identity,
+            Ok(PromptTurnOk {
+                stop_reason: acp::StopReason::MaxTurnRequests,
+                total_tokens: 0,
+                turn_snapshot: None,
+                completion_kind: PromptCompletionKind::MaxTurnsReached { limit: 1 },
+                structured_output: None,
+                usage: None,
+                tool_overrides: None,
+            }),
+            Some(0),
+        ),
+    )
+    .await;
+    assert!(owned, "K2LG setup the turn-end completion is owned");
+    let after = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(
+        k2lg_n_natives(&after),
+        vec![k2lg_n_native_text(FIRST), k2lg_n_native_text(SECOND)],
+        "K2LG boundary N1 turn-end leg the turn-end flush releases the prefix in resident order"
+    );
+    assert!(
+        k2lg_n_resident(&fx.session).is_empty(),
+        "K2LG boundary N1 turn-end leg the released prefix leaves the resident buffer"
+    );
+    assert_eq!(
+        k2lg_n_native_persists(&k2lg_n_ops(&fx)[ops_before..]),
+        2,
+        "K2LG boundary N1 turn-end leg one persistence append per occurrence"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N1/turn-end","site":"turn_end.rs:220 handle_completion","session_turn_active":false,"exchange_live_at_release":true,"released":2})
+    );
+}
+
+async fn k2lg_n_n2() {
+    const BODY: &str = "K2LG N equal body";
+    const USER: &str = "K2LG N ordinary user after native";
+    let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+    let mut turn = k2lg_n_handoff(&mut fx, None).await;
+    k2lg_n_send(&mut fx, BODY).await;
+    k2lg_n_send(&mut fx, BODY).await;
+    assert_eq!(
+        k2lg_n_natives(&k2lg_n_resident(&fx.session)),
+        vec![k2lg_n_native_text(BODY), k2lg_n_native_text(BODY)],
+        "K2LG boundary N2 two equal-body occurrences stay two resident items"
+    );
+    let mut held = fx.server.expect_response_blocked(
+        "K2LG N2 continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ),
+        k2_script(k2lg_n_closure_frames()),
+    );
+    fx.session.releases[1].add_permits(1);
+    tokio::time::timeout(K0_TIMEOUT, held.wait_blocked())
+        .await
+        .expect("K2LG boundary N2 the continuation reaches HTTP with both occurrences resident");
+    assert_eq!(k2lg_n_resident(&fx.session).len(), 2);
+    fx.loop_tx
+        .send(SessionCommand::Interject {
+            text: USER.into(),
+            id: None,
+            images: Vec::new(),
+        })
+        .unwrap();
+    tokio::time::timeout(K0_TIMEOUT, async {
+        while !fx
+            .session
+            .actor
+            .pending_interjections
+            .snapshot()
+            .iter()
+            .any(|entry| entry.text == USER)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("K2LG setup the ordinary user input is queued through the real run loop");
+    fx.server.enqueue_response(
+        "/v1/messages",
+        k2_script(k2lg_n_after_frames("msg_k2lg_n2_after")),
+    );
+    held.release();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running)
+        .await
+        .expect("K2LG boundary N2 the turn finishes after closure")
+        .unwrap();
+    fx.session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        outcome.is_ok(),
+        "K2LG boundary N2 the release completes the same turn: {:?}",
+        outcome.err()
+    );
+    let after = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(
+        k2lg_n_natives(&after),
+        vec![k2lg_n_native_text(BODY), k2lg_n_native_text(BODY)],
+        "K2LG boundary N2 two logical occurrences, no text dedup and no repeat"
+    );
+    let first = after.iter().position(k2lg_n_is_native).unwrap();
+    let user = after
+        .iter()
+        .position(|item| {
+            matches!(item, ConversationItem::User(_)) && item.text_content().contains(USER)
+        })
+        .expect("K2LG boundary N2 the ordinary user input is delivered");
+    assert!(
+        k2lg_n_is_native(&after[first + 1]) && first + 2 == user,
+        "K2LG boundary N2 the native prefix is released in resident order before the ordinary user batch"
+    );
+    assert_eq!(
+        k2lg_n_native_persists(&k2lg_n_ops(&fx)),
+        2,
+        "K2LG boundary N2 one persistence append per logical occurrence"
+    );
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 4);
+    assert_eq!(
+        k2lg_n_text_count(&bodies[3], BODY),
+        2,
+        "K2LG boundary N2 the next model round carries both occurrences once each"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N2","native_occurrences":2,"order":"native,native,user","persist_appends":2})
+    );
+}
+
+async fn k2lg_n_n3() {
+    const BODY: &str = "K2LG N closed mailbox";
+    let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+    k2lg_n_stub_running(&mut fx).await;
+    k2lg_n_send(&mut fx, BODY).await;
+    let _ = fx.session.actor.chat_state_handle.get_conversation().await;
+    let disk_before = k2lg_n_values(&k2lg_n_disk(&fx.session).await);
+    let ops_before = k2lg_n_ops(&fx).len();
+    k2lg_n_close_mailbox(&fx).await;
+    let read = fx
+        .session
+        .actor
+        .chat_state_handle
+        .read_native_history()
+        .await;
+    assert!(
+        matches!(read, Err(k2_history::NativeUnavailable::Persistence)),
+        "K2LG setup the closed receiver is first met at read_native_history"
+    );
+    for attempt in 0..2 {
+        let drained =
+            k2lg_n_selected(&fx, fx.session.actor.drain_interjections_at_safe_point()).await;
+        assert!(
+            !drained,
+            "K2LG boundary N3 a failed fallible enqueue reports no delivery (attempt {attempt})"
+        );
+        assert_eq!(
+            k2lg_n_natives(&k2lg_n_resident(&fx.session)),
+            vec![k2lg_n_native_text(BODY)],
+            "K2LG boundary N3 the original prefix stays resident after a closed-mailbox failure (attempt {attempt})"
+        );
+    }
+    k2lg_n_selected(&fx, fx.session.actor.flush_pending_skill_reminders()).await;
+    assert_eq!(
+        k2lg_n_natives(&k2lg_n_resident(&fx.session)),
+        vec![k2lg_n_native_text(BODY)],
+        "K2LG boundary N3 the second flush site is lossless too"
+    );
+    assert_eq!(
+        k2lg_n_ops(&fx).len(),
+        ops_before,
+        "K2LG boundary N3 no persistence append on a closed mailbox"
+    );
+    assert_eq!(
+        k2lg_n_values(&k2lg_n_disk(&fx.session).await),
+        disk_before,
+        "K2LG boundary N3 no native history reaches disk"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N3","first_met":"read_native_history Err(Persistence)","enqueue":"Err(ChatStateMailboxClosed)","resident_after_failures":1,"delivery_reported":false})
+    );
+}
+
+async fn k2lg_n_n4() {
+    const FIRST: &str = "K2LG N first prefix";
+    const LATER: &str = "K2LG N later suffix";
+    let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+    k2lg_n_stub_running(&mut fx).await;
+    k2lg_n_send(&mut fx, FIRST).await;
+    let drained = k2lg_n_selected(&fx, fx.session.actor.drain_interjections_at_safe_point()).await;
+    assert!(
+        drained,
+        "K2LG boundary N4 the first prefix is enqueued successfully"
+    );
+    assert!(
+        k2lg_n_resident(&fx.session).is_empty(),
+        "K2LG boundary N4 the successfully enqueued prefix is removed once"
+    );
+    assert_eq!(
+        k2lg_n_natives(&fx.session.actor.chat_state_handle.get_conversation().await),
+        vec![k2lg_n_native_text(FIRST)]
+    );
+    k2lg_n_send(&mut fx, LATER).await;
+    k2lg_n_close_mailbox(&fx).await;
+    let drained = k2lg_n_selected(&fx, fx.session.actor.drain_interjections_at_safe_point()).await;
+    assert!(
+        !drained,
+        "K2LG boundary N4 the later release failure reports no delivery"
+    );
+    assert_eq!(
+        k2lg_n_natives(&k2lg_n_resident(&fx.session)),
+        vec![k2lg_n_native_text(LATER)],
+        "K2LG boundary N4 only the unsent suffix remains eligible; the accepted prefix never reappears"
+    );
+    assert_eq!(
+        k2lg_n_natives(&k2lg_n_disk(&fx.session).await),
+        vec![k2lg_n_native_text(FIRST)],
+        "K2LG boundary N4 the accepted prefix is persisted exactly once"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N4","accepted_prefix":1,"later_failure":"closed mailbox","resident_after":"unsent suffix only","constructed_defensive":false})
+    );
+}
+
+async fn k2lg_n_n5() {
+    const BODY: &str = "K2LG N retried transport";
+    let mut fx = k2lg_n_fixture(K2lgNOptions {
+        retries: 2,
+        ..Default::default()
+    })
+    .await;
+    let mut turn = k2lg_n_handoff(&mut fx, None).await;
+    k2lg_n_send(&mut fx, BODY).await;
+    let mut held = fx.server.expect_response_blocked(
+        "K2LG N5 continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ),
+        k2_script(k2lg_n_closure_frames()),
+    );
+    fx.session.releases[1].add_permits(1);
+    tokio::time::timeout(K0_TIMEOUT, held.wait_blocked())
+        .await
+        .expect("K2LG boundary N5 the continuation reaches HTTP with the native prefix resident");
+    let mut throttled = ScriptedResponse::json(
+        429,
+        json!({"type":"error","error":{"type":"rate_limit_error","message":"K2LG N transient rate limit"}}),
+    );
+    throttled.headers.push(("retry-after".into(), "1".into()));
+    fx.server.enqueue_response("/v1/messages", throttled);
+    fx.server.enqueue_response(
+        "/v1/messages",
+        k2_script(k2lg_n_after_frames("msg_k2lg_n5_after")),
+    );
+    held.release();
+    let outcome = tokio::time::timeout(Duration::from_secs(90), &mut turn.running)
+        .await
+        .expect("K2LG boundary N5 the turn finishes after the transport retry")
+        .unwrap();
+    fx.session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        outcome.is_ok(),
+        "K2LG boundary N5 the retried round completes: {:?}",
+        outcome.err()
+    );
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(
+        bodies.len(),
+        5,
+        "K2LG boundary N5 the post-release request is retried once at the transport"
+    );
+    assert_eq!(
+        bodies[3], bodies[4],
+        "K2LG boundary N5 the retry resends identical request bytes"
+    );
+    assert_eq!(k2lg_n_text_count(&bodies[4], BODY), 1);
+    assert_eq!(
+        k2lg_n_natives(&fx.session.actor.chat_state_handle.get_conversation().await),
+        vec![k2lg_n_native_text(BODY)],
+        "K2LG boundary N5 the retry never readmits or appends the native message again"
+    );
+    assert_eq!(
+        k2lg_n_native_persists(&k2lg_n_ops(&fx)),
+        1,
+        "K2LG boundary N5 one persistence append despite the transport retry"
+    );
+    assert!(k2lg_n_resident(&fx.session).is_empty());
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N5","http_attempts_for_round":2,"identical_bytes":true,"native_appends":1,"native_persists":1})
+    );
+}
+
+/// Shared tail of the N6/ii routes: the first subsequent ordinary push, then the live
+/// history and the disk read-back.
+async fn k2lg_n_ordinary_push(
+    fx: &K2lgN,
+    text: &str,
+) -> (Vec<ConversationItem>, Vec<ConversationItem>) {
+    fx.session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user(text))
+        .await;
+    let live = fx.session.actor.chat_state_handle.get_conversation().await;
+    (live, k2lg_n_disk(&fx.session).await)
+}
+
+type K2lgNRoute = (
+    Vec<ConversationItem>,
+    Vec<ConversationItem>,
+    Vec<(String, Value)>,
+);
+
+fn k2lg_n_compare(native: &[ConversationItem], control: &[ConversationItem], route: &str) -> usize {
+    let positions: Vec<usize> = native
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| k2lg_n_is_native(item))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        positions.len(),
+        1,
+        "K2LG boundary N6/ii {route}: one native occurrence"
+    );
+    let mut stripped = native.to_vec();
+    stripped.remove(positions[0]);
+    assert_eq!(
+        k2lg_n_values(&stripped),
+        k2lg_n_values(control),
+        "K2LG boundary N6/ii {route}: the native release adds no repair, prune, rewrite or duplicate relative to the matched control"
+    );
+    assert_eq!(
+        positions[0],
+        control.len() - 1,
+        "K2LG boundary N6/ii {route}: the native prefix sits immediately before the first subsequent ordinary push"
+    );
+    positions[0]
+}
+
+async fn k2lg_n_cancel_client(native: bool) -> K2lgNRoute {
+    const BODY: &str = "K2LG N cancel during client execution";
+    let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+    let mut turn = k2lg_n_handoff(&mut fx, None).await;
+    if native {
+        k2lg_n_send(&mut fx, BODY).await;
+    }
+    let ops_before = k2lg_n_ops(&fx).len();
+    let _cancel = k2lg_n_selected(
+        &fx,
+        fx.session
+            .actor
+            .cancel_running_task(crate::session::CancelOptions::default()),
+    )
+    .await;
+    let joined = tokio::time::timeout(K0_TIMEOUT, &mut turn.running)
+        .await
+        .expect("K2LG boundary N6/ii command-Cancel ends the turn under test");
+    assert!(
+        matches!(joined, Err(ref error) if error.is_cancelled()),
+        "K2LG boundary N6/ii command-Cancel aborts the turn under test"
+    );
+    fx.session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    if native {
+        assert!(
+            k2lg_n_resident(&fx.session).is_empty(),
+            "K2LG boundary N6/ii the command-Cancel flush releases the resident prefix"
+        );
+    }
+    let (live, disk) = k2lg_n_ordinary_push(&fx, "K2LG N first ordinary push after cancel").await;
+    (live, disk, k2lg_n_ops(&fx)[ops_before..].to_vec())
+}
+
+async fn k2lg_n_cancel_results(native: bool) -> K2lgNRoute {
+    const BODY: &str = "K2LG N cancel after genuine results";
+    let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+    let mut turn = k2lg_n_handoff(&mut fx, None).await;
+    if native {
+        k2lg_n_send(&mut fx, BODY).await;
+    }
+    let mut held = fx.server.expect_response_blocked(
+        "K2LG N6 cancel-after-results continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ),
+        k2_script(k2lg_n_closure_frames()),
+    );
+    fx.session.releases[1].add_permits(1);
+    tokio::time::timeout(K0_TIMEOUT, held.wait_blocked())
+        .await
+        .expect("K2LG boundary N6/ii cancel-after-results the continuation reaches HTTP with the genuine results in history");
+    if native {
+        assert_eq!(
+            k2lg_n_resident(&fx.session).len(),
+            1,
+            "K2LG boundary N6/ii cancel-after-results the prefix is still resident"
+        );
+    }
+    let ops_before = k2lg_n_ops(&fx).len();
+    let _cancel = k2lg_n_selected(
+        &fx,
+        fx.session
+            .actor
+            .cancel_running_task(crate::session::CancelOptions::default()),
+    )
+    .await;
+    held.release();
+    let joined = tokio::time::timeout(K0_TIMEOUT, &mut turn.running)
+        .await
+        .expect("K2LG boundary N6/ii command-Cancel ends the turn under test");
+    assert!(
+        matches!(joined, Err(ref error) if error.is_cancelled()),
+        "K2LG boundary N6/ii command-Cancel aborts the turn under test"
+    );
+    fx.session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    if native {
+        assert!(
+            k2lg_n_resident(&fx.session).is_empty(),
+            "K2LG boundary N6/ii the command-Cancel flush releases the resident prefix"
+        );
+    }
+    let (live, disk) = k2lg_n_ordinary_push(&fx, "K2LG N first ordinary push after cancel").await;
+    (live, disk, k2lg_n_ops(&fx)[ops_before..].to_vec())
+}
+
+async fn k2lg_n_error(native: bool) -> K2lgNRoute {
+    const BODY: &str = "K2LG N error route";
+    let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+    let mut turn = k2lg_n_handoff(
+        &mut fx,
+        Some(ScriptedResponse::json(
+            400,
+            json!({"type":"error","error":{"type":"invalid_request_error","message":"K2LG N offline continuation failure"}}),
+        )),
+    )
+    .await;
+    if native {
+        k2lg_n_send(&mut fx, BODY).await;
+    }
+    fx.session.releases[1].add_permits(1);
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running)
+        .await
+        .expect("K2LG boundary N6/ii error route the turn returns")
+        .unwrap();
+    let error = outcome.err().expect(
+        "K2LG boundary N6/ii error route the continuation failure ends the turn with an error",
+    );
+    assert_eq!(
+        fx.server.messages_request_count(),
+        3,
+        "K2LG boundary N6/ii error route the ordinary continuation attempt is unchanged by the native message"
+    );
+    if native {
+        assert_eq!(
+            k2lg_n_resident(&fx.session).len(),
+            1,
+            "K2LG boundary N6/ii error route the prefix is still resident when the turn ends"
+        );
+    }
+    fx.session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let ops_before = k2lg_n_ops(&fx).len();
+    let owned = k2lg_n_selected(
+        &fx,
+        fx.session.actor.handle_completion(
+            K2LG_N_PROMPT.into(),
+            turn.epoch,
+            &turn.identity,
+            Err(error),
+            Some(0),
+        ),
+    )
+    .await;
+    assert!(owned, "K2LG setup the error completion is owned");
+    if native {
+        assert!(
+            k2lg_n_resident(&fx.session).is_empty(),
+            "K2LG boundary N6/ii error route the turn-end flush releases the prefix"
+        );
+    }
+    let (live, disk) =
+        k2lg_n_ordinary_push(&fx, "K2LG N first ordinary push after the error").await;
+    (live, disk, k2lg_n_ops(&fx)[ops_before..].to_vec())
+}
+
+async fn k2lg_n_n6_cancel_client() {
+    let (native, native_disk, ops) = k2lg_n_cancel_client(true).await;
+    let (control, control_disk, _) = k2lg_n_cancel_client(false).await;
+    let position = k2lg_n_compare(&native, &control, "command-Cancel during client execution");
+    k2lg_n_compare(
+        &native_disk,
+        &control_disk,
+        "command-Cancel during client execution (disk)",
+    );
+    assert!(
+        matches!(&native[position - 1], ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c2"),
+        "K2LG boundary N6/ii the cancel's eager repair of the dangling waiting call precedes the native release"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N6/ii-cancel-during-client","site":"cancel.rs:799 after eager repair cancel.rs:718-726","matched_control_equal_after_first_ordinary_push":true,"ops":ops.iter().map(|(op, _)| op.as_str()).collect::<Vec<_>>()})
+    );
+}
+
+async fn k2lg_n_n6_cancel_results() {
+    let (native, native_disk, ops) = k2lg_n_cancel_results(true).await;
+    let (control, control_disk, _) = k2lg_n_cancel_results(false).await;
+    let position = k2lg_n_compare(&native, &control, "command-Cancel after genuine results");
+    k2lg_n_compare(
+        &native_disk,
+        &control_disk,
+        "command-Cancel after genuine results (disk)",
+    );
+    assert!(
+        matches!(&native[position - 1], ConversationItem::ToolResult(result)
+            if result.tool_call_id == "client_k2_c2" && result.content.contains("actual result")),
+        "K2LG boundary N6/ii a cancel after the genuine results leaves nothing to repair"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N6/ii-cancel-after-results","site":"cancel.rs:799","repair":"none needed","matched_control_equal_after_first_ordinary_push":true,"ops":ops.iter().map(|(op, _)| op.as_str()).collect::<Vec<_>>()})
+    );
+}
+
+async fn k2lg_n_n6_error() {
+    let (native, native_disk, ops) = k2lg_n_error(true).await;
+    let (control, control_disk, control_ops) = k2lg_n_error(false).await;
+    k2lg_n_compare(&native, &control, "error route");
+    k2lg_n_compare(&native_disk, &control_disk, "error route (disk)");
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N6/ii-error","site":"turn_end.rs:220 after a continuation error","matched_control_equal_after_first_ordinary_push":true,"native_ops":ops.iter().map(|(op, _)| op.as_str()).collect::<Vec<_>>(),"control_ops":control_ops.iter().map(|(op, _)| op.as_str()).collect::<Vec<_>>()})
+    );
+}
+
+async fn k2lg_n_n6_prune() {
+    const BODY: &str = "K2LG N prune eligibility";
+    let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+    for index in 0..13 {
+        fx.server.enqueue_response(
+            "/v1/messages",
+            k2_script(k2_frames(
+                &format!("msg_k2lg_n_ordinary_{index}"),
+                vec![(
+                    json!({"type":"tool_use","id":format!("k2lg_n_ordinary_{index}"),"name":"alpha__lookup","input":{"value":format!("ordinary {index}")}}),
+                    Vec::new(),
+                )],
+                "tool_use",
+            )),
+        );
+        fx.server.enqueue_response(
+            "/v1/messages",
+            k2_script(k2_frames(
+                &format!("msg_k2lg_n_ordinary_{index}_done"),
+                vec![(
+                    json!({"type":"text","text":"ordinary turn done"}),
+                    Vec::new(),
+                )],
+                "end_turn",
+            )),
+        );
+        fx.session.actor.chat_state_handle.increment_prompt_index();
+        fx.session
+            .turn(
+                k2_history::NativeHistoryRequirement::Inactive,
+                &fx.server,
+                &format!("K2LG N ordinary prompt {index}"),
+            )
+            .await
+            .expect("K2LG setup ordinary seeded turn");
+    }
+    let cleared = |items: &[ConversationItem]| -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::ToolResult(result)
+                    if result.tool_call_id.starts_with("k2lg_n_ordinary_")
+                        && !result.content.contains("actual result") =>
+                {
+                    Some(result.tool_call_id.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let seeded = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert!(
+        !cleared(&seeded).is_empty(),
+        "K2LG setup the seeded history reached real prune eligibility"
+    );
+    k2lg_n_stub_running(&mut fx).await;
+    k2lg_n_send(&mut fx, BODY).await;
+    let before = fx.session.actor.chat_state_handle.get_conversation().await;
+    let ops_before = k2lg_n_ops(&fx).len();
+    let drained = k2lg_n_selected(&fx, fx.session.actor.drain_interjections_at_safe_point()).await;
+    assert!(
+        drained,
+        "K2LG boundary N6/iii the native prefix is released"
+    );
+    let after = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(
+        k2lg_n_values(&after[..before.len()]),
+        k2lg_n_values(&before),
+        "K2LG boundary N6/iii the native release prunes or rewrites nothing"
+    );
+    assert_eq!(after.len(), before.len() + 1);
+    assert!(k2lg_n_is_native(&after[before.len()]));
+    let ops: Vec<(String, Value)> = k2lg_n_ops(&fx)[ops_before..]
+        .iter()
+        .filter(|(op, _)| op != "native")
+        .cloned()
+        .collect();
+    assert_eq!(
+        (ops.len(), k2lg_n_native_persists(&ops)),
+        (1, 1),
+        "K2LG boundary N6/iii the release is exactly one append with no prune replacement"
+    );
+    fx.session.actor.chat_state_handle.increment_prompt_index();
+    fx.session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user(
+            "K2LG N first ordinary push after native",
+        ))
+        .await;
+    let pushed = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert!(
+        cleared(&pushed).len() > cleared(&after).len(),
+        "K2LG setup the boundary result was eligible for the next real prompt"
+    );
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N6/iii","seeded_turns":13,"cleared_before":cleared(&seeded).len(),"cleared_after_native":cleared(&after).len(),"cleared_after_next_prompt":cleared(&pushed).len()})
+    );
+}
+
+async fn k2lg_n_inactive() {
+    const BODY: &str = "K2LG N inactive plain flush";
+    let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+    k2lg_n_stub_running(&mut fx).await;
+    k2lg_n_send(&mut fx, BODY).await;
+    let ops_before = k2lg_n_ops(&fx).len();
+    let drained = fx.session.actor.drain_interjections_at_safe_point().await;
+    assert!(
+        drained,
+        "K2LG boundary N6 Inactive keeps the plain flush and reports native activity"
+    );
+    assert!(k2lg_n_resident(&fx.session).is_empty());
+    assert_eq!(
+        k2lg_n_natives(&fx.session.actor.chat_state_handle.get_conversation().await),
+        vec![k2lg_n_native_text(BODY)]
+    );
+    assert_eq!(k2lg_n_native_persists(&k2lg_n_ops(&fx)[ops_before..]), 1);
+    println!(
+        "\nK2LG_N {}",
+        json!({"arm":"N6/inactive-no-plan","path":"take + push_tool_result","native_appends":1})
+    );
+}
+
+async fn k2lg_n_arm(label: &str, arm: impl std::future::Future<Output = ()>) -> bool {
+    use futures_util::FutureExt;
+    match std::panic::AssertUnwindSafe(arm).catch_unwind().await {
+        Ok(()) => {
+            println!("\nK2LG_N_ARM {}", json!({"label":label,"passed":true}));
+            true
+        }
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            if !message.contains("K2LG boundary") {
+                std::panic::resume_unwind(payload);
+            }
+            println!(
+                "\nK2LG_N_ARM {}",
+                json!({"label":label,"passed":false,"assertion":message})
+            );
+            false
+        }
+    }
+}
+
+fn k2lg_n_compiled_sources() -> Value {
+    json!({
+        "session_setup": native_content_digest(include_bytes!("../acp_session_impl/session_setup.rs")),
+        "interjection": native_content_digest(include_bytes!("../acp_session_impl/interjection.rs")),
+        "fixture": native_content_digest(include_bytes!("native_messages_replay_tests.rs")),
+    })
+}
+
+async fn k2lg_n_cases() {
+    println!("\nK2LG_N_BUILD {}", k2lg_n_compiled_sources());
+    let mut failures = Vec::new();
+    let mut n1 = None;
+    if !k2lg_n_arm("N1/live-retain-per-session-closure-release", async {
+        n1 = Some(k2lg_n_n1().await);
+    })
+    .await
+    {
+        failures.push("N1/live-retain-per-session-closure-release");
+    }
+    if !k2lg_n_arm("N6/i-post-closure-mid-turn", async {
+        k2lg_n_n6_i(
+            n1.as_ref()
+                .expect("K2LG boundary N6/i needs the completed N1 run"),
+        )
+        .await;
+    })
+    .await
+    {
+        failures.push("N6/i-post-closure-mid-turn");
+    }
+    if !k2lg_n_arm("N6/iv-active-turn-capture", async {
+        k2lg_n_n6_iv(
+            n1.as_ref()
+                .expect("K2LG boundary N6/iv needs the completed N1 run"),
+        )
+        .await;
+    })
+    .await
+    {
+        failures.push("N6/iv-active-turn-capture");
+    }
+    drop(n1);
+    if !k2lg_n_arm("N1/turn-end-leg", k2lg_n_turn_end()).await {
+        failures.push("N1/turn-end-leg");
+    }
+    if !k2lg_n_arm("N2/equal-body-order", k2lg_n_n2()).await {
+        failures.push("N2/equal-body-order");
+    }
+    if !k2lg_n_arm("N3/closed-mailbox", k2lg_n_n3()).await {
+        failures.push("N3/closed-mailbox");
+    }
+    if !k2lg_n_arm("N4/success-prefix-then-failure", k2lg_n_n4()).await {
+        failures.push("N4/success-prefix-then-failure");
+    }
+    if !k2lg_n_arm("N5/transport-retry", k2lg_n_n5()).await {
+        failures.push("N5/transport-retry");
+    }
+    if !k2lg_n_arm(
+        "N6/ii-command-cancel-during-client",
+        k2lg_n_n6_cancel_client(),
+    )
+    .await
+    {
+        failures.push("N6/ii-command-cancel-during-client");
+    }
+    if !k2lg_n_arm(
+        "N6/ii-command-cancel-after-results",
+        k2lg_n_n6_cancel_results(),
+    )
+    .await
+    {
+        failures.push("N6/ii-command-cancel-after-results");
+    }
+    if !k2lg_n_arm("N6/ii-error-route", k2lg_n_n6_error()).await {
+        failures.push("N6/ii-error-route");
+    }
+    if !k2lg_n_arm("N6/iii-prune-eligibility", k2lg_n_n6_prune()).await {
+        failures.push("N6/iii-prune-eligibility");
+    }
+    if !k2lg_n_arm("N6/inactive-no-plan", k2lg_n_inactive()).await {
+        failures.push("N6/inactive-no-plan");
+    }
+    assert!(
+        failures.is_empty(),
+        "K2LG boundary failed native arms: {failures:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_native_agent_grammar_uses_real_mailbox_producer() {
+    if std::env::var_os("K2LG_N_CHILD").is_some() {
+        tokio::task::LocalSet::new().run_until(k2lg_n_cases()).await;
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .env("K2LG_N_CHILD", "1")
+        .env("GROK_HOME", home.path())
+        .env_remove("GROK_CONFIG")
+        .env_remove("GROK_CONFIG_PATH")
+        .args(["--exact", K2LG_N_SELECTOR, "--nocapture"])
+        .stdin(std::process::Stdio::null());
+    xai_tty_utils::detach_std_command(&mut command);
+    let output = tokio::task::spawn_blocking(move || command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().filter(|line| line.starts_with("K2LG_")) {
+        println!("{line}");
+    }
+    let assertion: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("K2LG boundary"))
+        .collect();
+    assert!(
+        output.status.success(),
+        "K2LG boundary native child failed: {}",
+        assertion.join("; ")
+    );
+    assert!(stdout.contains("running 1 test"));
 }

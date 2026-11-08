@@ -307,7 +307,7 @@ impl SessionActor {
         // A native (v2) agent message flushed here is activity even when no
         // human interjection drained (provenance: open-grok@240c99c9
         // interjection.rs safe point).
-        let native_activity = self.flush_native_agent_messages();
+        let native_activity = self.flush_native_agent_messages().await;
         // Manual drain (not `drain_formatted`): skill parsing needs the raw text.
         // Parsed after wrapping, the envelope's closing `</user_query>` tag would pollute the trailing skill's args.
         // The guard owns the drained entries until the batch is submitted: every await below is a.
