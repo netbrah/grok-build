@@ -485,6 +485,9 @@ impl SessionActor {
         } else {
             None
         };
+        if native_handoff.is_some() {
+            self.arm_native_hold_latch().await;
+        }
         let mut final_result: Option<ToolLoop> = None;
         let mut deferred_followups: Vec<ConversationItem> = Vec::new();
         let tool_calls = self.reject_excess_media_gen_calls(tool_calls).await?;
@@ -533,11 +536,12 @@ impl SessionActor {
                 None
             };
             for chat in deferred_followups {
-                self.chat_state_handle.push_user_message(chat);
+                self.hold_or_push_user_item(chat, super::interjection::HeldSource::DeferredFollowUp)
+                    .await?;
             }
         }
         self.drain_interjections_at_safe_point().await;
-        self.flush_pending_skill_reminders().await;
+        self.flush_skills_at_native_safe_point().await;
         if matches!(
             final_result.as_ref(),
             Some(ToolLoop::PermissionReject { .. } | ToolLoop::Cancelled)

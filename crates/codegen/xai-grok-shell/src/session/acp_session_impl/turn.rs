@@ -1944,13 +1944,18 @@ impl SessionActor {
     /// The latter persists a `UserMessageChunk` to `updates.jsonl`, which resume replays; the raw XML would render as a user prompt.
     /// Clients see monitor events only via the structured `x.ai/monitor_event` channel.
     pub(crate) async fn inject_pending_monitor_events(&self) {
+        if self.hold_inputs_at_native_safe_point().await {
+            return;
+        }
         let Some(buffer) = &self.tool_context.monitor_event_buffer else {
             return;
         };
-        let mine = xai_grok_tools::implementations::grok_build::monitor::types::drain_owned(
-            buffer,
-            Some(self.session_info.id.0.as_ref()),
-        );
+        let mine = buffer.drain_unpinned_matching(|event| {
+            event
+                .owner_session_id
+                .as_deref()
+                .is_none_or(|id| id == self.session_info.id.0.as_ref())
+        });
         if mine.is_empty() {
             return;
         }
@@ -2838,11 +2843,15 @@ impl SessionActor {
                     )
                     .await
                     .unwrap_or_else(|| ACTION_STATIONARITY_NUDGE_TEMPLATE.to_string());
-                self.push_system_reminder(&reminder);
+                self.hold_or_push_user_item(
+                    wrap_in_reminder_tag(&reminder, "system-reminder"),
+                    super::interjection::HeldSource::StationarityReminder,
+                )
+                .await?;
             }
             if !salvage.awaiting_continuation() {
                 self.drain_interjections_at_safe_point().await;
-                self.flush_pending_skill_reminders().await;
+                self.flush_skills_at_native_safe_point().await;
                 self.inject_pending_monitor_events().await;
             }
             let memory_reminder = self.first_turn_memory_reminder().await;

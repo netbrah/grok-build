@@ -206,6 +206,9 @@ impl PlanModeTracker {
     pub fn has_pending_activation(&self) -> bool {
         self.pending_activation.is_some()
     }
+    pub(crate) fn pending_activation_text(&self) -> Option<&str> {
+        self.pending_activation.as_ref().map(|activation| activation.text.as_str())
+    }
     /// Agent called EnterPlanMode tool: go directly to Active.
     /// Returns true if state actually changed.
     pub(crate) fn activate_from_tool(&mut self) -> bool {

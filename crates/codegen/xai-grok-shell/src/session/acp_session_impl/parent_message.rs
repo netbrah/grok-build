@@ -58,6 +58,7 @@ enum DrainCommitError {
 #[derive(Default)]
 pub(crate) struct MessageDeliveryState {
     lifecycle: ParentMessageLifecycle,
+    pub(super) held_input: super::interjection::HeldInputLedger,
 }
 
 impl MessageDeliveryState {
@@ -271,6 +272,7 @@ impl SessionActor {
                         .as_ref()
                         .unwrap_or_else(|| unreachable!("Steer effective only while running")),
                 );
+                state.message_delivery.held_input.stamp_parent(&message.message_id);
                 state
                     .message_delivery
                     .lifecycle
@@ -303,6 +305,117 @@ impl SessionActor {
         Self::maybe_start_running_task(self.clone(), completion_tx).await;
     }
 
+
+    fn held_parent_view(
+        &self,
+        message: &DeliveryMessage<String, ParentMessageOrigin, PendingParentAgentMessage>,
+        ledger: &super::interjection::HeldInputLedger,
+        binding_meta: &super::interjection::HeldBindingMeta,
+    ) -> super::interjection::HeldParentView {
+        let content = message.content();
+        let source = message.source();
+        let source_kind = match source.source {
+            ActiveAgentMessageSource::Agent => "agent",
+            ActiveAgentMessageSource::Human => "human",
+        };
+        super::interjection::HeldParentView {
+            key: ledger.parent_key(message.identity()),
+            message_id: message.identity().clone(),
+            text: content.text.clone(),
+            payload: serde_json::json!({"identity":message.identity(),"message_id":content.message_id,
+                "prompt_id":content.prompt_id,"binding_prompt_id":binding_meta.prompt_id,"epoch":binding_meta.epoch,
+                "sender_session_id":source.sender_session_id,"source":source_kind,"text":content.text,"telemetry_reference":1}),
+        }
+    }
+
+    pub(super) fn held_parent_views(
+        &self,
+        state: &State,
+        binding: &xai_message_delivery_core::TurnBinding<String, TurnEpoch>,
+        binding_meta: &super::interjection::HeldBindingMeta,
+    ) -> Vec<super::interjection::HeldParentView> {
+        state
+            .message_delivery
+            .lifecycle
+            .pending_messages(binding)
+            .iter()
+            .map(|message| {
+                self.held_parent_view(message, &state.message_delivery.held_input, binding_meta)
+            })
+            .collect()
+    }
+
+    pub(super) fn persist_held_parent_prefix<F>(
+        parents: &[super::interjection::HeldParentView],
+        ledger: &mut super::interjection::HeldInputLedger,
+        mut persist: F,
+    ) -> Result<(), super::interjection::HeldCommitError>
+    where
+        F: FnMut(
+            &super::interjection::HeldParentView,
+        ) -> Result<(), super::interjection::HeldCommitError>,
+    {
+        for parent in parents.iter().skip(ledger.parent_persisted as usize) {
+            let persisted = ledger
+                .parent_persisted
+                .checked_add(1)
+                .ok_or(super::interjection::HeldCommitError::Capacity)?;
+            ledger.check_parent_progress(persisted)?;
+            persist(parent)?;
+            ledger.parent_persisted = persisted;
+            ledger.refresh_header();
+        }
+        Ok(())
+    }
+
+    pub(super) fn commit_held_parent_batch<F>(
+        &self,
+        state: &mut State,
+        binding: &xai_message_delivery_core::TurnBinding<String, TurnEpoch>,
+        binding_meta: &super::interjection::HeldBindingMeta,
+        selection: super::interjection::HeldParentSelection,
+        commit: F,
+    ) -> Result<(), super::interjection::HeldCommitError>
+    where
+        F: FnOnce(
+            &[super::interjection::HeldParentView],
+            &mut super::interjection::HeldInputLedger,
+        ) -> Result<(), super::interjection::HeldCommitError>,
+    {
+        let delivery = &mut state.message_delivery;
+        if selection == super::interjection::HeldParentSelection::None {
+            return commit(&[], &mut delivery.held_input);
+        }
+        delivery
+            .held_input
+            .bind_parent_delivery(binding, binding_meta)?;
+        delivery.lifecycle.begin_delivery(binding);
+        let mut commit = Some(commit);
+        let result = delivery.lifecycle.finish_delivery(binding, |messages| {
+            let views: Vec<_> = messages
+                .iter()
+                .map(|message| self.held_parent_view(message, &delivery.held_input, binding_meta))
+                .collect();
+            commit.take().expect("one lifecycle commit closure")(&views, &mut delivery.held_input)?;
+            let delivered_at = std::time::Instant::now();
+            for message in messages {
+                message
+                    .content()
+                    .telemetry
+                    .record_safe_point_delivery(delivered_at);
+            }
+            Ok(())
+        });
+        if let Some(commit) = commit {
+            // The common lifecycle skips its closure for empty parent membership.
+            delivery.held_input.clear_parent_delivery();
+            return commit(&[], &mut delivery.held_input);
+        }
+        if result.is_ok() {
+            delivery.held_input.clear_parent_delivery();
+        }
+        result.map(|_| ())
+    }
     pub(super) async fn drain_parent_messages_at_safe_point(&self) -> bool {
         let model_id = self.current_model_id().await;
         let user_chunk_meta = serde_json::json!({ "modelId": model_id })
