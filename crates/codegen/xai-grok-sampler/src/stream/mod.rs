@@ -6,6 +6,7 @@
 
 pub mod chat_completions;
 pub mod collect;
+pub mod gemini;
 pub mod messages;
 pub mod responses;
 
@@ -15,5 +16,6 @@ mod messages_invariants;
 
 pub use chat_completions::stream_chat_completions;
 pub use collect::collect_response;
+pub use gemini::stream_generate_content;
 pub use messages::stream_messages;
 pub use responses::stream_responses;

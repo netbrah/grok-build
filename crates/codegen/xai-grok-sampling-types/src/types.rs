@@ -1020,13 +1020,21 @@ pub enum ApiBackend {
     Responses,
     /// Use the Anthropic Messages API (/v1/messages)
     Messages,
+    /// Use the Google Gemini `generateContent` API natively (`models/{model}:streamGenerateContent?alt=sse` under the configured `base_url`; the Gemini Developer API and Vertex AI share the shape). Opt-in only: no slug inference routes here, so existing Gemini rows served through OpenAI-compatible proxies keep their wire.
+    GenerateContent,
 }
 
 impl ApiBackend {
     /// Whether the backend enforces a response JSON schema natively alongside tool calls.
     /// The Messages API does not (a schema there blocks tool use), so structured output there goes through the StructuredOutput tool.
+    /// Gemini likewise refuses `responseSchema` together with function declarations, so it takes the same tool-based route.
     pub fn supports_native_schema(&self) -> bool {
         matches!(self, Self::ChatCompletions | Self::Responses)
+    }
+
+    /// Whether this is the native Gemini `generateContent` wire.
+    pub fn is_generate_content(&self) -> bool {
+        matches!(self, Self::GenerateContent)
     }
 
     /// Whether [`ConversationRequest::prompt_cache_key`] reaches the wire. Only the Responses mapping sends it, so a key set elsewhere is inert.
@@ -1310,6 +1318,43 @@ impl MessagesRequestWrapper {
 
 impl From<crate::messages::MessagesRequest> for MessagesRequestWrapper {
     fn from(inner: crate::messages::MessagesRequest) -> Self {
+        Self::new(inner)
+    }
+}
+
+// ============ Gemini generateContent wrapper ============
+
+/// Wrapper around a Gemini [`GenerateContentRequest`](crate::gemini::GenerateContentRequest)
+/// that adds the xAI tracking-header fields, analogous to [`MessagesRequestWrapper`].
+#[derive(Debug, Clone, Default)]
+pub struct GenerateContentRequestWrapper {
+    /// The inner `generateContent` body (plus its URL-path model slug).
+    pub inner: crate::gemini::GenerateContentRequest,
+
+    pub x_grok_conv_id: Option<String>,
+    pub x_grok_req_id: Option<String>,
+    pub x_grok_session_id: Option<String>,
+    pub x_grok_turn_idx: Option<String>,
+    pub x_grok_transient_retry: Option<String>,
+    pub x_grok_agent_id: Option<String>,
+    pub x_grok_deployment_id: Option<String>,
+    pub x_grok_user_id: Option<String>,
+
+    /// Optional tracing context (e.g., where to persist the finalized request payload).
+    pub trace: Option<Box<dyn TraceContext>>,
+}
+
+impl GenerateContentRequestWrapper {
+    pub fn new(inner: crate::gemini::GenerateContentRequest) -> Self {
+        Self {
+            inner,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<crate::gemini::GenerateContentRequest> for GenerateContentRequestWrapper {
+    fn from(inner: crate::gemini::GenerateContentRequest) -> Self {
         Self::new(inner)
     }
 }

@@ -68,6 +68,11 @@
           "const": "messages",
           "description": "Use the Anthropic Messages API (/v1/messages)",
           "type": "string"
+        },
+        {
+          "const": "generate_content",
+          "description": "Use the Google Gemini `generateContent` API natively (`models/{model}:streamGenerateContent?alt=sse` under the configured `base_url`; the Gemini Developer API and Vertex AI share the shape). Opt-in only: no slug inference routes here, so existing Gemini rows served through OpenAI-compatible proxies keep their wire.",
+          "type": "string"
         }
       ]
     },
@@ -94,11 +99,23 @@
       "type": "object"
     },
     "AuthScheme": {
-      "enum": [
-        "bearer",
-        "x_api_key"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "bearer",
+          "description": "`Authorization: Bearer <token>` (default; also Vertex AI with an OAuth access token).",
+          "type": "string"
+        },
+        {
+          "const": "x_api_key",
+          "description": "`x-api-key: <key>` (Anthropic Messages API).",
+          "type": "string"
+        },
+        {
+          "const": "x_goog_api_key",
+          "description": "`x-goog-api-key: <key>` (Google Gemini Developer API).",
+          "type": "string"
+        }
+      ]
     },
     "AutoModeConfig": {
       "description": "`[auto_mode]` section: server-side configuration for Auto permission mode. ONE struct serves both the local `[auto_mode]` TOML table and the remote settings `auto_mode` JSON object, so the two stay 1:1.\nThe remote object is coerced via `serde_json::from_value`. All fields are plain scalars/enums, so they deserialize cleanly from both formats (no custom tolerant deser needed). Unset fields stay `None` here.\nThe wire fn applies the built-in defaults once auto mode is enabled (current model, `low` effort if the model supports it, `just_command` prompt). Precedence: local config > remote > those built-in defaults.",
