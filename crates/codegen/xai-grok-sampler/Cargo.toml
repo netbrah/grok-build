@@ -52,6 +52,7 @@ tracing-subscriber = { workspace = true, features = ["registry"] }
 serial_test = { workspace = true }
 # Shared SSE generators for the happy-path mock payloads.
 xai-grok-test-support = { workspace = true }
+xai-tty-utils = { workspace = true }
 # `start_paused = true` for deterministic timeout testing; `net` for
 # `TcpListener::bind` in the mock server harness.
 tokio = { workspace = true, features = [

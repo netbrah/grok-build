@@ -7,6 +7,1099 @@ use xai_grok_tools::implementations::grok_build::monitor::types::{
     MonitorEventBuffer, MonitorEventNotification,
 };
 
+const I7YX_ALLOWED_ENV_NAMES: [&str; 22] = [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "DEVELOPER_DIR",
+    "SDKROOT",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "__CF_USER_TEXT_ENCODING",
+    "CARGO_TARGET_DIR",
+    "TMPDIR",
+    "CARGO_BUILD_JOBS",
+    "CARGO_INCREMENTAL",
+    "RUST_MIN_STACK",
+    "GROK_SHELL_BUNDLE_RG_PATH",
+    "GROK_TOOLS_BUNDLE_RG_PATH",
+    "CARGO_NET_OFFLINE",
+];
+
+fn i7yx_present_parent_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for name in I7YX_ALLOWED_ENV_NAMES {
+        if std::env::var_os(name).is_some() {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort_unstable();
+    names
+}
+
+fn i7yx_expected_child_names(route: I7yxChildRoute, parent_names: &[String]) -> Vec<String> {
+    let mut names = parent_names.to_vec();
+    names.extend([
+        "GROK_HOME".to_owned(),
+        "GROK_TEST_I7YX_ENV_NAMES_CHILD".to_owned(),
+    ]);
+    let legacy_name = match route {
+        I7yxChildRoute::K0 => Some("GROK_TEST_K0_SHELL_CHILD"),
+        I7yxChildRoute::K1 => Some("GROK_TEST_K1_SHELL_CHILD"),
+        I7yxChildRoute::PendingV => Some("K2LG_PENDING_CHILD"),
+        I7yxChildRoute::NativeN => Some("K2LG_N_CHILD"),
+        I7yxChildRoute::SamplerProbe => Some("K2LG_SOURCE_PROBE"),
+        I7yxChildRoute::SamplerRun => None,
+    };
+    if let Some(name) = legacy_name {
+        names.push(name.to_owned());
+    }
+    names.sort_unstable();
+    names
+}
+
+fn i7yx_assert_child_hygiene(route: I7yxChildRoute, stdout: &[u8], parent_names: &[String]) {
+    let record = i7yx_read_child_names(stdout, route)
+        .unwrap_or_else(|error| panic!("{}", i7yx_record_diagnostic(error, stdout)));
+    println!(
+        "\nI7YX_PARENT_NAMES {}",
+        json!({"route": route, "names": parent_names})
+    );
+    let payload = serde_json::to_string(&record).expect("I7YX validated names encoding");
+    println!("I7YX_CHILD_NAMES {payload}");
+    let expected = i7yx_expected_child_names(route, parent_names);
+    assert_eq!(
+        record.names, expected,
+        "I7YX names equality route={route:?}"
+    );
+    assert!(record.detached, "I7YX detached predicate route={route:?}");
+    println!(
+        "I7YX_CHILD_CHECK {}",
+        json!({"route": route, "names_pass": true, "detached_pass": true})
+    );
+}
+
+fn i7yx_shell_child_command(
+    route: I7yxChildRoute,
+    home: &std::path::Path,
+) -> (std::process::Command, Vec<String>) {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.env_clear();
+    let parent_names = i7yx_present_parent_names();
+    for name in I7YX_ALLOWED_ENV_NAMES {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    let (marker, legacy_name, legacy_value) = match route {
+        I7yxChildRoute::K0 => (
+            "K0",
+            "GROK_TEST_K0_SHELL_CHILD",
+            "session::acp_session::native_messages_replay_tests::messages_no_plan_preserves_pin_shell",
+        ),
+        I7yxChildRoute::K1 => (
+            "K1",
+            "GROK_TEST_K1_SHELL_CHILD",
+            "session::acp_session::native_messages_replay_tests::messages_replay_plan_checked_on_all_sends",
+        ),
+        I7yxChildRoute::PendingV => ("PENDING_V", "K2LG_PENDING_CHILD", "1"),
+        I7yxChildRoute::NativeN => ("NATIVE_N", "K2LG_N_CHILD", "1"),
+        I7yxChildRoute::SamplerProbe | I7yxChildRoute::SamplerRun => {
+            panic!("I7YX shell constructor route rejected")
+        }
+    };
+    command
+        .env("GROK_HOME", home)
+        .env("GROK_TEST_I7YX_ENV_NAMES_CHILD", marker)
+        .env(legacy_name, legacy_value);
+    (command, parent_names)
+}
+
+const I7YX_CHILD_NAMES_PREFIX: &[u8] = b"I7YX_CHILD_NAMES ";
+const I7YX_MAX_NAMES: usize = 256;
+const I7YX_MAX_NAME_BYTES: usize = 128;
+const I7YX_MAX_RECORD_BYTES: usize = 200_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum I7yxChildRoute {
+    K0,
+    K1,
+    PendingV,
+    NativeN,
+    SamplerProbe,
+    SamplerRun,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct I7yxChildNames {
+    route: I7yxChildRoute,
+    names: Vec<String>,
+    pid: u32,
+    pgid: u32,
+    detached: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum I7yxRecordError {
+    Bounds,
+    Malformed,
+    NamesOrder,
+    ProcessFacts,
+    Missing,
+    Duplicate,
+    Io(std::io::ErrorKind),
+}
+
+fn i7yx_validate_child_names(record: &I7yxChildNames) -> std::result::Result<(), I7yxRecordError> {
+    if record.names.len() > I7YX_MAX_NAMES
+        || record
+            .names
+            .iter()
+            .any(|name| name.is_empty() || name.len() > I7YX_MAX_NAME_BYTES)
+    {
+        return Err(I7yxRecordError::Bounds);
+    }
+    if record.names.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(I7yxRecordError::NamesOrder);
+    }
+    if record.pid == 0 || record.detached != (record.pid == record.pgid) {
+        return Err(I7yxRecordError::ProcessFacts);
+    }
+    Ok(())
+}
+
+fn i7yx_decode_child_names(payload: &[u8]) -> std::result::Result<I7yxChildNames, I7yxRecordError> {
+    if payload.len() > I7YX_MAX_RECORD_BYTES {
+        return Err(I7yxRecordError::Bounds);
+    }
+    let record: I7yxChildNames =
+        serde_json::from_slice(payload).map_err(|_| I7yxRecordError::Malformed)?;
+    i7yx_validate_child_names(&record)?;
+    Ok(record)
+}
+
+fn i7yx_read_child_names(
+    stdout: &[u8],
+    route: I7yxChildRoute,
+) -> std::result::Result<I7yxChildNames, I7yxRecordError> {
+    let mut matching = None;
+    for line in stdout.split(|byte| *byte == b'\n') {
+        if let Some(payload) = line.strip_prefix(I7YX_CHILD_NAMES_PREFIX) {
+            let record = i7yx_decode_child_names(payload)?;
+            if record.route == route {
+                if matching.is_some() {
+                    return Err(I7yxRecordError::Duplicate);
+                }
+                matching = Some(record);
+            }
+        }
+    }
+    matching.ok_or(I7yxRecordError::Missing)
+}
+
+fn i7yx_record_diagnostic(error: I7yxRecordError, bytes: &[u8]) -> String {
+    let count = bytes.len();
+    let digest = native_content_digest(bytes);
+    format!("I7YX record rejected: kind={error:?}; bytes={count}; sha256={digest}")
+}
+
+fn i7yx_output_diagnostic(route: I7yxChildRoute, output: &std::process::Output) -> String {
+    let child_exit = output.status.code();
+    #[cfg(unix)]
+    let child_signal = {
+        use std::os::unix::process::ExitStatusExt as _;
+        output.status.signal()
+    };
+    #[cfg(not(unix))]
+    let child_signal: Option<i32> = None;
+    let stdout_bytes = output.stdout.len();
+    let stderr_bytes = output.stderr.len();
+    let stdout_sha256 = native_content_digest(&output.stdout);
+    let stderr_sha256 = native_content_digest(&output.stderr);
+    format!(
+        "I7YX route={route:?}; child_exit={child_exit:?}; child_signal={child_signal:?}; stdout_bytes={stdout_bytes}; stdout_sha256={stdout_sha256}; stderr_bytes={stderr_bytes}; stderr_sha256={stderr_sha256}"
+    )
+}
+
+fn i7yx_report_child_names() {
+    let Some(marker) = std::env::var_os("GROK_TEST_I7YX_ENV_NAMES_CHILD") else {
+        return;
+    };
+    let route = match marker.to_str() {
+        Some("K0") => I7yxChildRoute::K0,
+        Some("K1") => I7yxChildRoute::K1,
+        Some("PENDING_V") => I7yxChildRoute::PendingV,
+        Some("NATIVE_N") => I7yxChildRoute::NativeN,
+        Some("SAMPLER_PROBE") => I7yxChildRoute::SamplerProbe,
+        Some("SAMPLER_RUN") => I7yxChildRoute::SamplerRun,
+        _ => panic!("I7YX child marker rejected"),
+    };
+    let mut names = Vec::new();
+    for (name, _) in std::env::vars_os() {
+        let Ok(name) = name.into_string() else {
+            panic!("I7YX child name encoding rejected");
+        };
+        assert!(
+            names.len() < I7YX_MAX_NAMES && name.len() <= I7YX_MAX_NAME_BYTES,
+            "I7YX child name bounds rejected"
+        );
+        names.push(name);
+    }
+    names.sort_unstable();
+    #[cfg(unix)]
+    let (pid, pgid) = (
+        u32::try_from(nix::unistd::getpid().as_raw()).expect("I7YX positive child pid"),
+        u32::try_from(nix::unistd::getpgrp().as_raw()).expect("I7YX positive child process group"),
+    );
+    #[cfg(not(unix))]
+    let (pid, pgid) = (std::process::id(), 0);
+    let record = I7yxChildNames {
+        route,
+        names,
+        pid,
+        pgid,
+        detached: pid == pgid,
+    };
+    assert!(
+        i7yx_validate_child_names(&record).is_ok(),
+        "I7YX child report rejected"
+    );
+    let payload = serde_json::to_string(&record).expect("I7YX child report encoding");
+    assert!(
+        payload.len() <= I7YX_MAX_RECORD_BYTES,
+        "I7YX child report byte bounds rejected"
+    );
+    println!("I7YX_CHILD_NAMES {payload}");
+}
+
+#[test]
+fn i7yx_names_parser_contract() {
+    let record = I7yxChildNames {
+        route: I7yxChildRoute::K0,
+        names: vec!["HOME".into(), "PATH".into()],
+        pid: 17,
+        pgid: 17,
+        detached: true,
+    };
+    let payload = serde_json::to_vec(&record).unwrap();
+    let framed = [I7YX_CHILD_NAMES_PREFIX, payload.as_slice(), b"\n"].concat();
+    assert_eq!(
+        i7yx_read_child_names(&framed, I7yxChildRoute::K0),
+        Ok(record.clone())
+    );
+    let bounded = I7yxChildNames {
+        names: (0..256).map(|index| format!("N{index:03}")).collect(),
+        ..record.clone()
+    };
+    assert_eq!(
+        i7yx_decode_child_names(&serde_json::to_vec(&bounded).unwrap()),
+        Ok(bounded)
+    );
+    let longest = I7yxChildNames {
+        names: vec!["N".repeat(128)],
+        ..record.clone()
+    };
+    assert_eq!(
+        i7yx_decode_child_names(&serde_json::to_vec(&longest).unwrap()),
+        Ok(longest)
+    );
+    let mut invalid = vec![b"{".to_vec()];
+    for names in [
+        vec!["PATH".into(), "HOME".into()],
+        vec!["HOME".into(), "HOME".into()],
+        vec!["N".repeat(129)],
+        (0..257).map(|index| format!("N{index:03}")).collect(),
+    ] {
+        invalid.push(
+            serde_json::to_vec(&I7yxChildNames {
+                names,
+                ..record.clone()
+            })
+            .unwrap(),
+        );
+    }
+    let mut unknown_route = serde_json::to_value(&record).unwrap();
+    unknown_route["route"] = serde_json::json!("UNKNOWN_ROUTE");
+    invalid.push(serde_json::to_vec(&unknown_route).unwrap());
+    let mut value_field = serde_json::to_value(&record).unwrap();
+    value_field["value"] = serde_json::json!("i7yx-canned-token-v1");
+    invalid.push(serde_json::to_vec(&value_field).unwrap());
+    for input in invalid {
+        let error = i7yx_decode_child_names(&input).expect_err("I7YX invalid record accepted");
+        let diagnostic = i7yx_record_diagnostic(error, &input);
+        assert!(
+            !diagnostic.contains("i7yx-canned-token-v1"),
+            "I7YX parser diagnostic exposed payload"
+        );
+        assert!(
+            diagnostic.contains(&native_content_digest(&input)),
+            "I7YX parser diagnostic missing digest"
+        );
+    }
+    let duplicate = [framed.as_slice(), framed.as_slice()].concat();
+    assert_eq!(
+        i7yx_read_child_names(&duplicate, I7yxChildRoute::K0),
+        Err(I7yxRecordError::Duplicate)
+    );
+    assert_eq!(
+        i7yx_read_child_names(&framed, I7yxChildRoute::K1),
+        Err(I7yxRecordError::Missing)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn i7yx_output_diagnostic_contract() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let output = std::process::Output {
+        status: std::process::ExitStatus::from_raw(101 << 8),
+        stdout: b"i7yx-canned-fault-payload-v1".to_vec(),
+        stderr: b"i7yx-canned-token-v1".to_vec(),
+    };
+    let diagnostic = i7yx_output_diagnostic(I7yxChildRoute::K0, &output);
+    assert!(
+        !diagnostic.contains("i7yx-canned-fault-payload-v1"),
+        "I7YX status diagnostic exposed stdout"
+    );
+    assert!(
+        !diagnostic.contains("i7yx-canned-token-v1"),
+        "I7YX status diagnostic exposed stderr"
+    );
+    assert!(
+        diagnostic.contains("child_exit=Some(101)"),
+        "I7YX status diagnostic missing child exit"
+    );
+    assert!(
+        diagnostic.contains(&native_content_digest(&output.stdout)),
+        "I7YX status diagnostic missing stdout digest"
+    );
+    assert!(
+        diagnostic.contains(&native_content_digest(&output.stderr)),
+        "I7YX status diagnostic missing stderr digest"
+    );
+}
+
+#[test]
+fn i7yx_proof_forwarding_preserves_original_bytes() {
+    let digest = native_content_digest(b"I7YX unit proof");
+    let stamp = format!(
+        "K2LG_BUILD {{ \"sampler\": \"{digest}\", \"validation\": \"{digest}\", \"fixture\": \"{digest}\" }}\r\n"
+    );
+    let arm = b"K2LG_ARM {\"label\":\"unit\",\"passed\":true}\n";
+    let final_arm = b"K2LG_ARM {\"label\":\"last\",\"passed\":true}";
+    let actor = b"K1_SHELL_CASE actor capture=true valid builds=1 http_delta=1 ends=1\r\n";
+    let direct = b"K1_SHELL_CASE direct missing=false http_delta=1\n";
+    let final_direct = b"K1_SHELL_CASE compact-helper missing=true http_delta=0";
+    for (route, records) in [
+        (
+            I7yxChildRoute::K1,
+            vec![actor.as_slice(), direct, actor.as_slice(), final_direct],
+        ),
+        (
+            I7yxChildRoute::PendingV,
+            vec![stamp.as_bytes(), arm, stamp.as_bytes(), final_arm],
+        ),
+        (
+            I7yxChildRoute::NativeN,
+            vec![stamp.as_bytes(), arm, stamp.as_bytes(), final_arm],
+        ),
+        (I7yxChildRoute::K0, vec![]),
+    ] {
+        let expected = records.concat();
+        let input = [b"running 1 test\n".as_slice(), expected.as_slice()].concat();
+        let mut forwarded = Vec::new();
+        i7yx_forward_proof_records(&input, route, &mut forwarded).unwrap();
+        assert_eq!(
+            forwarded.len(),
+            expected.len(),
+            "I7YX proof byte count changed"
+        );
+        assert_eq!(
+            native_content_digest(&forwarded),
+            native_content_digest(&expected),
+            "I7YX original proof framing changed"
+        );
+    }
+}
+
+#[test]
+fn i7yx_proof_forwarding_rejects_unknown_prefixes() {
+    for (route, input) in [
+        (
+            I7yxChildRoute::K0,
+            b"K0_PIN_H {\"value\":\"i7yx-canned-token-v1\"}\n".as_slice(),
+        ),
+        (
+            I7yxChildRoute::K1,
+            b"K1_UNKNOWN {\"value\":\"i7yx-canned-token-v1\"}\n".as_slice(),
+        ),
+        (
+            I7yxChildRoute::PendingV,
+            b"K2LG_UNKNOWN {\"value\":\"i7yx-canned-token-v1\"}\n".as_slice(),
+        ),
+        (
+            I7yxChildRoute::NativeN,
+            b"K2LG_UNKNOWN {\"value\":\"i7yx-canned-token-v1\"}\n".as_slice(),
+        ),
+    ] {
+        let mut forwarded = Vec::new();
+        let error = i7yx_forward_proof_records(input, route, &mut forwarded)
+            .expect_err("I7YX unrecognized proof accepted");
+        assert!(
+            forwarded.is_empty(),
+            "I7YX unrecognized proof was forwarded"
+        );
+        let diagnostic = i7yx_record_diagnostic(error, input);
+        assert!(
+            !diagnostic.contains("i7yx-canned-token-v1"),
+            "I7YX proof diagnostic exposed payload"
+        );
+        assert!(
+            diagnostic.contains(&native_content_digest(input)),
+            "I7YX proof diagnostic missing digest"
+        );
+    }
+}
+
+#[test]
+fn i7yx_proof_forwarding_rejects_unsafe_records() {
+    for route in [I7yxChildRoute::PendingV, I7yxChildRoute::NativeN] {
+        for input in [
+            b"K2LG_BUILD {broken}\n".as_slice(),
+            b"K2LG_ARM {\"label\":\"unit\",\"passed\":true,\"value\":\"i7yx-canned-token-v1\"}\n".as_slice(),
+            b"K2LG_ARM {\"label\":\"unit\",\"passed\":true,\"passed\":false}\n".as_slice(),
+            b"K2LG_BUILD {\"sampler\":\"bad\",\"validation\":\"bad\",\"fixture\":\"bad\"}\n".as_slice(),
+            b"K2LG_N {\"producer\":\"unit\",\"native_agents_enabled_for\":{\"value\":\"i7yx-canned-token-v1\"}}\n".as_slice(),
+        ] {
+            let mut forwarded = Vec::new();
+            let error = i7yx_forward_proof_records(input, route, &mut forwarded)
+                .expect_err("I7YX invalid proof accepted");
+            assert!(forwarded.is_empty(), "I7YX invalid proof was forwarded");
+            let diagnostic = i7yx_record_diagnostic(error, input);
+            assert!(!diagnostic.contains("i7yx-canned-token-v1"), "I7YX proof diagnostic exposed payload");
+            assert!(diagnostic.contains(&native_content_digest(input)), "I7YX proof diagnostic missing digest");
+        }
+    }
+}
+
+#[test]
+fn i7yx_proof_forwarding_validates_k1_schema() {
+    for input in [
+        b"K1_SHELL_CASE actor capture=other valid builds=1 http_delta=1 ends=1\n".as_slice(),
+        b"K1_SHELL_CASE actor capture=true unknown-case builds=1 http_delta=1 ends=1\n".as_slice(),
+        b"K1_SHELL_CASE actor capture=true valid builds=secret http_delta=1 ends=1\n".as_slice(),
+        b"K1_SHELL_CASE direct missing=false http_delta=1 value=i7yx-canned-token-v1\n".as_slice(),
+        b"K1_SHELL_CASE unknown-route missing=false http_delta=1\n".as_slice(),
+        b"K1_SHELL_CASE direct missing=false http_delta=-1\n".as_slice(),
+    ] {
+        let mut forwarded = Vec::new();
+        let error = i7yx_forward_proof_records(input, I7yxChildRoute::K1, &mut forwarded)
+            .expect_err("I7YX invalid K1 proof accepted");
+        assert!(forwarded.is_empty(), "I7YX invalid K1 proof was forwarded");
+        let diagnostic = i7yx_record_diagnostic(error, input);
+        assert!(
+            !diagnostic.contains("i7yx-canned-token-v1"),
+            "I7YX K1 proof diagnostic exposed payload"
+        );
+        assert!(
+            diagnostic.contains(&native_content_digest(input)),
+            "I7YX K1 proof diagnostic missing digest"
+        );
+    }
+}
+
+struct I7yxUniqueProofValue(serde_json::Value);
+
+impl<'de> serde::Deserialize<'de> for I7yxUniqueProofValue {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct ProofVisitor;
+        impl<'de> serde::de::Visitor<'de> for ProofVisitor {
+            type Value = I7yxUniqueProofValue;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("proof JSON with unique object keys")
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(I7yxUniqueProofValue(serde_json::Value::Null))
+            }
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                value: bool,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(I7yxUniqueProofValue(serde_json::Value::Bool(value)))
+            }
+            fn visit_i64<E: serde::de::Error>(
+                self,
+                value: i64,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(I7yxUniqueProofValue(serde_json::Value::Number(
+                    value.into(),
+                )))
+            }
+            fn visit_u64<E: serde::de::Error>(
+                self,
+                value: u64,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(I7yxUniqueProofValue(serde_json::Value::Number(
+                    value.into(),
+                )))
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<Self::Value, E> {
+                Err(E::custom("floating proof scalar rejected"))
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                value: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(I7yxUniqueProofValue(serde_json::Value::String(
+                    value.to_owned(),
+                )))
+            }
+            fn visit_string<E: serde::de::Error>(
+                self,
+                value: String,
+            ) -> std::result::Result<Self::Value, E> {
+                Ok(I7yxUniqueProofValue(serde_json::Value::String(value)))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(I7yxUniqueProofValue(value)) = sequence.next_element()? {
+                    values.push(value);
+                }
+                Ok(I7yxUniqueProofValue(serde_json::Value::Array(values)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut object: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((key, I7yxUniqueProofValue(value))) =
+                    object.next_entry::<String, I7yxUniqueProofValue>()?
+                {
+                    if values.insert(key, value).is_some() {
+                        return Err(serde::de::Error::custom("duplicate proof key rejected"));
+                    }
+                }
+                Ok(I7yxUniqueProofValue(serde_json::Value::Object(values)))
+            }
+        }
+        deserializer.deserialize_any(ProofVisitor)
+    }
+}
+
+fn i7yx_proof_digest(value: &serde_json::Value) -> bool {
+    value.as_str().is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn i7yx_proof_scalar(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::String(_) => true,
+        serde_json::Value::Number(number) => number.as_u64().is_some(),
+        serde_json::Value::Array(values) => values.iter().all(i7yx_proof_scalar),
+        serde_json::Value::Object(_) => false,
+    }
+}
+
+fn i7yx_proof_object(value: &serde_json::Value, allowed: &[&str], required: &[&str]) -> bool {
+    value.as_object().is_some_and(|object| {
+        object.keys().all(|key| allowed.contains(&key.as_str()))
+            && required.iter().all(|key| object.contains_key(*key))
+    })
+}
+
+fn i7yx_proof_field_type(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "route"
+        | "case"
+        | "producer"
+        | "credit"
+        | "window"
+        | "status"
+        | "time_bound"
+        | "reason"
+        | "row"
+        | "api_backend"
+        | "arm"
+        | "closure"
+        | "W_TE"
+        | "observer"
+        | "site"
+        | "order"
+        | "first_met"
+        | "enqueue"
+        | "later_failure"
+        | "resident_after"
+        | "repair"
+        | "path"
+        | "selected_shell_test" => value.as_str().is_some(),
+        "input_in_history"
+        | "input_in_custody"
+        | "input_resident"
+        | "input_transmitted"
+        | "source_unchanged"
+        | "controlled_test_stop"
+        | "post_closure_credit"
+        | "K2LG_kill"
+        | "L16_credit"
+        | "input_queued"
+        | "turn_completion_credit"
+        | "NativeAgentsEnabled"
+        | "send_message_tool"
+        | "plain_append_equivalent"
+        | "repair_before"
+        | "prune_after"
+        | "session_turn_active"
+        | "exchange_live_at_release"
+        | "delivery_reported"
+        | "constructed_defensive"
+        | "identical_bytes"
+        | "matched_control_equal_after_first_ordinary_push"
+        | "bound_client_preparation"
+        | "captured_headers_equal"
+        | "credential_values_printed"
+        | "bridge_source_matched"
+        | "child_success" => value.as_bool().is_some(),
+        "executions" | "ops_after_closure" | "ops" | "native_ops" | "control_ops" => value
+            .as_array()
+            .is_some_and(|values| values.iter().all(|value| value.as_str().is_some())),
+        _ => value.as_u64().is_some(),
+    }
+}
+
+fn i7yx_validate_proof_value(kind: &str, value: &serde_json::Value) -> bool {
+    let (allowed, required): (&[&str], &[&str]) = match kind {
+        "K2LG_BUILD" => (
+            &["sampler", "validation", "fixture"],
+            &["sampler", "validation", "fixture"],
+        ),
+        "K2LG_N_BUILD" => (
+            &["session_setup", "interjection", "fixture"],
+            &["session_setup", "interjection", "fixture"],
+        ),
+        "K2LG_ARM" | "K2LG_N_ARM" => (&["label", "passed", "assertion"], &["label", "passed"]),
+        "K2LG_V" => (
+            &[
+                "route",
+                "case",
+                "producer",
+                "builds",
+                "continuation_http",
+                "executions",
+                "body_digest",
+                "credit",
+                "http_delta",
+                "expected_digest",
+                "client_executions",
+                "window",
+                "status",
+                "time_bound",
+                "input_in_history",
+                "input_in_custody",
+                "input_resident",
+                "input_transmitted",
+                "source_unchanged",
+                "controlled_test_stop",
+                "post_closure_credit",
+                "K2LG_kill",
+                "L16_credit",
+                "input_queued",
+                "turn_completion_credit",
+                "reason",
+            ],
+            &["route"],
+        ),
+        "K2LG_V_SOURCE" => (
+            &[
+                "case",
+                "source_unchanged",
+                "HTTP_B",
+                "native_usage",
+                "defensive_http_delta",
+            ],
+            &[
+                "case",
+                "source_unchanged",
+                "HTTP_B",
+                "native_usage",
+                "defensive_http_delta",
+            ],
+        ),
+        "K2LG_V_TRANSPORT" => (
+            &[
+                "route",
+                "case",
+                "bound_client_preparation",
+                "captured_headers_equal",
+                "credential_values_printed",
+            ],
+            &[
+                "route",
+                "case",
+                "bound_client_preparation",
+                "captured_headers_equal",
+                "credential_values_printed",
+            ],
+        ),
+        "K2LG_P" => (
+            &[
+                "producer",
+                "source_stamp",
+                "selected_shell_test",
+                "bridge_source_matched",
+                "child_success",
+            ],
+            &[
+                "producer",
+                "source_stamp",
+                "selected_shell_test",
+                "bridge_source_matched",
+                "child_success",
+            ],
+        ),
+        "K2LG_N" => {
+            let Some(fields) = i7yx_native_proof_fields(value) else {
+                return false;
+            };
+            (fields, fields)
+        }
+        _ => return false,
+    };
+    if !i7yx_proof_object(value, allowed, required) {
+        return false;
+    }
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if kind == "K2LG_V" && !object.contains_key("case") {
+        let gap_fields = [
+            "route",
+            "window",
+            "status",
+            "reason",
+            "K2LG_kill",
+            "L16_credit",
+        ];
+        if !i7yx_proof_object(value, &gap_fields, &gap_fields) {
+            return false;
+        }
+    }
+    if matches!(kind, "K2LG_BUILD" | "K2LG_N_BUILD") {
+        return object.values().all(i7yx_proof_digest);
+    }
+    if matches!(kind, "K2LG_ARM" | "K2LG_N_ARM") {
+        return object["label"].as_str().is_some()
+            && match object["passed"].as_bool() {
+                Some(true) => !object.contains_key("assertion"),
+                Some(false) => object
+                    .get("assertion")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|assertion| assertion.contains("K2LG boundary")),
+                None => false,
+            };
+    }
+    object.iter().all(|(key, field)| match key.as_str() {
+        "source_stamp" => {
+            i7yx_proof_object(
+                field,
+                &["sampler", "validation", "fixture"],
+                &["sampler", "validation", "fixture"],
+            ) && field
+                .as_object()
+                .is_some_and(|stamp| stamp.values().all(i7yx_proof_digest))
+        }
+        "body_digest" => field.is_null() || i7yx_proof_digest(field),
+        "expected_digest" => i7yx_proof_digest(field),
+        "native_usage" => field.as_array().is_some_and(|usage| {
+            usage.iter().all(|entry| {
+                i7yx_proof_object(
+                    entry,
+                    &[
+                        "request",
+                        "response_occurrence",
+                        "http_dispatches",
+                        "outcome",
+                    ],
+                    &[
+                        "request",
+                        "response_occurrence",
+                        "http_dispatches",
+                        "outcome",
+                    ],
+                ) && entry["request"].as_str().is_some()
+                    && i7yx_proof_scalar(&entry["response_occurrence"])
+                    && entry["http_dispatches"].as_u64().is_some()
+                    && entry["outcome"].as_str().is_some()
+            })
+        }),
+        "native_agents_enabled_for" => {
+            i7yx_proof_object(
+                field,
+                &[
+                    "subagents_enabled",
+                    "subagent_depth",
+                    "multi_agent_v2_feature",
+                    "model_row",
+                ],
+                &[
+                    "subagents_enabled",
+                    "subagent_depth",
+                    "multi_agent_v2_feature",
+                    "model_row",
+                ],
+            ) && field.as_object().is_some_and(|flags| {
+                flags.iter().all(|(name, flag)| {
+                    if name == "subagent_depth" {
+                        flag.as_u64().is_some()
+                    } else {
+                        flag.as_bool().is_some()
+                    }
+                })
+            })
+        }
+        "per_session" => {
+            i7yx_proof_object(
+                field,
+                &[
+                    "agent_wide_flag_after_sender_turn",
+                    "receiver_prefix_resident",
+                ],
+                &[
+                    "agent_wide_flag_after_sender_turn",
+                    "receiver_prefix_resident",
+                ],
+            ) && field
+                .as_object()
+                .is_some_and(|flags| flags.values().all(|flag| flag.as_bool().is_some()))
+        }
+        "submit_revisions" => field.as_array().is_some_and(|revisions| {
+            revisions.iter().all(|revision| {
+                i7yx_proof_object(
+                    revision,
+                    &["history_revision", "persistence_ops"],
+                    &["history_revision", "persistence_ops"],
+                ) && revision
+                    .as_object()
+                    .is_some_and(|fields| fields.values().all(|number| number.as_u64().is_some()))
+            })
+        }),
+        _ => i7yx_proof_field_type(key, field),
+    })
+}
+
+fn i7yx_native_proof_fields(value: &serde_json::Value) -> Option<&'static [&'static str]> {
+    if let Some(producer) = value.get("producer").and_then(serde_json::Value::as_str) {
+        return match producer {
+            "host_gate" => Some(&[
+                "producer",
+                "native_agents_enabled_for",
+                "NativeAgentsEnabled",
+                "send_message_tool",
+                "row",
+                "api_backend",
+            ]),
+            "send_message->coordinator->ShellChildRuntime->AgentMessage->message_item->resident" => {
+                Some(&["producer", "call", "status", "resident"])
+            }
+            _ => None,
+        };
+    }
+    match value.get("arm").and_then(serde_json::Value::as_str)? {
+        "N1" => Some(&[
+            "arm",
+            "closure",
+            "continuation_http",
+            "post_release_rounds",
+            "native_occurrences",
+            "per_session",
+            "W_TE",
+        ]),
+        "N6/i" => Some(&[
+            "arm",
+            "release_op_index",
+            "closure_appends",
+            "ops_after_closure",
+            "plain_append_equivalent",
+            "native_persists",
+            "repair_before",
+            "prune_after",
+            "submit_revisions",
+        ]),
+        "N6/iv" => Some(&["arm", "observer", "captured_items", "turn_appends"]),
+        "N1/turn-end" => Some(&[
+            "arm",
+            "site",
+            "session_turn_active",
+            "exchange_live_at_release",
+            "released",
+        ]),
+        "N2" => Some(&["arm", "native_occurrences", "order", "persist_appends"]),
+        "N3" => Some(&[
+            "arm",
+            "first_met",
+            "enqueue",
+            "resident_after_failures",
+            "delivery_reported",
+        ]),
+        "N4" => Some(&[
+            "arm",
+            "accepted_prefix",
+            "later_failure",
+            "resident_after",
+            "constructed_defensive",
+        ]),
+        "N5" => Some(&[
+            "arm",
+            "http_attempts_for_round",
+            "identical_bytes",
+            "native_appends",
+            "native_persists",
+        ]),
+        "N6/ii-cancel-during-client" => Some(&[
+            "arm",
+            "site",
+            "matched_control_equal_after_first_ordinary_push",
+            "ops",
+        ]),
+        "N6/ii-cancel-after-results" => Some(&[
+            "arm",
+            "site",
+            "repair",
+            "matched_control_equal_after_first_ordinary_push",
+            "ops",
+        ]),
+        "N6/ii-error" => Some(&[
+            "arm",
+            "site",
+            "matched_control_equal_after_first_ordinary_push",
+            "native_ops",
+            "control_ops",
+        ]),
+        "N6/iii" => Some(&[
+            "arm",
+            "seeded_turns",
+            "cleared_before",
+            "cleared_after_native",
+            "cleared_after_next_prompt",
+        ]),
+        "N6/inactive-no-plan" => Some(&["arm", "path", "native_appends"]),
+        _ => None,
+    }
+}
+
+fn i7yx_proof_decimal(field: Option<&str>, prefix: &str) -> bool {
+    field
+        .and_then(|field| field.strip_prefix(prefix))
+        .is_some_and(|digits| {
+            !digits.is_empty()
+                && digits.bytes().all(|byte| byte.is_ascii_digit())
+                && digits.parse::<u64>().is_ok()
+        })
+}
+
+fn i7yx_validate_k1_proof(line: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(line) else {
+        return false;
+    };
+    let mut fields = text.split_ascii_whitespace();
+    if fields.next() != Some("K1_SHELL_CASE") {
+        return false;
+    }
+    let Some(route) = fields.next() else {
+        return false;
+    };
+    let valid = if route == "actor" {
+        matches!(fields.next(), Some("capture=true" | "capture=false"))
+            && matches!(
+                fields.next(),
+                Some(
+                    "valid"
+                        | "missing-plan"
+                        | "stale-request"
+                        | "stale-context"
+                        | "wrong-banked-body"
+                        | "install-B-retain-A"
+                )
+            )
+            && i7yx_proof_decimal(fields.next(), "builds=")
+            && i7yx_proof_decimal(fields.next(), "http_delta=")
+            && i7yx_proof_decimal(fields.next(), "ends=")
+    } else {
+        matches!(
+            route,
+            "direct" | "collect" | "non-streaming" | "compact-helper"
+        ) && matches!(fields.next(), Some("missing=true" | "missing=false"))
+            && i7yx_proof_decimal(fields.next(), "http_delta=")
+    };
+    valid && fields.next().is_none()
+}
+
+fn i7yx_forward_proof_records<W: std::io::Write>(
+    stdout: &[u8],
+    route: I7yxChildRoute,
+    writer: &mut W,
+) -> std::result::Result<(), I7yxRecordError> {
+    for line in stdout.split_inclusive(|byte| *byte == b'\n') {
+        let candidate = match route {
+            I7yxChildRoute::K0 => line.starts_with(b"K0_PIN_H "),
+            I7yxChildRoute::K1 => line.starts_with(b"K1_"),
+            I7yxChildRoute::PendingV | I7yxChildRoute::NativeN => line.starts_with(b"K2LG_"),
+            I7yxChildRoute::SamplerProbe | I7yxChildRoute::SamplerRun => false,
+        };
+        if !candidate {
+            continue;
+        }
+        if line.len() > 1_048_576 {
+            return Err(I7yxRecordError::Bounds);
+        }
+        let valid = if route == I7yxChildRoute::K1 {
+            i7yx_validate_k1_proof(line)
+        } else if route == I7yxChildRoute::K0 {
+            // The signed base has no K0_PIN_H producer or accepted schema.
+            false
+        } else {
+            let split = line
+                .iter()
+                .position(|byte| *byte == b' ')
+                .ok_or(I7yxRecordError::Malformed)?;
+            let kind =
+                std::str::from_utf8(&line[..split]).map_err(|_| I7yxRecordError::Malformed)?;
+            let I7yxUniqueProofValue(value) = serde_json::from_slice(&line[split + 1..])
+                .map_err(|_| I7yxRecordError::Malformed)?;
+            i7yx_validate_proof_value(kind, &value)
+        };
+        if !valid {
+            return Err(I7yxRecordError::Malformed);
+        }
+        writer
+            .write_all(line)
+            .map_err(|error| I7yxRecordError::Io(error.kind()))?;
+    }
+    Ok(())
+}
+
+fn i7yx_print_proof_records(stdout: &[u8], route: I7yxChildRoute) {
+    let mut forwarded = Vec::new();
+    i7yx_forward_proof_records(stdout, route, &mut forwarded)
+        .unwrap_or_else(|error| panic!("{}", i7yx_record_diagnostic(error, stdout)));
+    let text = std::str::from_utf8(&forwarded)
+        .unwrap_or_else(|_| panic!("I7YX validated proof encoding rejected"));
+    print!("{text}");
+}
+
 const K0_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
@@ -1043,39 +2136,31 @@ fn k0_isolated_shell_test() -> bool {
         return false;
     }
     let home = tempfile::tempdir().unwrap();
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    let (mut command, parent_names) = i7yx_shell_child_command(I7yxChildRoute::K0, home.path());
     command
-        .env(CHILD, NAME)
-        .env("GROK_HOME", home.path())
-        .env_remove("GROK_CONFIG")
-        .env_remove("GROK_CONFIG_PATH")
-        .env_remove("GROK_CAMPAIGNS")
-        .env_remove("GROK_CAMPAIGNS_OVERRIDE")
-        .env_remove("XAI_API_KEY")
-        .env_remove("APEX_LLM_API_KEY")
-        .env_remove("APEX_LLM_PROXY_KEY")
         .args(["--exact", NAME, "--nocapture"])
         .stdin(std::process::Stdio::null());
     xai_tty_utils::detach_std_command(&mut command);
     let output = command.output().unwrap();
+    i7yx_assert_child_hygiene(I7yxChildRoute::K0, &output.stdout, &parent_names);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "isolated K0 shell failed: stdout={stdout:?}; stderr={stderr:?}"
+        "isolated K0 shell failed: {}",
+        i7yx_output_diagnostic(I7yxChildRoute::K0, &output)
     );
     assert!(
         stdout.contains("running 1 test") && stdout.contains(&format!("test {NAME} ... ok")),
-        "exact isolated selection: {stdout}"
+        "exact isolated selection: {}",
+        i7yx_output_diagnostic(I7yxChildRoute::K0, &output)
     );
-    for line in stdout.lines().filter(|line| line.starts_with("K0_PIN_H ")) {
-        println!("{line}");
-    }
+    i7yx_print_proof_records(&output.stdout, I7yxChildRoute::K0);
     true
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn messages_no_plan_preserves_pin_shell() {
+    i7yx_report_child_names();
     if k0_isolated_shell_test() {
         return;
     }
@@ -1954,31 +3039,21 @@ fn k1_isolated_shell_test() -> bool {
         return false;
     }
     let home = tempfile::tempdir().unwrap();
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    let (mut command, parent_names) = i7yx_shell_child_command(I7yxChildRoute::K1, home.path());
     command
-        .env(CHILD, NAME)
-        .env("GROK_HOME", home.path())
-        .env_remove("GROK_CONFIG")
-        .env_remove("GROK_CONFIG_PATH")
-        .env_remove("GROK_CAMPAIGNS")
-        .env_remove("GROK_CAMPAIGNS_OVERRIDE")
-        .env_remove("XAI_API_KEY")
-        .env_remove("APEX_LLM_API_KEY")
-        .env_remove("APEX_LLM_PROXY_KEY")
         .args(["--exact", NAME, "--nocapture"])
         .stdin(std::process::Stdio::null());
     xai_tty_utils::detach_std_command(&mut command);
     let output = command.output().unwrap();
+    i7yx_assert_child_hygiene(I7yxChildRoute::K1, &output.stdout, &parent_names);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "isolated K1 shell failed: stdout={stdout}; stderr={stderr}"
+        "isolated K1 shell failed: {}",
+        i7yx_output_diagnostic(I7yxChildRoute::K1, &output)
     );
     assert!(stdout.contains("running 1 test") && stdout.contains(&format!("test {NAME} ... ok")));
-    for line in stdout.lines().filter(|line| line.starts_with("K1_")) {
-        println!("{line}");
-    }
+    i7yx_print_proof_records(&output.stdout, I7yxChildRoute::K1);
     true
 }
 
@@ -3621,6 +4696,7 @@ fn k2lg_compiled_sources() -> Value {
 }
 
 async fn k2lg_selector_prelude() -> bool {
+    i7yx_report_child_names();
     if std::env::var_os("K2LG_SOURCE_PROBE").is_some() {
         println!("K2LG_BUILD {}", k2lg_compiled_sources());
         return true;
@@ -3634,9 +4710,9 @@ async fn k2lg_selector_prelude() -> bool {
 
 async fn k2lg_pending_isolated() {
     let home = tempfile::tempdir().unwrap();
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    command.env("K2LG_PENDING_CHILD", "1").env("GROK_HOME", home.path())
-        .env_remove("GROK_CONFIG").env_remove("GROK_CONFIG_PATH")
+    let (mut command, parent_names) =
+        i7yx_shell_child_command(I7yxChildRoute::PendingV, home.path());
+    command
         .args(["--exact", "session::acp_session::native_messages_replay_tests::messages_replay_plan_checked_on_all_sends", "--nocapture"])
         .stdin(std::process::Stdio::null());
     xai_tty_utils::detach_std_command(&mut command);
@@ -3644,19 +4720,13 @@ async fn k2lg_pending_isolated() {
         .await
         .unwrap()
         .unwrap();
+    i7yx_assert_child_hygiene(I7yxChildRoute::PendingV, &output.stdout, &parent_names);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for line in stdout.lines().filter(|line| line.starts_with("K2LG_")) {
-        println!("{line}");
-    }
-    let assertion: Vec<_> = stderr
-        .lines()
-        .filter(|line| line.contains("K2LG boundary"))
-        .collect();
+    i7yx_print_proof_records(&output.stdout, I7yxChildRoute::PendingV);
     assert!(
         output.status.success(),
         "K2LG boundary child failed: {}",
-        assertion.join("; ")
+        i7yx_output_diagnostic(I7yxChildRoute::PendingV, &output)
     );
     assert!(stdout.contains("running 1 test"));
 }
@@ -6439,17 +7509,15 @@ async fn k2lg_n_cases() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn messages_native_agent_grammar_uses_real_mailbox_producer() {
+    i7yx_report_child_names();
     if std::env::var_os("K2LG_N_CHILD").is_some() {
         tokio::task::LocalSet::new().run_until(k2lg_n_cases()).await;
         return;
     }
     let home = tempfile::tempdir().unwrap();
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    let (mut command, parent_names) =
+        i7yx_shell_child_command(I7yxChildRoute::NativeN, home.path());
     command
-        .env("K2LG_N_CHILD", "1")
-        .env("GROK_HOME", home.path())
-        .env_remove("GROK_CONFIG")
-        .env_remove("GROK_CONFIG_PATH")
         .args(["--exact", K2LG_N_SELECTOR, "--nocapture"])
         .stdin(std::process::Stdio::null());
     xai_tty_utils::detach_std_command(&mut command);
@@ -6457,19 +7525,13 @@ async fn messages_native_agent_grammar_uses_real_mailbox_producer() {
         .await
         .unwrap()
         .unwrap();
+    i7yx_assert_child_hygiene(I7yxChildRoute::NativeN, &output.stdout, &parent_names);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for line in stdout.lines().filter(|line| line.starts_with("K2LG_")) {
-        println!("{line}");
-    }
-    let assertion: Vec<_> = stderr
-        .lines()
-        .filter(|line| line.contains("K2LG boundary"))
-        .collect();
+    i7yx_print_proof_records(&output.stdout, I7yxChildRoute::NativeN);
     assert!(
         output.status.success(),
         "K2LG boundary native child failed: {}",
-        assertion.join("; ")
+        i7yx_output_diagnostic(I7yxChildRoute::NativeN, &output)
     );
     assert!(stdout.contains("running 1 test"));
 }
