@@ -337,6 +337,9 @@ pub(super) struct BridgeDeclarationProjection {
     bundle: ToolSpecBundle,
     mcp_membership: std::collections::BTreeSet<String>,
     appended: Vec<ToolSpec>,
+    appended_native_entries: Vec<
+        Option<xai_grok_sampling_types::conversation::native_search_history::NativeEligibleEntry>,
+    >,
     source: BridgeDeclarationSource,
 }
 
@@ -349,6 +352,7 @@ impl BridgeDeclarationProjection {
             bundle,
             mcp_membership,
             appended: Vec::new(),
+            appended_native_entries: Vec::new(),
             source: BridgeDeclarationSource::Prepared,
         }
     }
@@ -358,27 +362,94 @@ impl BridgeDeclarationProjection {
             bundle,
             mcp_membership: std::collections::BTreeSet::new(),
             appended: Vec::new(),
+            appended_native_entries: Vec::new(),
             source: BridgeDeclarationSource::Fork,
         }
     }
 
-    pub(super) fn append_builtin(&mut self, spec: ToolSpec) {
-        self.appended.push(spec);
+    pub(super) fn append_structured_output(&mut self, schema: serde_json::Value) {
+        let declaration = ToolSpec {
+            name: "StructuredOutput".to_string(),
+            description: Some(
+                "Return your final answer as JSON matching the required schema. \
+                 Call this exactly once, at the end."
+                    .to_string(),
+            ),
+            parameters: schema,
+            exposure: xai_grok_sampling_types::ToolExposure::default(),
+        };
+        let entry = Self::checked_native_entry(
+            self.bundle.specs.len() + self.appended.len(),
+            xai_grok_sampling_types::conversation::native_search_history::NativeNamespaceKind::GrokBuild,
+            "grok_build".to_string(),
+            "StructuredOutput".to_string(),
+            declaration.clone(),
+        );
+        self.appended.push(declaration);
+        self.appended_native_entries.push(entry.ok());
+    }
+
+    fn checked_native_entry(
+        position: usize,
+        kind: xai_grok_sampling_types::conversation::native_search_history::NativeNamespaceKind,
+        qualified_namespace: String,
+        child_name: String,
+        declaration: ToolSpec,
+    ) -> Result<
+        xai_grok_sampling_types::conversation::native_search_history::NativeEligibleEntry,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use sha2::{Digest, Sha256};
+        use xai_grok_sampling_types::conversation::native_search_history::{
+            NATIVE_SOURCE_BYTES, NativeEligibleEntry, encode_native,
+        };
+        let schema = encode_native(&declaration.parameters, NATIVE_SOURCE_BYTES)?;
+        let schema_digest = format!("{:x}", Sha256::digest(&schema));
+        NativeEligibleEntry::checked(
+            position,
+            kind,
+            qualified_namespace,
+            child_name,
+            declaration,
+            schema.into(),
+            schema_digest,
+        )
     }
 
     pub(super) fn candidates(&self) -> xai_chat_state::NativeToolCandidates {
-        let specs = self
+        let specs: Vec<_> = self
             .bundle
             .specs
             .iter()
             .chain(&self.appended)
             .cloned()
             .collect();
+        let native_inputs = if self.appended_native_entries.is_empty() {
+            self.bundle.native_inputs.clone()
+        } else {
+            (|| {
+                let mut entries = match &self.bundle.native_inputs {
+                    Some(inputs) if inputs.matches_specs(&self.bundle.specs) => {
+                        inputs.entries().to_vec()
+                    }
+                    None if self.bundle.specs.is_empty() && self.bundle.has_valid_identity() => {
+                        Vec::new()
+                    }
+                    _ => return None,
+                };
+                for entry in &self.appended_native_entries {
+                    entries.push(entry.clone()?);
+                }
+                xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs::checked(entries, specs.len())
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })()
+        };
         xai_chat_state::NativeToolCandidates::with_mcp_membership(
             specs,
             self.mcp_membership.clone(),
         )
-        .with_native_inputs(self.bundle.native_inputs.clone())
+        .with_native_inputs(native_inputs)
     }
 }
 
@@ -522,10 +593,8 @@ impl SessionActor {
             None
         } else {
             (|| {
-                use sha2::{Digest, Sha256};
                 use xai_grok_sampling_types::conversation::native_search_history::{
-                    NativeEligibleEntry, NativeEligibleInputs, NativeNamespaceKind,
-                    NATIVE_SOURCE_BYTES, encode_native,
+                    NativeEligibleInputs, NativeNamespaceKind,
                 };
                 let mut entries = Vec::new();
                 for (position, (definition, namespace, _)) in inventory.iter().enumerate() {
@@ -557,17 +626,12 @@ impl SessionActor {
                         };
                         (name.to_owned(), definition.function.name.clone())
                     };
-                    let schema =
-                        encode_native(&definition.function.parameters, NATIVE_SOURCE_BYTES)?;
-                    let schema_digest = format!("{:x}", Sha256::digest(&schema));
-                    entries.push(NativeEligibleEntry::checked(
+                    entries.push(BridgeDeclarationProjection::checked_native_entry(
                         position,
                         kind,
                         qualified_namespace,
                         child_name,
                         ToolSpec::from(definition.clone()),
-                        schema.into(),
-                        schema_digest
                     )?);
                 }
                 NativeEligibleInputs::checked(entries, inventory.len()).map(std::sync::Arc::new)

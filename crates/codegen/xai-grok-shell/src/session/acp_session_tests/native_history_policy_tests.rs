@@ -13561,3 +13561,858 @@ async fn split_server_result_after_results_continuation_completes_live_group() {
         assert!(!carries_server_id(bodies.last().unwrap()), "H-1 (f) F removes both native halves from request 4");
     }).await;
 }
+
+#[derive(Clone, Copy)]
+enum Nj22eRoute {
+    Selected,
+    Inactive,
+}
+
+async fn nj22e_local_session(
+    server: &MockInferenceServer,
+) -> (NativeHistorySession, Arc<std::sync::atomic::AtomicUsize>) {
+    let directory = tempfile::tempdir().unwrap();
+    let config = xai_grok_sampler::SamplerConfig {
+        base_url: server.url(),
+        model: "test".into(),
+        api_key: Some("test-key".into()),
+        api_backend: xai_grok_sampler::ApiBackend::Messages,
+        max_completion_tokens: Some(4096),
+        max_retries: Some(0),
+        ..Default::default()
+    };
+    let info = crate::session::info::Info {
+        id: acp::SessionId::new(format!(
+            "native-history-{}",
+            directory.path().file_name().unwrap().to_string_lossy()
+        )),
+        cwd: "/tmp".into(),
+    };
+    let persistence = crate::session::persistence::new_with_explicit_dir(
+        &info,
+        directory.path().to_path_buf(),
+        acp::ModelId::new("test"),
+        xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(),
+        "test".into(),
+        crate::session::persistence::ExplicitSessionOpen::New {
+            identity: None,
+            next_trace_turn: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+    let native_notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let notifications = native_notifications.clone();
+    let gateway_task = tokio::task::spawn_local(async move {
+        while let Some(message) = gateway_rx.recv().await {
+            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = message {
+                let value = serde_json::to_value(&args.request).unwrap();
+                if value["_meta"]["nativeHistoryAccounting"].is_object() {
+                    notifications.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                let _ = args.response_tx.send(Ok(()));
+            }
+        }
+    });
+    let (mut actor, _) = create_test_actor_with_chat_persistence(
+        0,
+        256_000,
+        85,
+        gateway_tx,
+        persistence.tx.clone(),
+        Box::new(
+            crate::session::chat_persistence::ChannelChatPersistence::new(persistence.tx.clone()),
+        ),
+    )
+    .await;
+    actor.session_info = info;
+    actor.max_retries = 0;
+    actor.memory.flush_config.enabled = false;
+    actor.memory.dream_config.enabled = false;
+    actor.memory.save_on_end = false;
+    let (manager, models) = manager_with_entries();
+    let mut row = entry_with_search_flag("test", true);
+    row.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    row.api_base_url = Some(server.url());
+    row.api_key = config.api_key.clone();
+    manager.insert_test_entry("test", row);
+    manager.set_current_model_id(acp::ModelId::new("test"));
+    actor.models_manager = manager;
+    let mut binding = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    binding.config.base_url = server.url();
+    binding.config.model = "test".into();
+    binding.config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    binding.config.supports_search_tool = true;
+    binding.config.max_completion_tokens = Some(4096);
+    binding.config.max_retries = Some(0);
+    binding.credentials.api_key = config.api_key.clone();
+    binding.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+    actor
+        .chat_state_handle
+        .install_transport_binding(binding)
+        .await
+        .unwrap();
+    let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for name in ["alpha__lookup", "zeta__fetch"] {
+        actor
+            .agent
+            .borrow()
+            .tool_bridge()
+            .register_mcp_tools(
+                name.into(),
+                U5aClientTool {
+                    name,
+                    kind: xai_grok_tools::types::tool::ToolKind::Other,
+                    executions: executions.clone(),
+                },
+                Some(json!({"type":"object","properties":{},"additionalProperties":false})),
+            )
+            .unwrap();
+    }
+    let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+    actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+        config,
+        xai_grok_sampler::RetryPolicy {
+            max_retries: 0,
+            ..Default::default()
+        },
+        sampler_tx,
+    );
+    let actor = Arc::new(actor);
+    let drainer = actor.clone();
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = observed.clone();
+    let observed_changed = Arc::new(tokio::sync::Notify::new());
+    let changed = observed_changed.clone();
+    let native_end_processed = Arc::new(tokio::sync::Notify::new());
+    let end_processed = native_end_processed.clone();
+    let native_ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ended = native_ended.clone();
+    let sampler_task = tokio::task::spawn_local(async move {
+        while let Some(event) = sampler_rx.recv().await {
+            let end = matches!(&event, xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                evidence: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent::End, ..
+            });
+            recorded.lock().unwrap().push(event.clone());
+            changed.notify_one();
+            drainer.handle_sampling_event(event).await;
+            if end {
+                ended.store(true, std::sync::atomic::Ordering::SeqCst);
+                end_processed.notify_one();
+            }
+        }
+    });
+    (
+        NativeHistorySession {
+            actor,
+            persistence,
+            directory,
+            tasks: vec![gateway_task, sampler_task],
+            _models: models,
+            observed,
+            observed_changed,
+            native_end_processed,
+            native_ended,
+        },
+        native_notifications,
+    )
+}
+
+fn nj22e_normalize(value: &mut Value, tokens: &[(String, &'static str)]) {
+    match value {
+        Value::String(text) => {
+            let date = regex::Regex::new(r"(?m)(Today's date: )[^\r\n]+").unwrap();
+            *text = date.replace_all(text, "${1}<local-date>").into_owned();
+            for (token, placeholder) in tokens {
+                if !token.is_empty() {
+                    *text = text.replace(token, placeholder);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                nj22e_normalize(item, tokens);
+            }
+        }
+        Value::Object(fields) => {
+            for item in fields.values_mut() {
+                nj22e_normalize(item, tokens);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn nj22e_canonical(value: &Value) -> Value {
+    match value {
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), nj22e_canonical(value)))
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into_iter()
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(nj22e_canonical).collect()),
+        _ => value.clone(),
+    }
+}
+
+async fn nj22e_structured_output_disk(route: Nj22eRoute) {
+    use crate::session::storage::StorageAdapter;
+    use sha2::{Digest, Sha256};
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let server = MockInferenceServer::start().await.unwrap();
+    let (session, notifications) = nj22e_local_session(&server).await;
+    let initial = session
+        .actor
+        .chat_state_handle
+        .read_native_history()
+        .await
+        .unwrap();
+    assert!(
+        initial
+            .checkpoint
+            .as_ref()
+            .is_none_or(|checkpoint| checkpoint.source.ordered_blocks.is_empty()),
+        "NJ22E starts without a retained KEEP obligation"
+    );
+    if matches!(route, Nj22eRoute::Selected) {
+        let mut frames = native_history_frames();
+        frames[0]["message"]["id"] = json!("msg_nj22e_source_setup");
+        server.enqueue_response("/v1/messages", native_history_script(frames));
+        session
+            .actor
+            .chat_state_handle
+            .push_user_message_and_ack(ConversationItem::user(
+                "capture an unqualified source before the Selected schema turn",
+            ))
+            .await;
+        let setup = session
+            .actor
+            .process_conversation_turn_with_recovery(
+                "NJ22E-source-setup",
+                None,
+                None,
+                None,
+                &mut length_salvage::LengthSalvage::new(None),
+                &mut Default::default(),
+            )
+            .await;
+        assert!(
+            matches!(
+                setup,
+                Ok(TurnOutcome::Completed {
+                    structured_output: None,
+                    ..
+                })
+            ),
+            "NJ22E Selected setup uses an ordinary production-Inactive capture"
+        );
+        assert_eq!(
+            server.messages_request_count(),
+            1,
+            "NJ22E exactly one separately recorded source-setup request"
+        );
+        tokio::time::timeout(NATIVE_TIMEOUT, async {
+            loop {
+                let notified = session.native_end_processed.notified();
+                if session
+                    .native_ended
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("NJ22E setup native evidence End observed");
+        session.actor.chat_state_handle.get_conversation().await;
+        let source = session
+            .actor
+            .chat_state_handle
+            .read_native_history()
+            .await
+            .unwrap()
+            .checkpoint
+            .expect("NJ22E real setup capture exists");
+        assert!(
+            !source.ledger.groups.is_empty(),
+            "NJ22E setup supplies group qualification"
+        );
+        assert!(
+            source
+                .active
+                .dispositions
+                .values()
+                .all(|action| action != "K" && action != "Keep"),
+            "NJ22E Selected starts without a retained KEEP obligation"
+        );
+        for binding in &source.source.producing_bindings {
+            let origin: Value =
+                serde_json::from_slice(&source.blobs[&binding.origin_ref.digest]).unwrap();
+            assert_eq!(
+                origin["origin"]["status"], "Unknown",
+                "NJ22E setup has no qualified KEEP origin"
+            );
+        }
+        println!(
+            "NJ22E_SOURCE_SETUP {}",
+            json!({"request_count":1,
+            "source_blocks":source.source.ordered_blocks.len(),
+            "groups":source.ledger.groups.len(),"retained_KEEP":false,"origin":"Unknown"})
+        );
+    }
+    let tokens = vec![
+        (session.actor.session_id_string(), "<session-id>"),
+        (
+            session.directory.path().to_string_lossy().into_owned(),
+            "<session-dir>",
+        ),
+        (
+            session
+                .directory
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "<session-token>",
+        ),
+        (
+            session._models.path().to_string_lossy().into_owned(),
+            "<models-dir>",
+        ),
+    ];
+    let schemas = [
+        json!({"type":"object","description":"First complete schema","properties":{"answer":{"type":"string","description":"First answer description","default":"first-default"}},"required":["answer"],"additionalProperties":false}),
+        json!({"type":"object","description":"Second complete schema","properties":{"answer":{"type":"string","description":"Changed answer description","default":"second-default"}},"required":["answer"],"additionalProperties":false}),
+    ];
+    let mut prior: Option<(NativeBlobRef, Arc<[u8]>, NativeEligibleSnapshot)> = None;
+    for (leg, schema) in schemas.into_iter().enumerate() {
+        let mut frames = native_history_frames();
+        frames[0]["message"]["id"] = json!(format!("msg_nj22e_{leg}"));
+        for frame in &mut frames {
+            let Some(block) = frame.get_mut("content_block") else {
+                continue;
+            };
+            if block["type"] == "server_tool_use" {
+                block["id"] = json!(format!("srvtoolu_nj22e_{leg}"));
+            } else if block["type"] == "tool_search_tool_result" {
+                block["tool_use_id"] = json!(format!("srvtoolu_nj22e_{leg}"));
+                block["content"]["tool_references"] = json!([
+                    {"type":"tool_reference","tool_name":"alpha__lookup"},
+                    {"type":"tool_reference","tool_name":"zeta__fetch"},
+                ]);
+            }
+        }
+        let terminal = frames.len() - 2;
+        frames[terminal]["delta"]["stop_reason"] = json!("tool_use");
+        frames.splice(terminal..terminal, [
+            json!({"type":"content_block_start","index":5,"content_block":{"type":"tool_use","id":format!("toolu_nj22e_{leg}"),"name":"StructuredOutput","input":{}}}),
+            json!({"type":"content_block_delta","index":5,"delta":{"type":"input_json_delta","partial_json":"{\"answer\":\"done\"}"}}),
+            json!({"type":"content_block_stop","index":5}),
+        ]);
+        server.enqueue_response("/v1/messages", native_history_script(frames));
+        session
+            .actor
+            .chat_state_handle
+            .push_user_message_and_ack(ConversationItem::user(
+                "return the schema-valid final answer",
+            ))
+            .await;
+        let before_requests = server.messages_request_count();
+        let (before_attempts, before_ends) = {
+            let events = session.observed.lock().unwrap();
+            (
+                events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                                evidence: NativeEvidenceEvent::Attempt(_),
+                                ..
+                            }
+                        )
+                    })
+                    .count(),
+                events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                                evidence: NativeEvidenceEvent::End,
+                                ..
+                            }
+                        )
+                    })
+                    .count(),
+            )
+        };
+        let before_hold = {
+            let state = session.actor.state.lock().await;
+            json!({"latch":state.message_delivery.held_input.latch.is_some(),"entries":state.message_delivery.held_input.entries.len(),"pending_inputs":state.pending_inputs.len(),"pending_notifications":state.pending_notifications.len()})
+        };
+        let mut sampling = super::turn::TurnSampling::default();
+        let mut salvage = length_salvage::LengthSalvage::new(None);
+        let request_id = format!("NJ22E-schema-{leg}");
+        let outcome = match route {
+            Nj22eRoute::Selected => {
+                session
+                    .actor
+                    .session_turn_active
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let domain = NativeReplayDomain {
+                    backend: xai_grok_sampling_types::ApiBackend::Messages,
+                    dialect: NativeReplayDialect::Messages,
+                    model: "test".into(),
+                    row: "test".into(),
+                    provider: "offline".into(),
+                    deployment: "loopback".into(),
+                    deployment_revision: "1".into(),
+                    endpoint: format!("{}/messages", server.url()),
+                    principal: "nonsecret-fixture".into(),
+                };
+                let result = super::switch_projection::HISTORY_S3_TEST_DOMAIN
+                    .scope(
+                        domain,
+                        super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                            NativeHistoryRequirement::Selected,
+                            session.actor.process_conversation_turn_with_recovery(
+                                &request_id,
+                                None,
+                                None,
+                                Some(schema.clone()),
+                                &mut salvage,
+                                &mut sampling,
+                            ),
+                        ),
+                    )
+                    .await;
+                session
+                    .actor
+                    .session_turn_active
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                result
+            }
+            Nj22eRoute::Inactive => {
+                assert!(
+                    super::switch_projection::HISTORY_S3_TEST_DOMAIN
+                        .try_with(|_| ())
+                        .is_err()
+                );
+                assert!(
+                    super::switch_projection::HISTORY_S3_TEST_REQUIREMENT
+                        .try_with(|_| ())
+                        .is_err()
+                );
+                session
+                    .actor
+                    .process_conversation_turn_with_recovery(
+                        &request_id,
+                        None,
+                        None,
+                        Some(schema.clone()),
+                        &mut salvage,
+                        &mut sampling,
+                    )
+                    .await
+            }
+        };
+        let local_code = outcome
+            .as_ref()
+            .err()
+            .and_then(|error| error.data.as_ref())
+            .and_then(|data| data.get("code"))
+            .and_then(Value::as_str);
+        let refusal = outcome
+            .as_ref()
+            .err()
+            .and_then(|error| error.data.as_ref())
+            .and_then(|data| data.get("message"))
+            .and_then(Value::as_str);
+        let attempts = session
+            .observed
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                        evidence: NativeEvidenceEvent::Attempt(_),
+                        ..
+                    }
+                )
+            })
+            .count();
+        println!(
+            "NJ22E_TURN_REACH {}",
+            json!({"route":if matches!(route, Nj22eRoute::Selected) {"Selected"} else {"Inactive"},"leg":leg,"request_delta":server.messages_request_count()-before_requests,"native_attempts":attempts-before_attempts,"local_code":local_code,"refusal":refusal})
+        );
+        assert!(
+            outcome.is_ok(),
+            "NJ22E real schema turn must complete; refusal={refusal:?}; code={local_code:?}"
+        );
+        let ordinary = match outcome.as_ref().unwrap() {
+            TurnOutcome::Completed {
+                tools_called,
+                structured_output: Some(Ok(value)),
+                stop,
+            } => {
+                assert_eq!(
+                    value,
+                    &json!({"answer":"done"}),
+                    "NJ22E normal validated StructuredOutput completion"
+                );
+                let stop_kind = match stop {
+                    CompletedStop::EndTurn => "EndTurn",
+                    CompletedStop::MaxTokens => "MaxTokens",
+                    CompletedStop::Refusal(_) => "Refusal",
+                    CompletedStop::ContextWindowExceeded => "ContextWindowExceeded",
+                };
+                json!({"class":"Completed","tools_called":tools_called,"structured_output":value,"stop":stop_kind})
+            }
+            _ => panic!("NJ22E normal schema/tool completion required"),
+        };
+        assert_eq!(
+            server.messages_request_count() - before_requests,
+            1,
+            "NJ22E exactly one real Messages request per schema"
+        );
+        tokio::time::timeout(NATIVE_TIMEOUT, async {
+            loop {
+                let notified = session.native_end_processed.notified();
+                let ends = session
+                    .observed
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                                evidence: NativeEvidenceEvent::End,
+                                ..
+                            }
+                        )
+                    })
+                    .count();
+                if ends > before_ends {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("NJ22E native evidence End observed");
+        session.actor.chat_state_handle.get_conversation().await;
+        let (respond_to, ack) = tokio::sync::oneshot::channel();
+        session
+            .persistence
+            .tx
+            .send(PersistenceMsg::FlushAndAck { respond_to })
+            .unwrap();
+        let flush_and_ack = tokio::time::timeout(NATIVE_TIMEOUT, ack)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok();
+        assert!(
+            flush_and_ack,
+            "NJ22E real PersistenceMsg::FlushAndAck succeeds"
+        );
+        let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+            session.directory.path().to_path_buf(),
+        );
+        let full = adapter
+            .load_session(&session.actor.session_info)
+            .await
+            .unwrap();
+        let full_checkpoint = adapter
+            .read_native_history(&session.actor.session_info)
+            .await
+            .unwrap()
+            .checkpoint
+            .expect("NJ22E full reader native generation");
+        let light = adapter
+            .load_session_without_updates(&session.actor.session_info)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&full.chat_history).unwrap(),
+            serde_json::to_value(&light.chat_history).unwrap(),
+            "NJ22E full and light readers agree"
+        );
+        let checkpoint = adapter
+            .read_native_history(&session.actor.session_info)
+            .await
+            .unwrap()
+            .checkpoint
+            .expect("NJ22E accepted source reaches a real disk generation");
+        let light_checkpoint = checkpoint.clone();
+        let checkpoint = full_checkpoint;
+        checkpoint.matches_history(&full.chat_history).unwrap();
+        checkpoint.matches_history(&light.chat_history).unwrap();
+        assert!(
+            !checkpoint.source.ordered_blocks.is_empty(),
+            "NJ22E nonempty native source accepted"
+        );
+        assert_eq!(
+            checkpoint.source.responses.last().unwrap().status,
+            NativeResponseStatus::Accepted,
+            "NJ22E real decoder/actor source acceptance"
+        );
+        let bodies = server.request_bodies();
+        let body = bodies.last().unwrap();
+        let date_present = serde_json::to_string(body)
+            .unwrap()
+            .contains("Today's date: ");
+        let mut normalized_body = body.clone();
+        nj22e_normalize(&mut normalized_body, &tokens);
+        let body_digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&nj22e_canonical(&normalized_body)).unwrap())
+        );
+        let after_hold = {
+            let state = session.actor.state.lock().await;
+            json!({"latch":state.message_delivery.held_input.latch.is_some(),"entries":state.message_delivery.held_input.entries.len(),"pending_inputs":state.pending_inputs.len(),"pending_notifications":state.pending_notifications.len(),"parent_stamps":state.message_delivery.held_input.parent_stamps.len(),"terminal":state.message_delivery.held_input.terminal,"refusal":state.message_delivery.held_input.refusal.is_some()})
+        };
+        if matches!(route, Nj22eRoute::Inactive) {
+            tokio::task::yield_now().await;
+            let accounting_count = notifications.load(std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                accounting_count, 0,
+                "NJ22E production Inactive emits no nativeHistoryAccounting plan notification"
+            );
+            assert!(
+                local_code.is_none(),
+                "NJ22E production Inactive has no local refusal"
+            );
+            let pin = json!({"body_digest":body_digest,"ordinary_outcome":ordinary,"usage":{"input_tokens":sampling.input_tokens,"output_tokens":sampling.output_tokens,"cache_read_tokens":sampling.cache_read_tokens},"holds_before":before_hold,"holds_after":after_hold,"cleanup":{"native_evidence_End":session.native_ended.load(std::sync::atomic::Ordering::SeqCst),"PersistenceMsg::FlushAndAck":flush_and_ack},"refusal":{"class":"Completed","local_codes":[]},"owner_absent":super::switch_projection::HISTORY_S3_TEST_DOMAIN.try_with(|_| ()).is_err() && super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.try_with(|_| ()).is_err(),"plan_absent":accounting_count==0,"nativeHistoryAccounting_count":accounting_count});
+            let digest = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&nj22e_canonical(&pin)).unwrap())
+            );
+            println!(
+                "NJ22E_INACTIVE_PIN {}",
+                json!({"leg":leg,"digest":digest,"fields":pin,"date_token_present":date_present,"normalization":[{"token":"Today's date value","location":"all parsed body strings","placeholder":"<local-date>"},{"token":"session id","location":"all parsed body strings","placeholder":"<session-id>"},{"token":"session directory","location":"all parsed body strings","placeholder":"<session-dir>"},{"token":"session directory basename","location":"all parsed body strings","placeholder":"<session-token>"},{"token":"model manager directory","location":"all parsed body strings","placeholder":"<models-dir>"}]})
+            );
+        }
+        let expected_schema = encode_native(&schema, NATIVE_SOURCE_BYTES).unwrap();
+        let expected_digest = format!("{:x}", Sha256::digest(&expected_schema));
+        let producing = checkpoint.source.producing_bindings.last().unwrap();
+        let find_snapshot = |loaded: &xai_chat_state::persistence::native::NativeCheckpoint| {
+            loaded
+                .source
+                .eligible_snapshots
+                .iter()
+                .find_map(|reference| {
+                    let snapshot: NativeEligibleSnapshot =
+                        serde_json::from_slice(&loaded.blobs[&reference.digest]).unwrap();
+                    (snapshot.namespace_kind == NativeNamespaceKind::GrokBuild
+                        && snapshot.qualified_namespace == "grok_build"
+                        && snapshot.child_name == "StructuredOutput"
+                        && snapshot.binding == producing.origin_ref)
+                        .then(|| (reference.clone(), snapshot))
+                })
+        };
+        let (reference, snapshot) = find_snapshot(&checkpoint)
+            .expect("NJ22E exact durable StructuredOutput snapshot must exist");
+        for (reader, loaded) in [("full", &checkpoint), ("light", &light_checkpoint)] {
+            let (reader_reference, reader_snapshot) = find_snapshot(loaded)
+                .expect("NJ22E both readers resolve the durable StructuredOutput snapshot");
+            assert_eq!(
+                reader_reference, reference,
+                "NJ22E {reader} reader snapshot reference"
+            );
+            assert_eq!(
+                reader_snapshot, snapshot,
+                "NJ22E {reader} reader exact snapshot"
+            );
+            assert_eq!(
+                (
+                    snapshot.version,
+                    snapshot.namespace_kind,
+                    snapshot.qualified_namespace.as_str(),
+                    snapshot.child_name.as_str()
+                ),
+                (
+                    1,
+                    NativeNamespaceKind::GrokBuild,
+                    "grok_build",
+                    "StructuredOutput"
+                ),
+                "NJ22E {reader} stored identity contract"
+            );
+            assert_eq!(
+                loaded.blobs[&snapshot.schema.digest].as_ref(),
+                expected_schema.as_slice(),
+                "NJ22E exact actual complete schema bytes in {reader} reader"
+            );
+            assert_eq!(
+                snapshot.schema.digest, expected_digest,
+                "NJ22E exact actual complete schema digest in {reader} reader"
+            );
+            assert_eq!(
+                (snapshot.schema.kind.as_str(), snapshot.schema.byte_len),
+                ("eligible_schema", expected_schema.len() as u64)
+            );
+            let snapshot_bytes = &loaded.blobs[&reader_reference.digest];
+            assert_eq!(reader_reference.byte_len, snapshot_bytes.len() as u64);
+            assert_eq!(
+                reader_reference.digest,
+                format!("{:x}", Sha256::digest(snapshot_bytes))
+            );
+            assert_eq!(
+                snapshot.binding, producing.origin_ref,
+                "NJ22E {reader} checked producing-binding reference"
+            );
+            let binding_bytes = loaded
+                .blobs
+                .get(&snapshot.binding.digest)
+                .expect("NJ22E producing-binding blob resolves");
+            assert_eq!(snapshot.binding.kind, "producing_binding");
+            assert_eq!(snapshot.binding.byte_len, binding_bytes.len() as u64);
+            assert_eq!(
+                snapshot.binding.digest,
+                format!("{:x}", Sha256::digest(binding_bytes))
+            );
+        }
+        let declarations = body["tools"].as_array().unwrap();
+        let current_snapshots: Vec<NativeEligibleSnapshot> = checkpoint
+            .source
+            .eligible_snapshots
+            .iter()
+            .map(|reference| serde_json::from_slice(&checkpoint.blobs[&reference.digest]).unwrap())
+            .filter(|snapshot: &NativeEligibleSnapshot| snapshot.binding == producing.origin_ref)
+            .collect();
+        let schema_declarations: Vec<_> = declarations
+            .iter()
+            .filter(|tool| tool.get("input_schema").is_some())
+            .collect();
+        assert!(
+            schema_declarations
+                .iter()
+                .any(|tool| tool["name"] == "StructuredOutput"),
+            "NJ22E real carrier includes the built-in declaration"
+        );
+        let mut stored_current_identity_coverage = 0;
+        let mut existing_placeholder_count = 0;
+        for declaration in &schema_declarations {
+            let expected_name = declaration["name"].as_str().unwrap();
+            if expected_name == "DeferredToolPlaceholder" {
+                assert_eq!(
+                    declaration["input_schema"],
+                    json!({"type":"object","properties":{}}),
+                    "NJ22E preserves the existing S7 placeholder declaration"
+                );
+                assert_eq!(declaration["defer_loading"], true);
+                existing_placeholder_count += 1;
+                continue;
+            }
+            let identity = current_snapshots.iter().find(|snapshot| {
+                if snapshot.namespace_kind == NativeNamespaceKind::Mcp {
+                    format!("{}__{}", snapshot.qualified_namespace, snapshot.child_name) == expected_name
+                } else {
+                    snapshot.child_name == expected_name
+                }
+            }).expect("NJ22E plan-authorized carrier has an identity for every schema-bearing declaration");
+            let complete =
+                encode_native(&declaration["input_schema"], NATIVE_SOURCE_BYTES).unwrap();
+            assert_eq!(
+                checkpoint.blobs[&identity.schema.digest].as_ref(),
+                complete.as_slice(),
+                "NJ22E exact declaration coverage for {expected_name}"
+            );
+            stored_current_identity_coverage += 1;
+        }
+        assert_eq!(
+            existing_placeholder_count, 1,
+            "NJ22E existing admitted placeholder is singular"
+        );
+        assert_eq!(
+            stored_current_identity_coverage + existing_placeholder_count,
+            schema_declarations.len(),
+            "NJ22E every schema-bearing carrier entry is accounted for"
+        );
+        let checked_plan_identity_coverage = if matches!(route, Nj22eRoute::Selected) {
+            tokio::task::yield_now().await;
+            assert_eq!(
+                notifications.load(std::sync::atomic::Ordering::SeqCst),
+                leg + 1,
+                "NJ22E Selected publishes one real checked_bound plan per schema turn"
+            );
+            Some(schema_declarations.len())
+        } else {
+            None
+        };
+        if let Some((previous_ref, previous_bytes, previous_snapshot)) = &prior {
+            assert_ne!(
+                snapshot.schema.digest, previous_snapshot.schema.digest,
+                "NJ22E changed complete schema has a distinct digest"
+            );
+            assert_ne!(
+                &reference, previous_ref,
+                "NJ22E changed complete schema has a distinct snapshot reference"
+            );
+            let old = std::fs::read(
+                session
+                    .directory
+                    .path()
+                    .join("native_history/blobs")
+                    .join(format!("{}.json", previous_ref.digest)),
+            )
+            .unwrap();
+            assert_eq!(
+                old.as_slice(),
+                previous_bytes.as_ref(),
+                "NJ22E prior durable snapshot remains byte-identical"
+            );
+            let old_schema = std::fs::read(
+                session
+                    .directory
+                    .path()
+                    .join("native_history/blobs")
+                    .join(format!("{}.json", previous_snapshot.schema.digest)),
+            )
+            .unwrap();
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&old_schema)),
+                previous_snapshot.schema.digest,
+                "NJ22E prior complete schema remains byte-identical"
+            );
+        }
+        println!(
+            "NJ22E_DISK_PROOF {}",
+            json!({"route":if matches!(route, Nj22eRoute::Selected) {"Selected"} else {"Inactive"},"leg":leg,"request_delta":server.messages_request_count()-before_requests,"accepted_source_blocks":checkpoint.source.ordered_blocks.len(),"full_reload":true,"light_reload":true,"flush_and_ack":flush_and_ack,"schema_digest":snapshot.schema.digest,"snapshot_reference":reference,"schema_bearing_carrier_entries":schema_declarations.len(),"stored_current_identity_coverage":stored_current_identity_coverage,"existing_placeholder_count":existing_placeholder_count,"checked_plan_identity_coverage":checked_plan_identity_coverage,"nativeHistoryAccounting_count":notifications.load(std::sync::atomic::Ordering::SeqCst),"prior_unchanged":prior.is_some()})
+        );
+        prior = Some((
+            reference.clone(),
+            checkpoint.blobs[&reference.digest].clone(),
+            snapshot,
+        ));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nj22e_append_selected_structured_output_identity_reaches_disk() {
+    tokio::task::LocalSet::new()
+        .run_until(nj22e_structured_output_disk(Nj22eRoute::Selected))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nj22e_inactive_structured_output_snapshot_retained_pin_identical() {
+    tokio::task::LocalSet::new()
+        .run_until(nj22e_structured_output_disk(Nj22eRoute::Inactive))
+        .await;
+}

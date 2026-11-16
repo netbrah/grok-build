@@ -5008,7 +5008,7 @@ async fn responses_projection_uses_bound_admission_and_typed_identity() {
                 prepared.mcp_specs.iter().map(|spec| spec.name.clone()).collect(),
             );
             if matches!(inventory, A2Inventory::Mixed) {
-                projection.append_builtin(child_structured_output_spec());
+                projection.append_structured_output(child_structured_output_spec().parameters);
             }
             let (mut request, binding) = a2_build_projection_request(actor, &projection).await;
             assert_eq!(request.model.as_deref(), Some(binding.config.model.as_str()));
@@ -5025,6 +5025,29 @@ async fn responses_projection_uses_bound_admission_and_typed_identity() {
             }
             let original_admission = request.search_admission;
             let eligible = backend == ApiBackend::Responses && original_admission.is_some_and(xai_grok_sampling_types::SearchAdmission::admitted);
+
+            if matches!(inventory, A2Inventory::Mixed) {
+                if backend == ApiBackend::Responses && original_admission.is_some_and(xai_grok_sampling_types::SearchAdmission::admitted) {
+                    let mut retained = request.clone();
+                    actor.project_bound_bridge_declarations(&mut retained, &binding, &projection).unwrap();
+                    assert_native_specs(&retained.tools[retained.tools.len() - 1..], &[child_structured_output_spec()], "NJ22E A-2 kind-less StructuredOutput spec survives Responses bridge filtering");
+                }
+                let mut candidate_row = binding.config.clone(); candidate_row.api_backend = ApiBackend::Messages; candidate_row.supports_search_tool = true; let (candidate_specs, candidate_inputs) = projection.candidates().select_with_identity(&candidate_row);
+                let inputs = candidate_inputs.as_ref().expect("NJ22E A-1 prepared native companion is present");
+                let entry = inputs.entries().iter().find(|entry| entry.position() == candidate_specs.len() - 1).expect("NJ22E A-1 StructuredOutput has a typed final-position entry");
+                assert_eq!((entry.namespace_kind(), entry.qualified_namespace(), entry.child_name()), (xai_grok_sampling_types::conversation::native_search_history::NativeNamespaceKind::GrokBuild, "grok_build", "StructuredOutput"), "NJ22E A-1 closed built-in namespace");
+                assert_native_specs(std::slice::from_ref(entry.declaration()), &[child_structured_output_spec()], "NJ22E A-1 exact emitted declaration");
+                let schema = xai_grok_sampling_types::conversation::native_search_history::encode_native(&child_structured_output_spec().parameters, xai_grok_sampling_types::conversation::native_search_history::NATIVE_SOURCE_BYTES).unwrap();
+                use sha2::Digest;
+                assert_eq!(entry.schema_bytes(), schema.as_slice(), "NJ22E A-1 full retained schema bytes");
+                assert_eq!(entry.schema_digest(), format!("{:x}", sha2::Sha256::digest(&schema)), "NJ22E A-1 independently computed schema digest");
+                let prefix = projection.bundle.native_inputs.as_ref().unwrap();
+                assert_eq!(inputs.entries().len(), prefix.entries().len() + 1, "NJ22E A-1 one appended identity only");
+                for (actual, original) in inputs.entries().iter().zip(prefix.entries()) {
+                    assert_eq!((actual.position(), actual.namespace_kind(), actual.qualified_namespace(), actual.child_name(), actual.schema_bytes(), actual.schema_digest()), (original.position(), original.namespace_kind(), original.qualified_namespace(), original.child_name(), original.schema_bytes(), original.schema_digest()), "NJ22E A-1 registry prefix identity unchanged");
+                    let mut expected_declaration = original.declaration().clone(); if projection.mcp_membership.contains(&expected_declaration.name) { expected_declaration.exposure = ToolExposure::Deferred; } assert_native_specs(std::slice::from_ref(actual.declaration()), std::slice::from_ref(&expected_declaration), "NJ22E A-1 registry prefix declaration unchanged under the existing exposure selector");
+                }
+            }
             let original = request.clone();
             let mut live = binding.clone();
             live.config.model = "a2-other".into();
@@ -5038,6 +5061,13 @@ async fn responses_projection_uses_bound_admission_and_typed_identity() {
             actor.models_manager.set_current_model_id(agent_client_protocol::ModelId::new("a2-other"));
             actor.chat_state_handle.install_transport_binding(live.clone()).await.unwrap();
             actor.project_bound_bridge_declarations(&mut request, &binding, &projection).unwrap();
+            if eligible && matches!(inventory, A2Inventory::Mixed) {
+                assert_native_specs(&request.tools[request.tools.len() - 1..], &[child_structured_output_spec()], "NJ22E A-2 final kind-less declaration retained");
+                let inputs = request.native_eligible_inputs.as_ref().unwrap();
+                assert!(inputs.matches_specs(&request.tools), "NJ22E A-2 selected companion matches final declarations");
+                let entry = inputs.entries().iter().find(|entry| entry.position() == request.tools.len() - 1).expect("NJ22E A-2 selected final built-in identity survives");
+                assert_eq!((entry.qualified_namespace(), entry.child_name()), ("grok_build", "StructuredOutput"), "NJ22E A-2 bridge kind and native identity remain separate");
+            }
             if backend == ApiBackend::ChatCompletions {
                 assert_eq!(native_lowered_body(&request, &backend), native_lowered_body(&original, &backend), "A2 unsupported Chat admission keeps the full parent body");
             } else {
@@ -5196,7 +5226,12 @@ async fn responses_fork_projection_uses_parent_provenance() {
             child.startup_hints.is_subagent = true;
             child.forked_tool_override = Some(snapshot.clone());
             let mut projection = super::BridgeDeclarationProjection::fork(child.forked_tool_override.as_ref().unwrap().clone());
-            projection.append_builtin(child_structured_output_spec());
+            let candidate_row = child.chat_state_handle.get_sampling_config().await.unwrap(); let absent_without = projection.candidates().select_with_identity(&candidate_row).1.is_none();
+            assert!(absent_without, "NJ22E A-4 valid-registration fork has no companion without built-in: {registration}");
+            projection.append_structured_output(child_structured_output_spec().parameters);
+            let absent_with = projection.candidates().select_with_identity(&candidate_row).1.is_none();
+            println!("NJ22E_FAC_BASE_STATE {}", serde_json::json!({"loop":"valid-registration", "registration":registration, "backend":"Responses", "flag":true, "companion_absent_without":absent_without, "companion_absent_with":absent_with}));
+            assert!(absent_with, "NJ22E A-4 valid-registration fork has no companion with built-in: {registration}");
             assert!(projection.mcp_membership.is_empty());
             let (mut request, binding) = a2_build_fork_request(child, &projection).await;
             let mut original_specs = parent_specs.clone();
@@ -5234,7 +5269,12 @@ async fn responses_fork_projection_uses_parent_provenance() {
                 child.forked_tool_override = Some(invalid.clone());
                 parent_golden_register(child, "child__lookup", ToolNamespace::MCP, ToolKind::Other);
                 let mut projection = super::BridgeDeclarationProjection::fork(child.forked_tool_override.as_ref().unwrap().clone());
-                projection.append_builtin(child_structured_output_spec());
+                let candidate_row = child.chat_state_handle.get_sampling_config().await.unwrap(); let absent_without = projection.candidates().select_with_identity(&candidate_row).1.is_none();
+                assert!(absent_without, "NJ22E A-4 invalid-state fork has no companion without built-in: {state} {backend:?} {flag}");
+                projection.append_structured_output(child_structured_output_spec().parameters);
+                let absent_with = projection.candidates().select_with_identity(&candidate_row).1.is_none();
+                println!("NJ22E_FAC_BASE_STATE {}", serde_json::json!({"loop":"invalid-state", "state":state, "backend":format!("{backend:?}"), "flag":flag, "companion_absent_without":absent_without, "companion_absent_with":absent_with}));
+                assert!(absent_with, "NJ22E A-4 invalid-state fork has no companion with built-in: {state} {backend:?} {flag}");
                 let (mut request, binding) = a2_build_fork_request(child, &projection).await;
                 let original = request.clone();
                 let result = child.project_bound_bridge_declarations(&mut request, &binding, &projection);
@@ -8872,9 +8912,96 @@ async fn u3_bridge_identity_surfaces() {
                 .collect(),
         );
         if matches!(inventory, A2Inventory::Mixed) {
-            projection.append_builtin(child_structured_output_spec());
+            projection.append_structured_output(child_structured_output_spec().parameters);
         }
         let (mut request, binding) = a2_build_projection_request(actor, &projection).await;
+
+        if matches!(inventory, A2Inventory::Mixed) {
+            if request
+                .search_admission
+                .is_some_and(xai_grok_sampling_types::SearchAdmission::admitted)
+            {
+                let mut retained = request.clone();
+                actor
+                    .project_bound_bridge_declarations(&mut retained, &binding, &projection)
+                    .unwrap();
+                assert_native_specs(
+                    &retained.tools[retained.tools.len() - 1..],
+                    &[child_structured_output_spec()],
+                    "NJ22E A-2 kind-less StructuredOutput spec survives Responses bridge filtering",
+                );
+            }
+            let mut candidate_row = binding.config.clone();
+            candidate_row.api_backend = ApiBackend::Messages;
+            candidate_row.supports_search_tool = true;
+            let (candidate_specs, candidate_inputs) =
+                projection.candidates().select_with_identity(&candidate_row);
+            let inputs = candidate_inputs
+                .as_ref()
+                .expect("NJ22E A-1 prepared native companion is present");
+            let entry = inputs
+                .entries()
+                .iter()
+                .find(|entry| entry.position() == candidate_specs.len() - 1)
+                .expect("NJ22E A-1 StructuredOutput has a typed final-position entry");
+            assert_eq!((entry.namespace_kind(), entry.qualified_namespace(), entry.child_name()), (xai_grok_sampling_types::conversation::native_search_history::NativeNamespaceKind::GrokBuild, "grok_build", "StructuredOutput"), "NJ22E A-1 closed built-in namespace");
+            assert_native_specs(
+                std::slice::from_ref(entry.declaration()),
+                &[child_structured_output_spec()],
+                "NJ22E A-1 exact emitted declaration",
+            );
+            let schema = xai_grok_sampling_types::conversation::native_search_history::encode_native(&child_structured_output_spec().parameters, xai_grok_sampling_types::conversation::native_search_history::NATIVE_SOURCE_BYTES).unwrap();
+            use sha2::Digest;
+            assert_eq!(
+                entry.schema_bytes(),
+                schema.as_slice(),
+                "NJ22E A-1 full retained schema bytes"
+            );
+            assert_eq!(
+                entry.schema_digest(),
+                format!("{:x}", sha2::Sha256::digest(&schema)),
+                "NJ22E A-1 independently computed schema digest"
+            );
+            let prefix = projection.bundle.native_inputs.as_ref().unwrap();
+            assert_eq!(
+                inputs.entries().len(),
+                prefix.entries().len() + 1,
+                "NJ22E A-1 one appended identity only"
+            );
+            for (actual, original) in inputs.entries().iter().zip(prefix.entries()) {
+                assert_eq!(
+                    (
+                        actual.position(),
+                        actual.namespace_kind(),
+                        actual.qualified_namespace(),
+                        actual.child_name(),
+                        actual.schema_bytes(),
+                        actual.schema_digest()
+                    ),
+                    (
+                        original.position(),
+                        original.namespace_kind(),
+                        original.qualified_namespace(),
+                        original.child_name(),
+                        original.schema_bytes(),
+                        original.schema_digest()
+                    ),
+                    "NJ22E A-1 registry prefix identity unchanged"
+                );
+                let mut expected_declaration = original.declaration().clone();
+                if projection
+                    .mcp_membership
+                    .contains(&expected_declaration.name)
+                {
+                    expected_declaration.exposure = ToolExposure::Deferred;
+                }
+                assert_native_specs(
+                    std::slice::from_ref(actual.declaration()),
+                    std::slice::from_ref(&expected_declaration),
+                    "NJ22E A-1 registry prefix declaration unchanged under the existing exposure selector",
+                );
+            }
+        }
         let original = request.clone();
         assert!(
             request
@@ -8887,6 +9014,22 @@ async fn u3_bridge_identity_surfaces() {
             .project_bound_bridge_declarations(&mut request, &binding, &projection)
             .unwrap();
         let identities = request.native_eligible_inputs.as_ref().unwrap();
+        if matches!(inventory, A2Inventory::Mixed) {
+            assert_native_specs(
+                &request.tools[request.tools.len() - 1..],
+                &[child_structured_output_spec()],
+                "NJ22E A-2 final kind-less declaration retained",
+            );
+            assert!(
+                identities
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.position() == request.tools.len() - 1
+                        && entry.qualified_namespace() == "grok_build"
+                        && entry.child_name() == "StructuredOutput"),
+                "NJ22E A-2 selected final built-in identity survives"
+            );
+        }
         assert!(
             identities.matches_specs(&request.tools),
             "late primary bridge filtering must filter the native companion at the same positions"

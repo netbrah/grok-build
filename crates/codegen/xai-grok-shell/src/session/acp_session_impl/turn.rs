@@ -4822,16 +4822,7 @@ impl SessionActor {
             )
         };
         if let Some(schema) = structured_output_schema {
-            projection.append_builtin(ToolSpec {
-                name: STRUCTURED_OUTPUT_TOOL.to_string(),
-                description: Some(
-                    "Return your final answer as JSON matching the required schema. \
-                     Call this exactly once, at the end."
-                        .to_string(),
-                ),
-                parameters: schema,
-                exposure: ToolExposure::default(),
-            });
+            projection.append_structured_output(schema);
         }
         Some(projection)
     }
