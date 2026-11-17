@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "python3 .cursor/hooks/tdd_loop.py",
+        "matcher": "Write|StrReplace|Delete|EditNotebook|ApplyPatch|Edit|MultiEdit|search_replace",
+        "failClosed": true,
+        "timeout": 10
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "python3 .cursor/hooks/tdd_loop.py",
+        "failClosed": true,
+        "timeout": 10
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "python3 .cursor/hooks/tdd_loop.py",
+        "timeout": 10
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "python3 .cursor/hooks/tdd_loop.py",
+        "timeout": 10
+      }
+    ],
+    "stop": [
+      {
+        "command": "python3 .cursor/hooks/tdd_loop.py",
+        "loop_limit": 1,
+        "timeout": 10
+      }
+    ]
+  }
+}
