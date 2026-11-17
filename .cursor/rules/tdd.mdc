@@ -1,0 +1,18 @@
+---
+description: Production Rust changes follow red, then green, then refactor.
+alwaysApply: true
+---
+
+# Test-driven delivery
+
+Change production Rust under `crates/` or `prod/` with the `tdd` skill. The order is fixed:
+
+1. **Red.** Add one failing test in a test file the hook can see (`*_tests.rs`, `*_test.rs`, `test_*.rs`, or `tests/`). Run `cargo test -p <crate>` (narrow the filter when the runner supports it). Red means an assertion failed for the break you named. A compile error, a missing name, or a build-script panic is not red.
+2. **Green.** Write only the production code that makes that test pass. Run the affected crate's tests again.
+3. **Refactor.** Restructure only after that run is green. Leave assertions alone except for a mechanical rename or move.
+
+One behavior per cycle. Do not put the first failing test only inside a `#[cfg(test)]` module in the production file: the hook cannot tell that edit from implementation.
+
+When a test calls a name that does not exist yet, add a stub that returns the zero value, re-run, and wait for the assertion to fail before any further production code. A test that passes on the first run does not count. If this slice already wrote the behavior, revert it, watch the assertion go red, then restore the fix.
+
+`.cursor/hooks.json` records test-file edits and `cargo test` / `cargo nextest` output, and it denies production edits and recognizable shell writes until that red run exists. It does not decide whether the assertion matches the break.
