@@ -8,6 +8,7 @@ pub mod catalog_wire;
 pub mod conversation;
 pub mod doom_loop;
 pub mod error;
+pub mod gemini;
 pub mod messages;
 pub mod messages_model;
 pub mod provider_error;
