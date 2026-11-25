@@ -1209,6 +1209,9 @@ pub struct CreateResponseWrapper {
     /// codex wire dialect; the sampler replaces the typed placeholders at
     /// these positions after request serialization.
     pub raw_input_replacements: Vec<crate::RawInputItemReplacement>,
+    /// Selected native-history proof for this Responses send. Absent means the
+    /// production Inactive route, which the final-body guard does not refuse.
+    pub native_history: Option<crate::request_validation::NativeHistoryRequest>,
 }
 
 impl CreateResponseWrapper {
@@ -1226,6 +1229,7 @@ impl CreateResponseWrapper {
             trace: None,
             extra_tool_entries: vec![],
             raw_input_replacements: vec![],
+            native_history: None,
         }
     }
 

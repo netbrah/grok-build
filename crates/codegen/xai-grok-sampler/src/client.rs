@@ -3016,6 +3016,7 @@ impl SamplingClient {
             &mut request_body,
             self.defaults.strict_responses_input,
         );
+        self.guard_native_responses(&mut request.native_history, &request_body)?;
         self.prepare_bearer().await;
         let SentRequest {
             builder,
@@ -3196,6 +3197,7 @@ impl SamplingClient {
             &mut request_body,
             self.defaults.strict_responses_input,
         );
+        self.guard_native_responses(&mut request.native_history, &request_body)?;
         // Fresh per attempt so signals never leak across retries; `None` (check disabled) sends no header and does no peek work per event
         let doom_loop = self
             .defaults
@@ -3766,6 +3768,58 @@ impl SamplingClient {
         let body: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| stale())?;
         if body.get("model").and_then(serde_json::Value::as_str) != Some(target.model.as_str()) {
             return Err(stale());
+        }
+        Ok(())
+    }
+
+    fn guard_native_responses(
+        &self,
+        native: &mut Option<xai_grok_sampling_types::request_validation::NativeHistoryRequest>,
+        body: &serde_json::Value,
+    ) -> Result<()> {
+        use xai_grok_sampling_types::conversation::native_search_history::{
+            validate_native_history_plan, NativeFinalCarrier, NativeHistoryRequirement,
+            NativePlanRefusal,
+        };
+        use xai_grok_sampling_types::request_validation::RequestValidationError;
+        let Some(native) = native else {
+            return Ok(());
+        };
+        if native.context().requirement() == NativeHistoryRequirement::Inactive
+            && native.plan().is_none()
+        {
+            return Ok(());
+        }
+        let error = |reason| {
+            SamplingError::from(RequestValidationError::NativeHistory { reason })
+        };
+        if native.plan().is_none() {
+            native.invalidate_plan();
+            return Err(error(NativePlanRefusal::MissingPlan));
+        }
+        let bytes = match serde_json::to_vec(body) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                native.invalidate_plan();
+                return Err(error(NativePlanRefusal::FinalCarrierChanged));
+            }
+        };
+        let actual = match NativeFinalCarrier::capture(bytes.into()) {
+            Ok(carrier) => carrier,
+            Err(_) => {
+                native.invalidate_plan();
+                return Err(error(NativePlanRefusal::FinalCarrierChanged));
+            }
+        };
+        let carrier_matches = native.plan().unwrap().carrier() == &actual;
+        if !carrier_matches {
+            native.invalidate_plan();
+            return Err(error(NativePlanRefusal::FinalCarrierChanged));
+        }
+        let validated = validate_native_history_plan(native.context(), native.plan(), &actual);
+        if let Err(reason) = validated {
+            native.invalidate_plan();
+            return Err(error(reason));
         }
         Ok(())
     }
@@ -4401,6 +4455,7 @@ impl SamplingClient {
         wrapper.x_grok_agent_id = x_grok_agent_id;
         wrapper.extra_tool_entries = extra_tools;
         wrapper.raw_input_replacements = raw_input_replacements;
+        wrapper.native_history = request.native_history.clone();
 
         if let Some(trace) = trace {
             wrapper.trace = Some(trace);
@@ -4497,6 +4552,7 @@ impl SamplingClient {
         wrapper.x_grok_agent_id = x_grok_agent_id;
         wrapper.extra_tool_entries = extra_tools;
         wrapper.raw_input_replacements = raw_input_replacements;
+        wrapper.native_history = request.native_history.clone();
 
         if let Some(trace) = trace {
             wrapper.trace = Some(trace);
@@ -7970,6 +8026,57 @@ mod tests {
             body.push_str("data: [DONE]\n\n");
         }
         ("text/event-stream", body)
+    }
+
+    #[tokio::test]
+    async fn native_history_responses_final_body_guard() {
+        use xai_grok_sampling_types::request_validation::NativeHistoryRequest;
+        use xai_grok_sampling_types::ConversationItem as Item;
+        let http = K1Http::start().await;
+        let mut responses_config = http.config.clone();
+        responses_config.api_backend = ApiBackend::Responses;
+        let client = SamplingClient::new(responses_config).unwrap();
+        let messages = SamplingClient::new(http.config.clone()).unwrap();
+        let endpoint = format!("{}/messages", http.config.base_url);
+        let prompt = ConversationRequest::from_items(vec![Item::user("Responses guard keeps the body")]);
+        let mut anchor = None;
+        let _ = client
+            .conversation_responses(prompt.clone(), &mut anchor)
+            .await;
+        assert_eq!(
+            http.bodies.lock().unwrap().len(),
+            1,
+            "an Inactive Responses send still reaches transport"
+        );
+        assert!(
+            String::from_utf8_lossy(&http.bodies.lock().unwrap()[0]).contains("Responses guard keeps the body")
+        );
+        let prepared = k1_prepare(
+            &messages,
+            ConversationRequest::from_items(vec![Item::user("Find the account.")]),
+            &endpoint,
+            true,
+        );
+        let native = prepared.native_history.unwrap();
+        let mut missing = prompt.clone();
+        missing.native_history = Some(NativeHistoryRequest::new(native.context().clone(), None));
+        let refused = client
+            .conversation_responses(missing, &mut anchor)
+            .await;
+        assert!(refused.is_err(), "Selected Responses without a plan does not send");
+        assert_eq!(http.bodies.lock().unwrap().len(), 1);
+        let mut stale = prompt.clone();
+        stale.native_history = Some(NativeHistoryRequest::new(
+            native.context().clone(),
+            native.plan().cloned(),
+        ));
+        let refused = client.conversation_responses(stale, &mut anchor).await;
+        assert!(refused.is_err(), "a Responses body that is not the plan carrier does not send");
+        assert_eq!(
+            http.bodies.lock().unwrap().len(),
+            1,
+            "the stale carrier is refused before HTTP"
+        );
     }
 
     fn v3n5_responses_wrapper(request: &ConversationRequest) -> CreateResponseWrapper {

@@ -14918,3 +14918,65 @@ pub(crate) async fn k3q_pre_loss_compaction_and_backing() {
         "compaction cleans the view without rewriting the retained native source"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_history_ordered_checkpoint_emits_each_block_once() {
+    tokio::task::LocalSet::new().run_until(async {
+    let server = MockInferenceServer::start().await.unwrap();
+    server.enqueue_response("/v1/messages", native_history_script(native_history_frames()));
+    let session = NativeHistorySession::new(&server).await;
+    session.sample().await;
+    let checkpoint = session
+        .actor
+        .chat_state_handle
+        .read_native_history()
+        .await
+        .expect("ordered checkpoint read")
+        .checkpoint
+        .expect("capture retained a checkpoint");
+    let raws = k3q_checkpoint_raws(&checkpoint);
+    let mut seen = std::collections::BTreeSet::new();
+    assert!(raws.len() >= 2, "the captured exchange has more than one block");
+    for raw in &raws {
+        assert!(seen.insert(raw.clone()), "each source block is stored once");
+    }
+    assert_eq!(
+        super::switch_projection::select_native_history(),
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive,
+        "ordered fidelity does not switch native search on"
+    );
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_history_actual_outgoing_bytes_require_plan() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    assert_eq!(
+        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        NativeHistoryRequirement::Inactive
+    );
+    assert_eq!(
+        super::switch_projection::select_native_history(),
+        NativeHistoryRequirement::Inactive,
+        "a fresh production request does not select native search"
+    );
+    let inactive = xai_chat_state::NativeHistoryEntry::send_only(NativeHistoryRequirement::Inactive);
+    assert!(super::switch_projection::native_history_inactive_adapter(&inactive, None).is_ok());
+    let selected = xai_chat_state::NativeHistoryEntry::send_only(NativeHistoryRequirement::Selected);
+    assert!(
+        super::switch_projection::native_history_inactive_adapter(&selected, None).is_err(),
+        "Selected outgoing bytes without a plan are refused"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_history_pending_input_and_compaction_respect_lifecycle() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    assert_eq!(
+        super::switch_projection::select_native_history(),
+        NativeHistoryRequirement::Inactive
+    );
+    tokio::task::LocalSet::new()
+        .run_until(k3q_pre_loss_compaction_and_backing())
+        .await;
+}
