@@ -3033,6 +3033,164 @@ async fn k1_shell_direct_cases(base_url: &str, bodies: &Arc<std::sync::Mutex<Vec
     }
 }
 
+fn s5h_selected_entry() -> xai_chat_state::NativeHistoryEntry {
+    xai_chat_state::NativeHistoryEntry::send_only(NativeHistoryRequirement::Selected)
+}
+
+fn s5h_mutate(kind: &str, client: &SamplingClient, request: &mut ConversationRequest) {
+    match kind {
+        "valid" => {}
+        "drop-plan" | "skip-direct" => {
+            request.native_history.as_mut().unwrap().invalidate_plan();
+        }
+        "stale-context" => {
+            let native = request.native_history.as_ref().unwrap();
+            let mut context = native.context().capture().clone();
+            context.history_revision += 1;
+            request.native_history = Some(NativeHistoryRequest::new(
+                NativeHistoryRequestContext::captured(
+                    NativeHistoryRequirement::Selected,
+                    context,
+                    native.context().authority().clone(),
+                ),
+                native.plan().cloned(),
+            ));
+        }
+        "stale-carrier" | "debug-only" => {
+            let mut changed = request.clone();
+            changed.max_output_tokens = Some(4097);
+            request.encoded = Some(client.encode_conversation_messages(&changed).unwrap());
+        }
+        _ => unreachable!(),
+    }
+}
+
+async fn s5h_drive(kind: &str) {
+    assert_eq!(
+        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        NativeHistoryRequirement::Inactive,
+        "S5-H acceptance keeps native search off"
+    );
+    let (base_url, bodies, server) = k1_shell_http().await;
+    let client = SamplingClient::new(k1_shell_config(&base_url)).unwrap();
+    let prepared = k1_prepare(
+        &client,
+        ConversationRequest::from_items(vec![ConversationItem::user("K1 direct shell")]),
+        &format!("{base_url}/messages"),
+        true,
+    );
+    let expected = prepared
+        .native_history
+        .as_ref()
+        .unwrap()
+        .plan()
+        .unwrap()
+        .carrier()
+        .bytes()
+        .to_vec();
+    let mut request = prepared;
+    request.encoded = None;
+    s5h_mutate(kind, &client, &mut request);
+    let before = bodies.lock().unwrap().len();
+    let auxiliary = super::side_call::dispatch_auxiliary_collect(
+        &client,
+        &s5h_selected_entry(),
+        request.clone(),
+    )
+    .await;
+    let compact = crate::session::helpers::session_compact::send_compact_messages_request(
+        &client,
+        request.clone(),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+    let mut responses_request = ConversationRequest::from_items(vec![ConversationItem::user(
+        "Responses compact plan",
+    )]);
+    responses_request.native_history = request.native_history.clone();
+    let mut responses_config = k1_shell_config(&base_url);
+    responses_config.api_backend = ApiBackend::Responses;
+    let responses_client = SamplingClient::new(responses_config).unwrap();
+    let responses = crate::session::helpers::session_compact::send_compact_responses_request(
+        &responses_client,
+        responses_request,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+    let sent = bodies.lock().unwrap().len() - before;
+    if kind == "valid" {
+        assert!(auxiliary.is_ok(), "a valid auxiliary plan reaches transport");
+        assert!(compact.is_ok(), "a valid messages compaction plan reaches transport");
+        assert_eq!(sent, 2, "auxiliary and messages compaction each send once");
+        assert_eq!(bodies.lock().unwrap()[before], expected);
+        assert_eq!(bodies.lock().unwrap()[before + 1], expected);
+    } else {
+        assert!(auxiliary.is_err(), "{kind} auxiliary sends no request");
+        assert!(compact.is_err(), "{kind} messages compaction sends no request");
+        assert!(
+            matches!(responses, Ok(Err(_))),
+            "{kind} responses compaction sends no request"
+        );
+        assert_eq!(sent, 0, "{kind} sends no HTTP");
+    }
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn s5h_auxiliary_and_compaction_accept_only_a_valid_plan() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            s5h_drive("valid").await;
+            s5h_drive("drop-plan").await;
+            s5h_drive("stale-context").await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn m13_drop_plan_on_wrapper() {
+    tokio::task::LocalSet::new()
+        .run_until(s5h_drive("drop-plan"))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn m13_skip_direct_check() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (base_url, bodies, server) = k1_shell_http().await;
+            let client = SamplingClient::new(k1_shell_config(&base_url)).unwrap();
+            let mut request = k1_prepare(
+                &client,
+                ConversationRequest::from_items(vec![ConversationItem::user("K1 direct shell")]),
+                &format!("{base_url}/messages"),
+                true,
+            );
+            request.encoded = None;
+            s5h_mutate("skip-direct", &client, &mut request);
+            let before = bodies.lock().unwrap().len();
+            let result = client.conversation_stream_messages(request).await;
+            assert!(result.is_err(), "the direct route still checks the plan");
+            assert_eq!(bodies.lock().unwrap().len(), before);
+            server.abort();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn m13_trust_stale_carrier() {
+    tokio::task::LocalSet::new()
+        .run_until(s5h_drive("stale-carrier"))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn m13_validate_debug_only() {
+    tokio::task::LocalSet::new()
+        .run_until(s5h_drive("debug-only"))
+        .await;
+}
+
 fn k1_isolated_shell_test() -> bool {
     const NAME: &str = "session::acp_session::native_messages_replay_tests::messages_replay_plan_checked_on_all_sends";
     const CHILD: &str = "GROK_TEST_K1_SHELL_CHILD";

@@ -157,7 +157,11 @@ impl SessionActor {
         super::side_call::tests::record_auxiliary_send("title", &request);
         let response = match tokio::time::timeout(
             TITLE_REFRESH_MODEL_TIMEOUT,
-            setup.client.conversation_collect(request),
+            super::side_call::dispatch_auxiliary_collect(
+                &setup.client,
+                setup.history_entry(),
+                request,
+            ),
         )
         .await
         {

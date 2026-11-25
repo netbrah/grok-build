@@ -275,7 +275,13 @@ impl SessionActor {
 
         #[cfg(test)]
         super::side_call::tests::record_auxiliary_send("recap", &request);
-        let response = match setup.client.conversation_collect(request).await {
+        let response = match super::side_call::dispatch_auxiliary_collect(
+            &setup.client,
+            setup.history_entry(),
+            request,
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, "recap: model call failed");

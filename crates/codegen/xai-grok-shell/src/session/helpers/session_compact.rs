@@ -15,6 +15,31 @@ pub use xai_chat_state::compaction_utils::{
     extract_messages_since_last_user, extract_real_user_queries, is_synthetic_extracted_query,
 };
 
+pub(crate) async fn send_compact_responses_request(
+    client: &OaiCompatClient,
+    request: ConversationRequest,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<
+    Result<
+        (
+            futures_util::stream::BoxStream<
+                'static,
+                xai_grok_sampling_types::error::Result<ResponsesStreamItem>,
+            >,
+            Option<xai_grok_sampling_types::ResponseModelMetadata>,
+            Option<xai_grok_sampler::doom_loop::DoomLoopSignalCollector>,
+        ),
+        SamplingError,
+    >,
+    CompactFailure,
+> {
+    await_unless_cancelled(
+        cancel,
+        client.conversation_stream_responses(request, &mut None),
+    )
+    .await
+}
+
 pub(crate) async fn send_compact_messages_request(
     client: &OaiCompatClient,
     request: ConversationRequest,
@@ -662,17 +687,7 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
-            let stream_result =
-                // STABLE-REMINDER-1 (apex-ayl.110): side-call path (no
-                // per-session anchor) — `&mut None`. This request carries
-                // the real session conv-id, so the conv-id keyed entry gate
-                // takes Anchor(None): D lands at TAIL on this one-shot
-                // request; the write-back target is this discarded local.
-                await_unless_cancelled(
-                    cancel,
-                    client.conversation_stream_responses(request, &mut None),
-                )
-                    .await?;
+            let stream_result = send_compact_responses_request(&client, request, cancel).await?;
             let mut stream = match stream_result {
                 Ok((s, _metadata, _doom_loop)) => s,
                 Err(e) => return Err(classify_sampling_error(e)),
