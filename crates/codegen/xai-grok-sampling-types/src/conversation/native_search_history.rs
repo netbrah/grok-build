@@ -4758,7 +4758,8 @@ impl NativeHistoryPlan {
                         })
                         .count() as u64
                 || (!qualification.shape.completed
-                    && group.action != NativeHistoryAction::ContinueOriginal)
+                    && group.action != NativeHistoryAction::ContinueOriginal
+                    && group.action != NativeHistoryAction::OmitSendOnly)
             {
                 return Err(NativePlanRefusal::InvalidQualification);
             }
@@ -8488,10 +8489,14 @@ mod tests {
         );
         let omitted =
             s3f_pending_plan_candidate(NativeGroupState::AbandonedPending, NativeNextInput::Fresh);
+        let omitted = omitted.expect("F4 T (c) terminal OmitSendOnly is admitted");
         assert_eq!(
-            omitted.as_ref().err(),
-            Some(&NativePlanRefusal::InvalidQualification),
-            "F4 T (c) OmitSendOnly remains refused for an incomplete qualification"
+            omitted.core.decision.groups[0].action,
+            NativeHistoryAction::OmitSendOnly
+        );
+        assert_eq!(
+            validate_native_history_plan(omitted.context(), Some(&omitted), &omitted.carrier),
+            Ok(NativeHistoryReady::SendOnly)
         );
         let waiting =
             s3f_pending_plan_candidate(NativeGroupState::LivePending, NativeNextInput::None);
