@@ -593,10 +593,19 @@ pub(super) struct HeldBands {
     pub(super) observed_payload_bytes: [Option<u64>; 11],
 }
 
+/// Local queue occupancy joined into this ledger. The global shared-control
+/// owner is not credited by this landing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SharedOwnerDebt {
+    pub(super) local_entries: usize,
+    pub(super) global_owner_credited: bool,
+}
+
 pub(super) struct HeldInputLedger {
     pub(super) latch: Option<HoldLatch>,
     pub(super) latch_meta: Option<HeldBindingMeta>,
     pub(super) entries: std::collections::VecDeque<HeldEntry>,
+    pub(super) shared_owner_debt: SharedOwnerDebt,
     pub(super) parent_stamps: Vec<(String, Occurrence)>,
     pub(super) parent_owner: Option<HeldTurnBinding>,
     pub(super) parent_owner_meta: Option<HeldBindingMeta>,
@@ -616,6 +625,10 @@ impl Default for HeldInputLedger {
             latch: None,
             latch_meta: None,
             entries: Default::default(),
+            shared_owner_debt: SharedOwnerDebt {
+                local_entries: 0,
+                global_owner_credited: false,
+            },
             parent_stamps: Vec::new(),
             parent_owner: None,
             parent_owner_meta: None,
@@ -761,6 +774,7 @@ impl HeldInputLedger {
         meta: serde_json::Value,
     ) -> Result<(), (HoldRefusalReason, HeldBody)> {
         if self.has_key(key) {
+            self.record_shared_owner_debt();
             return Ok(());
         }
         let held = self.entries.iter().filter(|entry| entry.source == source).count();
@@ -790,7 +804,15 @@ impl HeldInputLedger {
         let preparing = matches!(&body, HeldBody::Human(_))
             .then(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
         self.entries.push_back(HeldEntry { key, source, body, meta, preparing });
+        self.record_shared_owner_debt();
         Ok(())
+    }
+
+    fn record_shared_owner_debt(&mut self) {
+        self.shared_owner_debt = SharedOwnerDebt {
+            local_entries: self.entries.len(),
+            global_owner_credited: false,
+        };
     }
 
     pub(super) fn commit_keys(&mut self, submitted: &[Occurrence]) {

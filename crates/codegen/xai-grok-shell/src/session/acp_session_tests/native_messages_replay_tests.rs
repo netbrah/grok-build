@@ -18209,3 +18209,77 @@ async fn messages_live_pending_blocks_destructive_compaction() {
         .run_until(super::native_history_policy_tests::k3q_pre_loss_compaction_and_backing())
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_local_queue_joins_held_input() {
+    const CHILD: &str = "K3Q_U3_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let home = tempfile::tempdir().unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .env(CHILD, "1")
+            .env("GROK_HOME", home.path())
+            .args([
+                "--exact",
+                "session::acp_session::native_messages_replay_tests::messages_local_queue_joins_held_input",
+                "--nocapture",
+            ])
+            .stdin(std::process::Stdio::null());
+        xai_tty_utils::detach_std_command(&mut command);
+        let output = tokio::task::spawn_blocking(move || command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("running 1 test"),
+            "local queue join child failed: status={:?} stdout={} stderr={}",
+            output.status.code(),
+            stdout,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    tokio::task::LocalSet::new().run_until(async {
+        let observations = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let steppers = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        U6_ARM_OBSERVATIONS.scope(observations, U6_ARM_STEPPERS.scope(steppers, async {
+        let (mut fixture, mut turn, _, continuation) = u6_u63_prepare_fixture(None).await;
+        let _stop = K0Abort(turn.running.abort_handle());
+        let fx = &mut fixture.fx;
+        let text = "K3Q local queue join";
+        k2lg_n_selected(
+            fx,
+            fx.session.actor.hold_or_push_user_item(
+                ConversationItem::user(text),
+                super::interjection::HeldSource::HumanInterjection,
+            ),
+        )
+        .await
+        .expect("the local item joins the held-input ledger");
+        {
+            let state = fx.session.actor.state.lock().await;
+            let ledger = &state.message_delivery.held_input;
+            assert!(
+                ledger.entries.iter().any(|entry| {
+                    matches!(&entry.body, super::interjection::HeldBody::Owned(item)
+                        if item.text_content().contains(text))
+                }),
+                "the held-input witness keeps the joined local item"
+            );
+            assert_eq!(
+                ledger.shared_owner_debt.local_entries,
+                ledger.entries.len(),
+                "the debt counts the local queue, not a global owner"
+            );
+            assert!(
+                !ledger.shared_owner_debt.global_owner_credited,
+                "the global shared-control owner stays uncredited"
+            );
+        }
+        continuation.release();
+        turn.running.abort();
+        let _ = turn.running.await;
+        })).await;
+    }).await;
+}
