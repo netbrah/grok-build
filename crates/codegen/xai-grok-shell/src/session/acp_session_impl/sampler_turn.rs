@@ -367,6 +367,25 @@ impl BridgeDeclarationProjection {
         }
     }
 
+    /// Qualified MCP tools for an admitted Responses send.
+    ///
+    /// The candidate selector keeps MCP off non-Messages rows. Client-executed
+    /// `tool_search` can only call a tool that this request already declares,
+    /// so the send path puts those tools back with deferred exposure after the
+    /// bridge identity check.
+    pub(super) fn responses_deferred_mcp_specs(&self) -> Vec<ToolSpec> {
+        self.bundle
+            .specs
+            .iter()
+            .filter(|spec| self.mcp_membership.contains(&spec.name))
+            .cloned()
+            .map(|mut spec| {
+                spec.exposure = xai_grok_sampling_types::ToolExposure::Deferred;
+                spec
+            })
+            .collect()
+    }
+
     pub(super) fn append_structured_output(&mut self, schema: serde_json::Value) {
         let declaration = ToolSpec {
             name: "StructuredOutput".to_string(),
@@ -478,8 +497,17 @@ impl SessionActor {
         if super::switch_projection::select_native_history()
             == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
         {
-            let bridge_present = *backend == xai_grok_sampling_types::ApiBackend::Responses && admitted;
-            if !bridge_present {
+            // Responses keeps client tool_search discovery. Admitted Messages
+            // keeps server_tool_use discovery. Rewriting either after the
+            // bound build seals the send mapping makes the commit see a
+            // different history and refuse StaleHistory.
+            let keep_discovery = admitted
+                && matches!(
+                    *backend,
+                    xai_grok_sampling_types::ApiBackend::Responses
+                        | xai_grok_sampling_types::ApiBackend::Messages
+                );
+            if !keep_discovery {
                 project_absent_bridge_group(request)?;
             }
         }

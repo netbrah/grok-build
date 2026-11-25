@@ -622,6 +622,10 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
 
             for tc in &a.tool_calls {
                 let arguments = sanitize_tool_arguments(&tc.id, &tc.name, tc.arguments.clone());
+                // A deferred tool the provider called back with a namespace
+                // (the live shape is the function name itself) 400s on the
+                // next turn unless that namespace is round-tripped.
+                let namespace = tc.name.contains("__").then(|| tc.name.clone());
                 items.push(rs::InputItem::Item(rs::Item::FunctionCall(
                     rs::FunctionToolCall {
                         call_id: tc.id.as_ref().to_owned(),
@@ -629,7 +633,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                         arguments: arguments.as_ref().to_owned(),
                         id: None,
                         status: None,
-                        namespace: None,
+                        namespace,
                         caller: None,
                         r#async: None,
                     },

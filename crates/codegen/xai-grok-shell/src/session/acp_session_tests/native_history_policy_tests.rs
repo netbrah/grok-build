@@ -15182,6 +15182,559 @@ async fn native_history_u9_u10_all_send_stays_inactive() {
 }
 
 #[test]
+fn primary_rows_send_without_native_history_refusal() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    assert_eq!(
+        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        NativeHistoryRequirement::Selected
+    );
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            for (backend, path) in [
+                (
+                    xai_grok_sampling_types::ApiBackend::Responses,
+                    "/v1/responses",
+                ),
+                (
+                    xai_grok_sampling_types::ApiBackend::ChatCompletions,
+                    "/v1/chat/completions",
+                ),
+                (
+                    xai_grok_sampling_types::ApiBackend::Messages,
+                    "/v1/messages",
+                ),
+            ] {
+                let server = xai_grok_test_support::MockInferenceServer::start()
+                    .await
+                    .expect("mock server");
+                server.enqueue_response(
+                    path,
+                    super::length_salvage_tests::messages_stop_sse("primary answer"),
+                );
+                let session = NativeHistorySession::new(&server).await;
+                let actor = session.actor.clone();
+                let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
+                sampling.api_backend = backend.clone();
+                sampling.supports_search_tool = backend
+                    != xai_grok_sampling_types::ApiBackend::ChatCompletions;
+                actor.chat_state_handle.update_sampling_config(sampling);
+                let mut entry = entry_with_search_flag(
+                    "test",
+                    backend != xai_grok_sampling_types::ApiBackend::ChatCompletions,
+                );
+                entry.info.api_backend = backend.clone();
+                entry.api_base_url = Some(server.url());
+                entry.api_key = Some("test-key".into());
+                actor.models_manager.insert_test_entry("test", entry);
+                actor
+                    .session_turn_active
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                actor
+                    .chat_state_handle
+                    .push_user_message_and_ack(ConversationItem::user(format!(
+                        "primary prompt {path}"
+                    )))
+                    .await;
+                let mut prepare = |_request: &mut ConversationRequest, _: &xai_chat_state::RequestTransportBinding| Ok(());
+                let mut salvage = super::length_salvage::LengthSalvage::new(None);
+                let mut sampling_totals = Default::default();
+                let outcome = actor
+                    .process_conversation_turn_for_native_history_test(
+                        "primary-send",
+                        None,
+                        None,
+                        None,
+                        &mut salvage,
+                        &mut sampling_totals,
+                        &mut prepare,
+                    )
+                    .await;
+                let err = outcome
+                    .as_ref()
+                    .err()
+                    .map(|error| format!("{error}"))
+                    .unwrap_or_default();
+                assert!(
+                    !err.contains("native_history_wire_staged"),
+                    "{path} refused before HTTP: {err}"
+                );
+                assert!(
+                    !err.contains("native_history_plan_refused"),
+                    "{path} plan refused before HTTP: {err}"
+                );
+                let sent: Vec<_> = server
+                    .requests()
+                    .into_iter()
+                    .filter(|request| request.path == path)
+                    .collect();
+                assert!(
+                    !sent.is_empty(),
+                    "{path} sent no primary request: {err}"
+                );
+                let body = serde_json::to_string(&sent[0].body).unwrap_or_default();
+                assert!(
+                    body.contains(&format!("primary prompt {path}")),
+                    "{path} body is not the primary prompt"
+                );
+                assert!(
+                    !body.contains("session_title") || body.contains(&format!("primary prompt {path}")),
+                    "{path} capture is only a title side request"
+                );
+                if backend == xai_grok_sampling_types::ApiBackend::Responses {
+                    assert!(body.contains("\"store\":false") || body.contains("\"store\": false"));
+                }
+                actor
+                    .session_turn_active
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+    });
+}
+
+#[test]
+fn messages_admitted_first_turn_sends_search_declaration() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    assert_eq!(
+        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        NativeHistoryRequirement::Selected
+    );
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            for deferred in [false, true] {
+                let server = xai_grok_test_support::MockInferenceServer::start()
+                    .await
+                    .expect("mock server");
+                server.enqueue_response(
+                    "/v1/messages",
+                    super::length_salvage_tests::messages_stop_sse("search answer"),
+                );
+                let session = NativeHistorySession::new(&server).await;
+                let actor = session.actor.clone();
+                actor.agent.replace(
+                    super::support::test_agent_with_tools(vec![
+                        xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                            xai_grok_tools::implementations::grok_build::read_file::ReadFileTool,
+                        >()
+                        .with_name("warehouse_lookup"),
+                    ])
+                    .await,
+                );
+                actor
+                    .agent
+                    .borrow()
+                    .tool_bridge()
+                    .register_mcp_tools(
+                        "speedread__read".into(),
+                        U5aClientTool {
+                            name: "speedread__read",
+                            kind: xai_grok_tools::types::tool::ToolKind::Other,
+                            executions: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                        },
+                        Some(serde_json::json!({
+                            "type": "object",
+                            "properties": {"targets": {"type": "array"}},
+                            "required": ["targets"],
+                            "additionalProperties": false
+                        })),
+                    )
+                    .expect("register speedread tool");
+                let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
+                sampling.supports_search_tool = true;
+                actor.chat_state_handle.update_sampling_config(sampling);
+                let names: &[&str] = if deferred { &["warehouse_lookup"] } else { &[] };
+                let mut entry = super::support::entry_with_deferred_tools("test", true, names);
+                entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+                entry.api_base_url = Some(server.url());
+                entry.api_key = Some("test-key".into());
+                actor.models_manager.insert_test_entry("test", entry);
+                actor
+                    .session_turn_active
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                actor
+                    .chat_state_handle
+                    .push_user_message_and_ack(ConversationItem::user("admitted first turn"))
+                    .await;
+                let mut prepare = |_request: &mut ConversationRequest, _: &xai_chat_state::RequestTransportBinding| Ok(());
+                let mut salvage = super::length_salvage::LengthSalvage::new(None);
+                let mut sampling_totals = Default::default();
+                let outcome = actor
+                    .process_conversation_turn_for_native_history_test(
+                        "admitted-first",
+                        None,
+                        None,
+                        None,
+                        &mut salvage,
+                        &mut sampling_totals,
+                        &mut prepare,
+                    )
+                    .await;
+                let err = outcome
+                    .as_ref()
+                    .err()
+                    .map(|error| format!("{error}"))
+                    .unwrap_or_default();
+                assert!(
+                    !err.contains("InvalidDeclarations"),
+                    "deferred={deferred} first turn refused declarations: {err}"
+                );
+                let sent: Vec<_> = server
+                    .requests()
+                    .into_iter()
+                    .filter(|request| request.path == "/v1/messages")
+                    .collect();
+                assert!(!sent.is_empty(), "deferred={deferred} sent nothing: {err}");
+                let body = sent
+                    .iter()
+                    .filter_map(|request| serde_json::to_string(&request.body).ok())
+                    .find(|body| body.contains("admitted first turn"))
+                    .unwrap_or_default();
+                assert!(
+                    body.contains("admitted first turn"),
+                    "deferred={deferred} missing primary body"
+                );
+                assert!(
+                    body.contains("tool_search_tool_"),
+                    "deferred={deferred} body does not declare the Anthropic tool-search tool: {body}"
+                );
+                assert!(
+                    body.contains("speedread__read"),
+                    "deferred={deferred} body dropped the deferred mcp tool: {body}"
+                );
+                assert!(
+                    !body.contains("\"name\":\"search_tool\"")
+                        && !body.contains("\"name\": \"search_tool\""),
+                    "deferred={deferred} body still carries the old search_tool bridge"
+                );
+                assert!(
+                    body.contains("defer_loading"),
+                    "deferred={deferred} body does not defer a tool"
+                );
+                actor
+                    .session_turn_active
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+    });
+}
+
+#[test]
+fn responses_admitted_first_turn_declares_deferred_mcp() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    assert_eq!(
+        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        NativeHistoryRequirement::Selected
+    );
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.enqueue_response(
+                "/v1/responses",
+                super::length_salvage_tests::messages_stop_sse("search answer"),
+            );
+            let session = NativeHistorySession::new(&server).await;
+            let actor = session.actor.clone();
+            actor.agent.replace(
+                super::support::test_agent_with_tools(vec![
+                    xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                        xai_grok_tools::implementations::grok_build::read_file::ReadFileTool,
+                    >()
+                    .with_name("warehouse_lookup"),
+                ])
+                .await,
+            );
+            actor
+                .agent
+                .borrow()
+                .tool_bridge()
+                .register_mcp_tools(
+                    "speedread__outline".into(),
+                    U5aClientTool {
+                        name: "speedread__outline",
+                        kind: xai_grok_tools::types::tool::ToolKind::Other,
+                        executions: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    },
+                    Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                        "additionalProperties": false
+                    })),
+                )
+                .expect("register speedread tool");
+            let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            sampling.api_backend = xai_grok_sampling_types::ApiBackend::Responses;
+            sampling.supports_search_tool = true;
+            actor.chat_state_handle.update_sampling_config(sampling);
+            let mut entry = super::support::entry_with_search_flag("test", true);
+            entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Responses;
+            entry.api_base_url = Some(server.url());
+            entry.api_key = Some("test-key".into());
+            actor.models_manager.insert_test_entry("test", entry);
+            actor
+                .session_turn_active
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            actor
+                .chat_state_handle
+                .push_user_message_and_ack(ConversationItem::user(
+                    "responses admitted first turn",
+                ))
+                .await;
+            let mut prepare =
+                |_request: &mut ConversationRequest, _: &xai_chat_state::RequestTransportBinding| {
+                    Ok(())
+                };
+            let mut salvage = super::length_salvage::LengthSalvage::new(None);
+            let mut sampling_totals = Default::default();
+            let outcome = actor
+                .process_conversation_turn_for_native_history_test(
+                    "responses-admitted-first",
+                    None,
+                    None,
+                    None,
+                    &mut salvage,
+                    &mut sampling_totals,
+                    &mut prepare,
+                )
+                .await;
+            let err = outcome
+                .as_ref()
+                .err()
+                .map(|error| format!("{error}"))
+                .unwrap_or_default();
+            assert!(
+                !err.contains("native_history_wire_staged")
+                    && !err.contains("native_history_plan_refused")
+                    && !err.contains("InvalidDeclarations"),
+                "responses first turn refused before HTTP: {err}"
+            );
+            let sent: Vec<_> = server
+                .requests()
+                .into_iter()
+                .filter(|request| request.path == "/v1/responses")
+                .collect();
+            assert!(!sent.is_empty(), "responses sent nothing: {err}");
+            let body = sent
+                .iter()
+                .filter_map(|request| serde_json::to_string(&request.body).ok())
+                .find(|body| body.contains("responses admitted first turn"))
+                .unwrap_or_default();
+            assert!(
+                body.contains("responses admitted first turn"),
+                "missing primary responses body: {err}"
+            );
+            assert!(
+                body.contains("\"type\":\"tool_search\"") || body.contains("\"type\": \"tool_search\""),
+                "responses body does not declare tool_search: {body}"
+            );
+            assert!(
+                body.contains("speedread__outline"),
+                "responses body dropped the deferred mcp tool: {body}"
+            );
+            assert!(
+                body.contains("defer_loading"),
+                "responses body does not defer a tool: {body}"
+            );
+            assert!(
+                body.contains("\"store\":false") || body.contains("\"store\": false"),
+                "responses body does not set store false: {body}"
+            );
+            assert!(
+                !body.contains("\"name\":\"search_tool\"")
+                    && !body.contains("\"name\": \"search_tool\""),
+                "responses body still carries the old search_tool bridge"
+            );
+            actor
+                .session_turn_active
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    });
+}
+
+fn messages_discovery_pair_sse(text: &str) -> ScriptedResponse {
+    let frames = vec![
+        json!({"type":"message_start","message":{
+            "id":"msg_discovery_live","type":"message","role":"assistant","model":"test",
+            "content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}
+        }}),
+        json!({"type":"content_block_start","index":0,"content_block":{
+            "type":"server_tool_use","id":"srvtoolu_live","name":"tool_search_tool_bm25","input":{}
+        }}),
+        json!({"type":"content_block_delta","index":0,"delta":{
+            "type":"input_json_delta","partial_json":"{\"query\":\"speedread\"}"
+        }}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{
+            "type":"tool_search_tool_result","tool_use_id":"srvtoolu_live",
+            "content":{"type":"tool_search_tool_search_result","tool_references":[
+                {"type":"tool_reference","tool_name":"warehouse_lookup"}]}
+        }}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":text}}),
+        json!({"type":"content_block_stop","index":2}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{
+            "input_tokens":11,"output_tokens":4
+        }}),
+        json!({"type":"message_stop"}),
+    ];
+    native_history_script(frames)
+}
+
+#[test]
+fn messages_discovery_history_sends_without_stale_history() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    assert_eq!(
+        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        NativeHistoryRequirement::Selected
+    );
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                messages_discovery_pair_sse("searched the warehouse"),
+            );
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("repeated the warehouse result"),
+            );
+            let session = NativeHistorySession::new(&server).await;
+            let actor = session.actor.clone();
+            actor.agent.replace(
+                super::support::test_agent_with_tools(vec![
+                    xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                        xai_grok_tools::implementations::grok_build::read_file::ReadFileTool,
+                    >()
+                    .with_name("warehouse_lookup"),
+                ])
+                .await,
+            );
+            actor
+                .agent
+                .borrow()
+                .tool_bridge()
+                .register_mcp_tools(
+                    "speedread__read".into(),
+                    U5aClientTool {
+                        name: "speedread__read",
+                        kind: xai_grok_tools::types::tool::ToolKind::Other,
+                        executions: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    },
+                    Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {"targets": {"type": "array"}},
+                        "required": ["targets"],
+                        "additionalProperties": false
+                    })),
+                )
+                .expect("register speedread tool");
+            let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            sampling.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+            sampling.supports_search_tool = true;
+            actor.chat_state_handle.update_sampling_config(sampling);
+            let mut entry = super::support::entry_with_search_flag("test", true);
+            entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+            entry.api_base_url = Some(server.url());
+            entry.api_key = Some("test-key".into());
+            actor.models_manager.insert_test_entry("test", entry);
+            let mut run_turn = |prompt: &'static str, id: &'static str| {
+                let actor = actor.clone();
+                async move {
+                    actor
+                        .session_turn_active
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    actor
+                        .chat_state_handle
+                        .push_user_message_and_ack(ConversationItem::user(prompt))
+                        .await;
+                    let mut prepare = |_request: &mut ConversationRequest,
+                                       _: &xai_chat_state::RequestTransportBinding| {
+                        Ok(())
+                    };
+                    let mut salvage = super::length_salvage::LengthSalvage::new(None);
+                    let mut sampling_totals = Default::default();
+                    let outcome = actor
+                        .process_conversation_turn_for_native_history_test(
+                            id,
+                            None,
+                            None,
+                            None,
+                            &mut salvage,
+                            &mut sampling_totals,
+                            &mut prepare,
+                        )
+                        .await;
+                    actor
+                        .session_turn_active
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    outcome
+                }
+            };
+            let first = run_turn("admitted search turn", "discovery-first").await;
+            let first_err = first
+                .as_ref()
+                .err()
+                .map(|error| format!("{error}"))
+                .unwrap_or_default();
+            assert!(
+                first.is_ok(),
+                "the turn that receives server_tool_use must complete: {first_err}"
+            );
+            let second = run_turn("discovery history turn", "discovery-history").await;
+            let err = second
+                .as_ref()
+                .err()
+                .map(|error| format!("{error}"))
+                .unwrap_or_default();
+            assert!(
+                second.is_ok(),
+                "discovery history refused the next Messages send: {err}"
+            );
+            assert!(
+                !err.contains("StaleHistory")
+                    && !err.contains("InvalidHistory")
+                    && !err.contains("InvalidDeclarations"),
+                "discovery history refused the next Messages send: {err}"
+            );
+            let sent: Vec<_> = server
+                .requests()
+                .into_iter()
+                .filter(|request| request.path == "/v1/messages")
+                .collect();
+            let body = sent
+                .iter()
+                .filter_map(|request| serde_json::to_string(&request.body).ok())
+                .find(|body| body.contains("discovery history turn"))
+                .unwrap_or_default();
+            assert!(
+                body.contains("discovery history turn"),
+                "discovery history sent nothing: {err}"
+            );
+            // A just-recorded Messages search is not a qualified Keep receipt, so
+            // the production projection replays it as the neutral sentence. The
+            // following send must still happen, with the prior assistant text.
+            assert!(
+                body.contains("searched the warehouse"),
+                "prior assistant text was dropped from the continuation: {body}"
+            );
+            assert!(
+                body.contains("tool_search_tool_"),
+                "continuation dropped the Anthropic tool-search declaration: {body}"
+            );
+            assert!(
+                !body.contains("\"name\":\"search_tool\"")
+                    && !body.contains("\"name\": \"search_tool\""),
+                "discovery history still carries the old search_tool bridge"
+            );
+        });
+    });
+}
+
+#[test]
 fn native_history_production_selected_requires_valid_plan() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(

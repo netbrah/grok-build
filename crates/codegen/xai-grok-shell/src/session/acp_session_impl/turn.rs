@@ -2769,6 +2769,7 @@ impl SessionActor {
         let mut turn_tools_called: Vec<String> = Vec::new();
         let mut tool_turn_count: usize = 1;
         let mut loop_index: u32 = 0;
+        let mut stale_history_retries: u32 = 0;
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut todo_gate_fires: u32 = 0;
         let mut discovery_searches_this_turn: u32 = 0;
@@ -3012,6 +3013,14 @@ impl SessionActor {
                         xai_chat_state::NativeHistoryEntryIntent::OwningPrimary(native_owner_guard.as_ref().ok_or_else(|| crate::sampling::error::local_error("native_history_owner_missing", "native owner guard is missing"))?.token()))
                 }
             };
+            let effective_tools = if sampling_config.as_ref().is_some_and(|cfg| {
+                cfg.api_backend == xai_grok_sampling_types::ApiBackend::Messages
+                    && cfg.supports_search_tool
+            }) {
+                effective_tools.without_names(&["search_tool", "use_tool"])
+            } else {
+                effective_tools
+            };
             let effective_tools = effective_tools
                 .with_history_entry(native_entry.clone())
                 .map_err(|_| {
@@ -3106,6 +3115,32 @@ impl SessionActor {
             if let Some(projection) = &bridge_projection {
                 self.project_bound_bridge_declarations(&mut request, &binding, projection)
                     .map_err(crate::sampling::error::map_sampling_err_to_acp)?;
+                // After the identity check: an admitted Responses row declares
+                // its MCP tools deferred so tool_search can name a callable tool.
+                if binding.config.api_backend == xai_grok_sampling_types::ApiBackend::Responses
+                    && request
+                        .search_admission
+                        .is_some_and(xai_grok_sampling_types::SearchAdmission::admitted)
+                {
+                    for spec in projection.responses_deferred_mcp_specs() {
+                        if request.tools.iter().any(|tool| tool.name == spec.name) {
+                            continue;
+                        }
+                        request.tools.push(spec);
+                    }
+                }
+            }
+            // Admitted Messages search is the vendor tool. The old registry
+            // bridge (search_tool / use_tool) stays off that offer so the
+            // model cannot answer a search by calling it.
+            if binding.config.api_backend == xai_grok_sampling_types::ApiBackend::Messages
+                && request
+                    .search_admission
+                    .is_some_and(xai_grok_sampling_types::SearchAdmission::admitted)
+            {
+                request
+                    .tools
+                    .retain(|tool| tool.name != "search_tool" && tool.name != "use_tool");
             }
             #[cfg(test)]
             super::native_messages_replay_tests::k2_u5_observe_bound(&request, &binding);
@@ -3137,7 +3172,21 @@ impl SessionActor {
                 request.length_policy = xai_grok_sampling_types::LengthPolicy::CompletePartial;
             }
             if native_requirement == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected {
-                request = self.finalize_native_history_primary(request, &mut binding).await?;
+                match self.finalize_native_history_primary(request, &mut binding).await {
+                    Ok(finalized) => request = finalized,
+                    Err(error)
+                        if format!("{error}").contains("StaleHistory")
+                            && stale_history_retries < 2 =>
+                    {
+                        // A tool result or discovery item can land between the
+                        // bound snapshot and the commit. Rebuild once from the
+                        // history that is now durable.
+                        stale_history_retries += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+                stale_history_retries = 0;
                 self.publish_bound_projection(&request, &binding, selected_functions).await;
             }
             self.emit_event(crate::session::events::Event::PhaseChanged {
@@ -4917,11 +4966,12 @@ impl SessionActor {
     ) -> Result<ConversationRequest, acp::Error> {
         use xai_grok_sampling_types::conversation::native_search_history::*;
         use xai_grok_sampling_types::conversation::projection::{TargetRoute, model_boundary_class};
+        // Messages is the only wire with a native-history plan. Responses and
+        // Chat Completions keep the request the ordinary encoder already sends:
+        // tool search, deferral, and store=false live there. Refusing them
+        // before HTTP drops the primary turn.
         if binding.config.api_backend != xai_grok_sampling_types::ApiBackend::Messages {
-            return Err(crate::sampling::error::local_error(
-                "native_history_wire_staged",
-                "Selected primary replay on this wire remains staged",
-            ));
+            return Ok(request);
         }
         let preparation = request.native_bound_preparation.clone().ok_or_else(|| {
             crate::sampling::error::local_error(
