@@ -1010,9 +1010,7 @@ async fn run_one_attempt(
             let outcome =
                 if capture.observed_pause() && !matches!(outcome, AttemptOutcome::Cancelled) {
                     AttemptOutcome::Failed {
-                        error: SamplingError::UnsupportedStopControl {
-                            wire_reason: "pause_turn".into(),
-                        },
+                        error: SamplingError::incomplete_turn("pause_turn"),
                         doom_loop_signals: Vec::new(),
                         recovery_items: Vec::new(),
                     }
@@ -2438,9 +2436,10 @@ mod tests {
         );
         let (result, events, requests) = run_native_fixture(vec![reply], 2).await;
         assert_eq!(requests, 1);
-        assert!(
-            matches!(result.result, Err(SamplingError::UnsupportedStopControl { ref wire_reason }) if wire_reason == "pause_turn")
-        );
+        assert!(matches!(
+            result.result,
+            Err(SamplingError::IncompleteTurn { .. })
+        ));
         let failures: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
@@ -2449,9 +2448,7 @@ mod tests {
             })
             .collect();
         assert_eq!(failures.len(), 1);
-        let expected = SamplingErrorInfo::from(&SamplingError::UnsupportedStopControl {
-            wire_reason: "pause_turn".into(),
-        });
+        let expected = SamplingErrorInfo::from(&SamplingError::incomplete_turn("pause_turn"));
         assert_eq!(failures[0].kind, expected.kind);
         assert_eq!(failures[0].message, expected.message);
         assert!(!failures[0].is_retryable);
@@ -2466,9 +2463,10 @@ mod tests {
         let (result, events, requests) =
             run_native_fixture(vec![native_script(NativeFixtureEnd::Pause)], 2).await;
         assert_eq!(requests, 1);
-        assert!(
-            matches!(result.result, Err(SamplingError::UnsupportedStopControl { ref wire_reason }) if wire_reason == "pause_turn")
-        );
+        assert!(matches!(
+            result.result,
+            Err(SamplingError::IncompleteTurn { .. })
+        ));
         assert!(
             native_attempts(&events).is_empty(),
             "paused capture and usage must not reach persistence"
@@ -2498,9 +2496,10 @@ mod tests {
         );
         let (result, events, requests) = run_native_fixture(vec![reply], 2).await;
         assert_eq!(requests, 1);
-        assert!(
-            matches!(result.result, Err(SamplingError::UnsupportedStopControl { ref wire_reason }) if wire_reason == "pause_turn")
-        );
+        assert!(matches!(
+            result.result,
+            Err(SamplingError::IncompleteTurn { .. })
+        ));
         assert!(
             native_attempts(&events).is_empty(),
             "exhausted paused capture still produces no persistence record"

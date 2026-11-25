@@ -851,15 +851,10 @@ pub(crate) fn stream_messages_tracked<'a>(
                             messages::StopReason::ToolUse => StopReason::ToolCalls,
                             // The model declined to continue; whatever streamed is the complete response, so end the turn cleanly
                             messages::StopReason::Refusal => StopReason::ContentFilter,
-                            // Spec L4281: pause_turn is a DEDICATED unsupported-control
-                            // failure — the failure terminates the stream before any
-                            // outcome, projection, persistence, telemetry, or accounting
-                            // exists (the L1995 principle). Provenance:
-                            // frozen-spec@2cbc222c §6.3 L4281.
+                            // A pause that ends the turn is the typed incomplete result.
+                            // The shell returns that kind before compaction, recovery, or resubmit.
                             messages::StopReason::PauseTurn => {
-                                let err = SamplingError::UnsupportedStopControl {
-                                    wire_reason: "pause_turn".to_owned(),
-                                };
+                                let err = SamplingError::incomplete_turn("pause_turn");
                                 yield SamplingEvent::Failed {
                                     request_id: request_id.clone(),
                                     error: SamplingErrorInfo::from(&err),

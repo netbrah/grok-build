@@ -580,8 +580,8 @@ async fn pause_turn_terminal_fails_with_dedicated_error() {
             // treats the terminal as a transient 5xx (SH4 proves it)
             assert_eq!(
                 error.kind,
-                crate::events::SamplingErrorKind::UnsupportedStopControl,
-                "pause_turn surfaces as the dedicated non-retryable error, got {}",
+                crate::events::SamplingErrorKind::IncompleteTurn,
+                "pause_turn surfaces as the typed incomplete result, got {}",
                 error.message
             );
             assert!(
@@ -589,13 +589,12 @@ async fn pause_turn_terminal_fails_with_dedicated_error() {
                 "pause_turn is a deterministic typed terminal, never retryable"
             );
             assert!(
-                error.message.contains("pause_turn")
-                    && error.message.contains("unsupported control"),
-                "the dedicated error names the control, got {}",
+                error.message.contains("pause_turn"),
+                "the incomplete result names the pause, got {}",
                 error.message
             );
         }
-        other => panic!("expected Failed(UnsupportedStopControl), got {other:?}"),
+        other => panic!("expected Failed(IncompleteTurn), got {other:?}"),
     }
     assert!(
         !evs.iter()

@@ -922,9 +922,14 @@ fn pause_turn_turn_fails_with_dedicated_error_no_commit() {
                 "a pause_turn turn must fail with the dedicated error, not complete",
             );
             let err_str = format!("{err}");
+            assert_eq!(
+                crate::sampling::error::error_kind_from_error(&err),
+                Some(xai_grok_sampler::SamplingErrorKind::IncompleteTurn),
+                "a paused turn keeps the typed incomplete result, got: {err_str}"
+            );
             assert!(
-                err_str.contains("pause_turn") && err_str.contains("unsupported control"),
-                "the dedicated error names the unsupported control, got: {err_str}"
+                err_str.contains("pause_turn"),
+                "the incomplete result names the pause, got: {err_str}"
             );
             // (d) NOT classified as a max-tokens turn error (M1: the mid-salvage arm cannot swallow it).
             assert!(
@@ -937,6 +942,65 @@ fn pause_turn_turn_fails_with_dedicated_error_no_commit() {
                     .iter()
                     .any(|i| matches!(i, ConversationItem::Assistant(_))),
                 "the partial pause_turn response is NOT committed to history: {conv:#?}"
+            );
+        });
+    });
+}
+
+/// P2 offline: a paused turn that ends incomplete keeps that typed result, and the prompt is not sent again.
+#[test]
+fn paused_incomplete_prompt_keeps_typed_result_and_is_not_resubmitted() {
+    block_on_session(|| {
+        current_thread_local(async {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                messages_pause_turn_sse("partial answer before the pause"),
+            );
+            server.enqueue_response("/v1/messages", messages_stop_sse("resubmit must not run"));
+            let actor = salvage_test_actor_on_backend(
+                &server,
+                0,
+                256_000,
+                xai_grok_sampling_types::ApiBackend::Messages,
+                true,
+            )
+            .await;
+            let outcome = run_prompt(&actor, "pause-incomplete-offline").await;
+            let err = outcome.expect_err("a paused incomplete turn keeps a typed failure");
+            assert_eq!(
+                crate::sampling::error::error_kind_from_error(&err),
+                Some(xai_grok_sampler::SamplingErrorKind::IncompleteTurn),
+                "the prompt result retains the typed incomplete kind, got {err}"
+            );
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("pause_turn"),
+                "the incomplete result names the pause, got {err_str}"
+            );
+            assert_eq!(
+                server.messages_request_count(),
+                1,
+                "the incomplete prompt is not resubmitted: {}",
+                server.request_log_summary()
+            );
+            let bodies = server.request_bodies();
+            let prompt_bodies: Vec<_> = bodies
+                .iter()
+                .filter(|body| body.get("messages").is_some())
+                .collect();
+            assert_eq!(prompt_bodies.len(), 1, "one prompt body left the client");
+            let body = prompt_bodies[0].to_string();
+            assert!(
+                body.contains("write out the numbers"),
+                "the single request is the original prompt, got {body}"
+            );
+            let conv = actor.chat_state_handle.get_conversation().await;
+            assert!(
+                !conv
+                    .iter()
+                    .any(|i| matches!(i, ConversationItem::Assistant(_))),
+                "the partial pause is not committed: {conv:#?}"
             );
         });
     });

@@ -1628,7 +1628,7 @@ async fn native_history_parent_pause_refusal_creates_no_record() {
             _ => None,
         }).collect();
         assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0].kind, xai_grok_sampler::SamplingErrorKind::UnsupportedStopControl);
+        assert_eq!(failures[0].kind, xai_grok_sampler::SamplingErrorKind::IncompleteTurn);
         assert!(!failures[0].is_retryable);
         assert!(failures[0].message.contains("pause_turn"));
         assert!(!events.iter().any(|event| matches!(event,
