@@ -91,9 +91,10 @@ pub(crate) struct SideCallSetup {
     /// apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): carried to the AuxCall sites below so side-call egress keeps the parent's resolved wire tier.
     pub(crate) ultra_wire_effort: Option<xai_grok_sampling_types::ReasoningEffort>,
     /// The history requirement this setup captured for itself, in one place
-    /// (design r4 §4 step 8). `prepare_side_call` is the only writer and it
-    /// refuses a Selected capture, so a setup can only ever carry Inactive;
-    /// every send site passes it to
+    /// (design r4 §4 step 8). `prepare_side_call` is the only writer. It stores
+    /// the selector as send-only. A Selected entry is a neutral body at the
+    /// request builder, and production stays Inactive until the K5 cutover.
+    /// Every send site passes the entry to
     /// [`SessionActor::parent_cached_request_with_history_entry`] rather than
     /// deciding for itself. The field is private so no other module can build
     /// a setup with an entry `prepare_side_call` never approved.
@@ -122,11 +123,9 @@ impl SessionActor {
     ///
     /// Takes the call and the captured history entry as separate values. An
     /// Inactive entry delegates to [`Self::parent_cached_request`] and so sends
-    /// exactly the bytes the auxiliary route sent before native history existed;
-    /// a Selected entry refuses, because the staged natural-producer
-    /// preparation that would make an auxiliary call a real Selected send does
-    /// not exist yet (U14) and quietly submitting the parent's pin bytes would
-    /// answer a Selected decision with a request that never declared it.
+    /// exactly the bytes the auxiliary route sent before native history existed.
+    /// A Selected entry rewrites discovery items to the send-only neutral
+    /// sentence and does not write durable native history.
     pub(crate) fn parent_cached_request_with_history_entry(
         &self,
         call: AuxCall,
@@ -221,18 +220,9 @@ impl SessionActor {
             should_strip_side_call_reasoning(client.api_backend(), reasoning_effort);
         let model = binding.config.model.clone();
         // One capture per setup, from the same single production selector the
-        // turn uses. Selected is refused here rather than at each send site so
-        // all four auxiliary routes (recap, /btw, turn summary, title refresh)
-        // close the same way with no per-site decision to forget.
+        // turn uses. Selected uses the send-only neutral body at the request
+        // builder. Production stays Inactive until the K5 cutover.
         let requirement = super::switch_projection::select_native_history();
-        if matches!(
-            requirement,
-            xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
-        ) {
-            return Err(acp::Error::internal_error().data(
-                "auxiliary call refused: native history is Selected and no natural-producer preparation exists",
-            ));
-        }
         let history_entry = xai_chat_state::NativeHistoryEntry::send_only(requirement);
         Ok(SideCallSetup {
             binding,
@@ -299,11 +289,7 @@ impl SessionActor {
             },
             setup.history_entry(),
         )
-        // `prepare_side_call` refuses a Selected capture, so a setup built by
-        // any recap-style route can only carry Inactive. Panicking is the
-        // deliberate choice: the alternative is turning a Selected decision
-        // into an ordinary pin-byte send.
-        .expect("a prepared side-call setup never carries Selected")
+        .expect("an auxiliary history entry builds a request")
     }
 
     /// Invalidate in-flight recap-style side-calls when a real user prompt is accepted (at queue time or turn start).
@@ -772,7 +758,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn auxiliary_history_entry_delegates_inactive_and_refuses_selected() {
+    async fn auxiliary_history_entry_delegates_inactive_and_neutralizes_selected() {
         use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -803,17 +789,32 @@ pub(super) mod tests {
                     )
                     .expect("Inactive delegates to the existing request helper");
                 assert_eq!(format!("{inactive:?}"), format!("{legacy:?}"));
-                assert!(
-                    actor
-                        .parent_cached_request_with_history_entry(
-                            call(),
-                            &xai_chat_state::NativeHistoryEntry::send_only(
-                                NativeHistoryRequirement::Selected
-                            ),
+                let mut selected_call = call();
+                selected_call.items.push(
+                    xai_grok_sampling_types::ConversationItem::Discovery {
+                        item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(
+                            serde_json::json!({
+                                "type":"server_tool_use",
+                                "id":"srvtoolu_aux",
+                                "name":"tool_search_tool_regex",
+                                "input":{"query":"secret query"}
+                            }),
                         )
-                        .is_err(),
-                    "unfinished Selected auxiliary calls must refuse before send"
+                        .unwrap(),
+                    },
                 );
+                let selected = actor
+                    .parent_cached_request_with_history_entry(
+                        selected_call,
+                        &xai_chat_state::NativeHistoryEntry::send_only(
+                            NativeHistoryRequirement::Selected,
+                        ),
+                    )
+                    .expect("a Selected auxiliary entry builds the neutral body");
+                let rendered = serde_json::to_string(&selected.items).unwrap();
+                assert!(rendered.contains("Historical search recorded"));
+                assert!(!rendered.contains("secret query"));
+                assert!(!rendered.contains("server_tool_use"));
                 assert!(fixture.server_a.requests().is_empty());
                 assert!(fixture.server_b.requests().is_empty());
             })
