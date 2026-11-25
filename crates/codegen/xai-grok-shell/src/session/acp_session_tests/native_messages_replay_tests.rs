@@ -13263,61 +13263,6 @@ async fn u6_l2_loop_top_structured_output_retry() -> Value {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "U6.5 remaining RED only; cumulative coverage is the H6 test"]
-async fn messages_u6b_remaining_u65_proofs() {
-    tokio::task::LocalSet::new().run_until(async {
-        let mut records = Vec::new();
-        u6_arm(&mut records, "L5", u6b_monitor_protocol("completion")).await;
-        u6_arm(&mut records, "L5-no-next-turn", u6b_monitor_protocol("no-next-turn")).await;
-        u6_arm(&mut records, "L6-before-admission", u6b_monitor_protocol("drop-before-admission")).await;
-        u6_arm(&mut records, "L6-pinned", u6b_monitor_protocol("drop-held")).await;
-        u6_arm(&mut records, "L6-retained-cancel", u6b_monitor_protocol("drop-after-cancel")).await;
-        u6_arm(&mut records, "L7-user-start", u6b_monitor_protocol("user-start")).await;
-        u6_arm(&mut records, "L7-idle", u6b_monitor_protocol("idle")).await;
-        u6_arm(&mut records, "L7-cancel", u6b_monitor_protocol("cancel")).await;
-        u6_arm(&mut records, "L7-rewind", u6b_monitor_protocol("rewind")).await;
-        u6_arm(&mut records, "L8", u6b_monitor_protocol("kill")).await;
-        u6_arm(&mut records, "L11", u6b_monitor_protocol("equal")).await;
-        u6_arm(&mut records, "N-10", u6b_n10()).await;
-        u6_arm(&mut records, "L2-loop-top", u6_l2_loop_top_structured_output_retry()).await;
-        for record in &records {
-            println!("KOXD_U6_REMAINING_ARM {}", record);
-        }
-        assert!(records.iter().all(|record| record["passed"] == true), "H6_U65_REMAINING_ARM_FAILURE");
-    }).await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "U6 direct-turn fixture activity control"]
-async fn messages_u6b_direct_turn_activity_control() {
-    tokio::task::LocalSet::new().run_until(async {
-        let mut records = Vec::new();
-        u6_arm(&mut records, "U65-activity-control", async {
-        let mut fixture = u6_fixture(None, K2lgNOptions::default()).await;
-        let fx = &mut fixture.fx;
-        let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false});
-        let mut turn = u6_handoff_with_salvage(fx, None, Some(schema), None, None).await;
-        let _stop = K0Abort(turn.running.abort_handle());
-        assert!(fx.session.actor.session_turn_active.load(std::sync::atomic::Ordering::SeqCst),
-            "H6_U65_DIRECT_TURN_ACTIVITY_SET");
-        fx.server.enqueue_response("/v1/messages", k2_script(k2_frames("msg_u6b_activity", vec![
-            k2_result("srvtoolu_k2_pending", "alpha__lookup"),
-            (json!({"type":"tool_use","id":"client_u6b_activity_so","name":"StructuredOutput","input":{"answer":"complete"}}), Vec::new())
-        ], "tool_use")));
-        fx.session.releases[1].add_permits(1);
-        let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await.expect("H6_U65_ACTIVITY_OUTCOME_BOUND");
-        assert!(matches!(outcome, Ok(Ok(TurnOutcome::Completed { structured_output: Some(Ok(_)), .. }))),
-            "H6_U65_ACTIVITY_REAL_DECODER_COMPLETED");
-        assert!(!fx.session.actor.session_turn_active.load(std::sync::atomic::Ordering::SeqCst),
-            "H6_U65_DIRECT_TURN_ACTIVITY_CLEARED");
-        json!({"activity_cleared_after_real_completion":true})
-        }).await;
-        for record in &records { println!("KOXD_U6_ACTIVITY_ARM {}", record); }
-        assert!(records.iter().all(|record| record["passed"] == true), "H6_U65_ACTIVITY_CONTROL_FAILURE");
-    }).await;
-}
-
 async fn u6b_consumed_completion_dedupe() -> Value {
     const TASK: &str = "u6b-consumed-completion";
     const MONITOR: &str = "U6b consumed pinned monitor must not leak";
@@ -13378,32 +13323,6 @@ async fn u6b_pinned_producer_cap() -> Value {
         "pinned_occurrences":1,"unpinned_residents":50,"pinned_key":pinned})
 }
 
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "U6.5 real producer-cap preservation; cumulative coverage is H6"]
-async fn messages_u6b_pinned_producer_cap_preservation() {
-    tokio::task::LocalSet::new().run_until(async {
-        let mut records = Vec::new();
-        u6_arm(&mut records, "L11-pinned-producer-cap", u6b_pinned_producer_cap()).await;
-        for record in &records { println!("KOXD_U6_PRESERVATION_ARM {}", record); }
-        assert!(records.iter().all(|record| record["passed"] == true), "H6_L11_PRODUCER_CAP_PRESERVATION");
-    }).await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "R6 fixture diagnostics; no unit proof credit"]
-async fn messages_u6b_r6_fixture_diagnostics() {
-    tokio::task::LocalSet::new().run_until(async {
-        let mut records = Vec::new();
-        u6_arm(&mut records, "N-1", u6b_human_band(300, 128, "H6_N1_HUMAN_UNCAPPED")).await;
-        u6_arm(&mut records, "L5", u6b_monitor_protocol("completion")).await;
-        u6_write_proof(&records);
-        for record in &records {
-            println!("KOXD_U6_ARM {}", json!({"label":record["label"],"passed":record["passed"],"assertion":record["assertion"]}));
-        }
-        assert!(records.iter().all(|record| record["passed"] == true), "H6_R6_FIXTURE_DIAGNOSTICS");
-    }).await;
-}
-
 fn u6b_r7_watch_native_ack<T: Send + 'static>(
     received: tokio::sync::oneshot::Receiver<Result<T, k2_history::NativeUnavailable>>,
     operation: &'static str,
@@ -13445,22 +13364,6 @@ impl Drop for U6Fixture {
                 "requests":requests,"native_acknowledgements":acknowledgements}));
         });
     }
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "R7 fixture diagnostics; no unit proof credit"]
-async fn messages_u6b_r7_fixture_diagnostics() {
-    tokio::task::LocalSet::new().run_until(async {
-        let mut records = Vec::new();
-        u6_arm(&mut records, "N-1", u6b_human_band(300, 128, "H6_N1_HUMAN_UNCAPPED")).await;
-        u6_arm(&mut records, "L5", u6b_monitor_protocol("completion")).await;
-        u6_arm(&mut records, "L2-new-late-bookkeeping", u6_l2_late_bookkeeping()).await;
-        u6_write_proof(&records);
-        for record in &records {
-            println!("KOXD_U6_ARM {}", json!({"label":record["label"],"passed":record["passed"],"assertion":record["assertion"]}));
-        }
-        assert!(records.iter().all(|record| record["passed"] == true), "H6_R7_FIXTURE_DIAGNOSTICS");
-    }).await;
 }
 
 fn u6b_n12_maybe_drop_ack<T>(
