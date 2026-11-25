@@ -7907,3 +7907,311 @@ fn messages_replay_preserves_identity_and_rejects_bad_joins() {
         "native result joins are validated across the full retained body"
     );
 }
+
+fn u8_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": false
+    })
+}
+
+fn u8_bind(fixture: &mut K2MessagesFixture, tools: Vec<ToolSpec>) {
+    use k2_native::*;
+    let entries: Vec<_> = tools
+        .iter()
+        .enumerate()
+        .map(|(position, tool)| {
+            let schema_bytes: std::sync::Arc<[u8]> =
+                serde_json::to_vec(&tool.parameters).unwrap().into();
+            let digest = k2_projection::native_content_digest(&schema_bytes);
+            let (namespace, child) = tool.name.split_once("__").unwrap();
+            NativeEligibleEntry::checked(
+                position,
+                NativeNamespaceKind::Mcp,
+                namespace.into(),
+                child.into(),
+                tool.clone(),
+                schema_bytes,
+                digest,
+            )
+            .unwrap()
+        })
+        .collect();
+    let count = tools.len();
+    fixture.request.tools = tools;
+    fixture.request.native_eligible_inputs = Some(std::sync::Arc::new(
+        NativeEligibleInputs::checked(entries, count).unwrap(),
+    ));
+}
+
+fn u8_backed_fixture(children: &[&str]) -> K2MessagesFixture {
+    use k2_native::*;
+    use serde_json::json;
+    let schema = u8_schema();
+    let tools: Vec<ToolSpec> = children
+        .iter()
+        .map(|child| ToolSpec {
+            name: format!("alpha__{child}"),
+            description: Some("Exact native backing".into()),
+            parameters: schema.clone(),
+            exposure: ToolExposure::Immediate,
+        })
+        .collect();
+    let references: Vec<_> = children
+        .iter()
+        .map(|child| json!({"type": "tool_reference", "tool_name": format!("alpha__{child}")}))
+        .collect();
+    let call = json!({
+        "type": "server_tool_use",
+        "id": "srvtoolu_u8",
+        "name": "tool_search_tool_regex",
+        "input": {"query": "records"}
+    });
+    let result = json!({
+        "type": "tool_search_tool_result",
+        "tool_use_id": "srvtoolu_u8",
+        "content": {
+            "type": "tool_search_tool_search_result",
+            "tool_references": references
+        }
+    });
+    let mut fixture = k2_messages_fixture(call, result);
+    let mut blobs = fixture.blobs.clone();
+    let origin = fixture.source.producing_bindings[0].origin_ref.clone();
+    let mut snapshots = Vec::new();
+    let links: Vec<_> = children
+        .iter()
+        .enumerate()
+        .map(|(index, child)| {
+            let schema_ref = k2_put(&mut blobs, "eligible_schema", schema.clone());
+            let eligible = k2_put(
+                &mut blobs,
+                "eligible_snapshot",
+                serde_json::to_value(NativeEligibleSnapshot {
+                    version: 1,
+                    namespace_kind: NativeNamespaceKind::Mcp,
+                    qualified_namespace: "alpha".into(),
+                    child_name: (*child).into(),
+                    schema: schema_ref,
+                    binding: origin.clone(),
+                })
+                .unwrap(),
+            );
+            snapshots.push(eligible.clone());
+            let mut source = fixture.source.ordered_blocks[1].coordinates.clone();
+            source.submember = Some(index as u64);
+            NativeEligibleMemberLink {
+                source,
+                identity: NativeEligibleMemberIdentity::Backed {
+                    eligible_ref: eligible,
+                },
+            }
+        })
+        .collect();
+    fixture.source.eligible_snapshots = snapshots;
+    let reference_accounting: Vec<_> = links
+        .iter()
+        .map(|link| NativeEligibleMemberAccounting {
+            source: link.source.clone(),
+            source_digest: fixture.ledger.accounting[0].source_digest.clone(),
+        })
+        .collect();
+    fixture.identity = NativeIdentityExtension::Revision2 {
+        eligible_member_links: links.clone(),
+        eligible_member_accounting: reference_accounting.clone(),
+    };
+    let source_ref = k2_put(
+        &mut blobs,
+        "source",
+        serde_json::to_value(NativeSourceV2::from_parts(fixture.source.clone(), links)).unwrap(),
+    );
+    fixture.record.lineage.source_digest = source_ref.digest.clone();
+    fixture.record.source = source_ref.clone();
+    fixture.ledger.source_digest = source_ref.digest.clone();
+    let ledger_ref = k2_put(
+        &mut blobs,
+        "ledger",
+        serde_json::to_value(NativeLedgerV2::from_parts(
+            fixture.ledger.clone(),
+            reference_accounting,
+        ))
+        .unwrap(),
+    );
+    fixture.record.ledger = ledger_ref;
+    fixture.blobs = blobs;
+    u8_bind(&mut fixture, tools);
+    fixture
+}
+
+fn u8_lowered(fixture: &K2MessagesFixture, core: &k2_native::NativeHistoryCore) -> serde_json::Value {
+    serde_json::to_value(build_messages_request(&fixture.projected_request(core))).unwrap()
+}
+
+fn u8_tool_names(body: &serde_json::Value) -> Vec<String> {
+    body["tools"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn messages_departed_reference_invalidates_native_group() {
+    use k2_projection::NativeHistoryAction;
+    let fixture = u8_backed_fixture(&["lookup", "read"]);
+    let backed = fixture.core(true).unwrap();
+    assert_eq!(backed.decision.groups[0].action, NativeHistoryAction::Keep);
+    assert!(backed
+        .decision
+        .members
+        .iter()
+        .all(|member| member.action == NativeHistoryAction::Keep));
+    let kept = u8_lowered(&fixture, &backed);
+    assert!(
+        kept.to_string().contains("server_tool_use"),
+        "a fully backed group keeps the native blocks"
+    );
+    assert!(
+        u8_tool_names(&kept).iter().any(|name| name == "alpha__lookup")
+            && u8_tool_names(&kept).iter().any(|name| name == "alpha__read"),
+        "backed names stay the real declarations"
+    );
+
+    let mut drop_one = u8_backed_fixture(&["lookup", "read"]);
+    let lookup = drop_one.request.tools[0].clone();
+    u8_bind(&mut drop_one, vec![lookup]);
+    let demoted = drop_one.core(true).unwrap();
+    assert_eq!(demoted.decision.groups[0].action, NativeHistoryAction::F);
+    assert!(
+        demoted
+            .decision
+            .members
+            .iter()
+            .all(|member| member.action == NativeHistoryAction::F),
+        "one departed reference demotes the whole group"
+    );
+    let body = u8_lowered(&drop_one, &demoted);
+    let rendered = body.to_string();
+    assert!(!rendered.contains("server_tool_use"));
+    assert!(rendered.contains("Historical search"));
+    assert!(
+        !u8_tool_names(&body).iter().any(|name| name == "alpha__read"),
+        "the departed tool is not resurrected"
+    );
+
+    let mut drop_all = u8_backed_fixture(&["lookup", "read"]);
+    u8_bind(&mut drop_all, Vec::new());
+    let demoted = drop_all.core(true).unwrap();
+    assert!(demoted
+        .decision
+        .members
+        .iter()
+        .all(|member| member.action == NativeHistoryAction::F));
+    let body = u8_lowered(&drop_all, &demoted);
+    let names = u8_tool_names(&body);
+    assert!(names.iter().all(|name| name != "alpha__lookup" && name != "alpha__read"));
+    assert!(!body.to_string().contains("server_tool_use"));
+
+    let mut mismatched = u8_backed_fixture(&["lookup", "read"]);
+    let mut tools = mismatched.request.tools.clone();
+    tools[1].parameters = serde_json::json!({
+        "type": "object",
+        "properties": {"other": {"type": "string"}},
+        "additionalProperties": false
+    });
+    u8_bind(&mut mismatched, tools);
+    let demoted = mismatched.core(true).unwrap();
+    assert_eq!(demoted.decision.groups[0].action, NativeHistoryAction::F);
+    assert!(demoted
+        .decision
+        .members
+        .iter()
+        .all(|member| member.action == NativeHistoryAction::F));
+    let body = u8_lowered(&mismatched, &demoted);
+    assert!(!body.to_string().contains("server_tool_use"));
+
+    let empty = u8_backed_fixture(&[]);
+    let kept = empty.core(true).unwrap();
+    assert_eq!(kept.decision.groups[0].action, NativeHistoryAction::Keep);
+    let body = u8_lowered(&empty, &kept);
+    let blocks = k2_native_blocks(&body);
+    assert_eq!(blocks.len(), 2);
+    assert!(
+        blocks[1]["content"]["tool_references"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "an empty result does not gain a synthetic reference"
+    );
+}
+
+#[test]
+fn messages_native_replay_preserves_client_and_cache_checks() {
+    let fixture = u8_backed_fixture(&["lookup", "read"]);
+    let mut paired = ConversationItem::assistant("checking the records");
+    if let ConversationItem::Assistant(assistant) = &mut paired {
+        assistant.tool_calls.push(ToolCall {
+            id: "client_ok".into(),
+            name: "alpha__lookup".into(),
+            arguments: "{\"query\":\"records\"}".into(),
+        });
+    }
+    let mut orphan = ConversationItem::assistant("");
+    if let ConversationItem::Assistant(assistant) = &mut orphan {
+        assistant.tool_calls.push(ToolCall {
+            id: "client_orphan".into(),
+            name: "alpha__read".into(),
+            arguments: "{\"query\":\"missing\"}".into(),
+        });
+    }
+    let mut request = fixture.request.clone();
+    request.items = vec![
+        ConversationItem::user("Find records"),
+        paired,
+        ConversationItem::tool_result("client_ok", "records found"),
+        orphan,
+        fixture.request.items[1].clone(),
+        fixture.request.items[3].clone(),
+        ConversationItem::user("Continue"),
+    ];
+    request.tool_cache_breakpoint = Some(ToolCacheBreakpoint::Last);
+    request.native_history = Some(crate::request_validation::NativeHistoryRequest::new(
+        fixture.context(),
+        None,
+    ));
+    let body = serde_json::to_value(build_messages_request(&request)).unwrap();
+    let rendered = body.to_string();
+    assert!(rendered.contains("client_ok"));
+    assert!(!rendered.contains("client_orphan"));
+    assert!(rendered.contains("server_tool_use"));
+    for message in body["messages"].as_array().unwrap() {
+        for part in message["content"].as_array().unwrap() {
+            if matches!(
+                part["type"].as_str(),
+                Some("server_tool_use" | "tool_search_tool_result")
+            ) {
+                assert!(
+                    part.get("cache_control").is_none(),
+                    "a native server block carries no cache marker"
+                );
+            }
+        }
+    }
+    let tools = body["tools"].as_array().unwrap();
+    let marked = tools
+        .iter()
+        .position(|tool| tool.get("cache_control").is_some())
+        .expect("the last static client tool carries the cache marker");
+    assert_eq!(tools[marked]["name"], "alpha__read");
+    assert!(tools
+        .iter()
+        .skip(marked + 1)
+        .all(|tool| tool.get("cache_control").is_none()));
+    assert!(tools
+        .iter()
+        .skip(marked + 1)
+        .any(|tool| tool["name"] == "DeferredToolPlaceholder"));
+}
