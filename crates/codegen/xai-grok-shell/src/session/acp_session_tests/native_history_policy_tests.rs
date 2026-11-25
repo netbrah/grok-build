@@ -14416,3 +14416,278 @@ async fn nj22e_inactive_structured_output_snapshot_retained_pin_identical() {
         .run_until(nj22e_structured_output_disk(Nj22eRoute::Inactive))
         .await;
 }
+
+fn k3q_plain_end(marker: &str) -> Vec<Value> {
+    vec![
+        json!({"type":"message_start","message":{"id":format!("msg_{marker}"),"type":"message","role":"assistant","model":"u5a","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":format!("{marker} reply")}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":11,"output_tokens":2}}),
+        json!({"type":"message_stop"}),
+    ]
+}
+
+fn k3q_server_call_frames(id: &str, with_result: bool) -> Vec<Value> {
+    let mut frames = vec![
+        json!({"type":"message_start","message":{"id":format!("msg_{id}"),"type":"message","role":"assistant","model":"u5a","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":id,"name":"tool_search_tool_regex","input":{}}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"k3q\"}"}}),
+        json!({"type":"content_block_stop","index":0}),
+    ];
+    let text_index = if with_result {
+        frames.push(json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_search_tool_result","tool_use_id":id,"content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"alpha__lookup"}]}}}));
+        frames.push(json!({"type":"content_block_stop","index":1}));
+        2
+    } else {
+        1
+    };
+    frames.push(json!({"type":"content_block_start","index":text_index,"content_block":{"type":"text","text":"kept assistant text"}}));
+    frames.push(json!({"type":"content_block_stop","index":text_index}));
+    frames.push(json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":11,"output_tokens":4}}));
+    frames.push(json!({"type":"message_stop"}));
+    frames
+}
+
+async fn k3q_seed_server_call(server: &MockInferenceServer, frames: Vec<Value>, prompt: &str) -> U5aPrimarySession {
+    server.enqueue_response("/v1/messages", native_history_script(frames));
+    let mut session = U5aPrimarySession::new(server).await;
+    session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user(prompt))
+        .await;
+    let actor = session.actor.clone();
+    let running = tokio::task::spawn_local(async move {
+        actor
+            .process_conversation_turn_with_recovery(
+                "k3q-seed",
+                None,
+                None,
+                None,
+                &mut length_salvage::LengthSalvage::new(None),
+                &mut Default::default(),
+            )
+            .await
+    });
+    tokio::time::timeout(NATIVE_TIMEOUT, session.source_acks.recv())
+        .await
+        .expect("k3q seed source acknowledgement")
+        .expect("k3q seed source channel");
+    session.release_decision.add_permits(1);
+    let outcome = tokio::time::timeout(NATIVE_TIMEOUT, running)
+        .await
+        .expect("k3q seed turn")
+        .expect("k3q seed task")
+        .expect("k3q seed result");
+    assert!(
+        matches!(outcome, TurnOutcome::Completed { .. }),
+        "k3q seed must accept the scripted end_turn ({})",
+        k3q_turn_label(&outcome)
+    );
+    session
+}
+
+fn k3q_turn_label(outcome: &TurnOutcome) -> &'static str {
+    match outcome {
+        TurnOutcome::Completed { .. } => "completed",
+        TurnOutcome::Cancelled { .. } => "cancelled",
+        TurnOutcome::MaxTurnsReached { .. } => "max-turns",
+        TurnOutcome::StationarityEnded => "stationarity",
+    }
+}
+
+async fn k3q_selected_next_body(
+    session: &U5aPrimarySession,
+    server: &MockInferenceServer,
+    req_id: &str,
+    user_text: &str,
+) -> Result<Value, acp::Error> {
+    let before = server.messages_request_count();
+    server.enqueue_response("/v1/messages", native_history_script(k3q_plain_end(req_id)));
+    session.release_decision.add_permits(1);
+    session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user(user_text))
+        .await;
+    session
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (respond_to, flushed) = tokio::sync::oneshot::channel();
+    session
+        .chat_proxy
+        .send(PersistenceMsg::FlushAndAck { respond_to })
+        .unwrap();
+    tokio::time::timeout(NATIVE_TIMEOUT, flushed)
+        .await
+        .expect("k3q flush")
+        .expect("k3q flush channel")
+        .expect("k3q flush result");
+    let domain = xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain {
+        backend: xai_grok_sampling_types::ApiBackend::Messages,
+        dialect: xai_grok_sampling_types::conversation::native_search_history::NativeReplayDialect::Messages,
+        model: "u5a".into(),
+        row: "u5a".into(),
+        provider: "offline".into(),
+        deployment: "loopback".into(),
+        deployment_revision: "1".into(),
+        endpoint: format!("{}/messages", server.url()),
+        principal: "nonsecret-fixture".into(),
+    };
+    let captured = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = captured.clone();
+    let actor = session.actor.clone();
+    let req = req_id.to_string();
+    let outcome = tokio::time::timeout(
+        NATIVE_TIMEOUT,
+        super::switch_projection::HISTORY_S3_TEST_DOMAIN.scope(
+            domain,
+            super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected,
+                async move {
+                    let mut prepare = |request: &mut xai_grok_sampling_types::ConversationRequest,
+                                       _: &xai_chat_state::RequestTransportBinding| {
+                        *slot.borrow_mut() = Some(request.clone());
+                        Ok(())
+                    };
+                    actor
+                        .process_conversation_turn_for_native_history_test(
+                            &req,
+                            None,
+                            None,
+                            None,
+                            &mut length_salvage::LengthSalvage::new(None),
+                            &mut Default::default(),
+                            &mut prepare,
+                        )
+                        .await
+                },
+            ),
+        ),
+    )
+    .await
+    .expect("k3q selected turn timed out");
+    session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let outcome = outcome?;
+    assert!(
+        matches!(outcome, TurnOutcome::Completed { .. }),
+        "k3q selected next turn must send ({})",
+        k3q_turn_label(&outcome)
+    );
+    assert_eq!(server.messages_request_count(), before + 1);
+    let request = captured
+        .borrow()
+        .clone()
+        .expect("k3q selected send captured the finalized request");
+    let encoded = request
+        .encoded
+        .as_ref()
+        .expect("k3q selected send has the final carrier bytes");
+    let body: Value = serde_json::from_slice(encoded.as_bytes()).unwrap();
+    assert_eq!(
+        server.request_bodies().last().expect("k3q http body"),
+        &body,
+        "the mock server's last body is the checked final carrier"
+    );
+    Ok(body)
+}
+
+pub(crate) async fn k3q_leftover_pending_projected_out() {
+    let abandoned_id = "srvtoolu_k3q_abandoned";
+    let server = MockInferenceServer::start().await.unwrap();
+    let session = k3q_seed_server_call(
+        &server,
+        k3q_server_call_frames(abandoned_id, false),
+        "seed an abandoned server call",
+    )
+    .await;
+    let (_, source_before, _, ledger_before) = u5a_disk_parts(&session);
+    let groups = ledger_before["groups"].as_array().expect("k3q groups");
+    assert!(
+        groups.iter().any(|group| group["state"] == "AbandonedPending"),
+        "unmatched end_turn server call is abandoned, groups={groups:?}"
+    );
+    assert!(
+        source_before.to_string().contains(abandoned_id),
+        "abandoned source retains the server call"
+    );
+    assert!(
+        !ledger_before["lifecycle"]["terminal"]
+            .as_object()
+            .expect("k3q terminal map")
+            .is_empty(),
+        "abandoned seed records terminal metadata"
+    );
+    let abandoned = k3q_selected_next_body(
+        &session,
+        &server,
+        "k3q-abandoned-next",
+        "fresh k3q input after abandonment",
+    )
+    .await
+    .expect("abandoned next send");
+    let abandoned_text = abandoned.to_string();
+    assert!(
+        !abandoned_text.contains(abandoned_id),
+        "actual next body omits the abandoned pending member: {abandoned_text}"
+    );
+    assert!(
+        !abandoned_text.contains("Historical search"),
+        "omission does not fabricate a historical stand-in: {abandoned_text}"
+    );
+    assert!(abandoned_text.contains("kept assistant text"));
+    assert!(abandoned_text.contains("fresh k3q input after abandonment"));
+    let (_, source_after, _, ledger_after) = u5a_disk_parts(&session);
+    assert_eq!(
+        source_before["responses"][0], source_after["responses"][0],
+        "send-only omission leaves the sealed source response unchanged"
+    );
+    assert!(source_after.to_string().contains(abandoned_id));
+    assert!(
+        ledger_after["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|group| group["state"] == "AbandonedPending"),
+        "terminal abandoned state is not reopened by the next send"
+    );
+    drop(session);
+
+    let completed_id = "srvtoolu_k3q_completed";
+    let completed_server = MockInferenceServer::start().await.unwrap();
+    let completed_session = k3q_seed_server_call(
+        &completed_server,
+        k3q_server_call_frames(completed_id, true),
+        "seed a completed server call",
+    )
+    .await;
+    let (_, _, _, completed_ledger) = u5a_disk_parts(&completed_session);
+    let completed_groups = completed_ledger["groups"].as_array().expect("k3q completed groups");
+    assert!(
+        completed_groups.iter().any(|group| group["state"] == "Completed"),
+        "a matched result is no longer abandoned, groups={completed_groups:?}"
+    );
+    assert!(
+        !completed_groups.iter().any(|group| group["state"] == "AbandonedPending"),
+        "completed seed has no abandoned group"
+    );
+    let completed = k3q_selected_next_body(
+        &completed_session,
+        &completed_server,
+        "k3q-completed-next",
+        "fresh k3q input after completion",
+    )
+    .await
+    .expect("completed next send");
+    let completed_text = completed.to_string();
+    assert!(
+        completed_text.contains(completed_id) || completed_text.contains("Historical search"),
+        "once the member is no longer abandoned the next body still represents it: {completed_text}"
+    );
+    assert!(completed_text.contains("fresh k3q input after completion"));
+}

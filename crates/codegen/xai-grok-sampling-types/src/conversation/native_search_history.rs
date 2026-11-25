@@ -513,8 +513,10 @@ pub fn native_pending_context(
             messages: vec![serde_json::json!({"role": "user", "content": parts})],
             client_outputs: Vec::new(),
         }
-    } else {
+    } else if tail.is_empty() {
         NativeNextInput::None
+    } else {
+        NativeNextInput::Fresh
     };
     let live_binding = source
         .producing_bindings
@@ -8024,8 +8026,8 @@ mod tests {
         let context =
             native_pending_context(&source, &ledger, &[ConversationItem::user("fresh input")]);
         assert!(
-            matches!(context.next, NativeNextInput::None),
-            "P T case 3 fresh-only input never produces Fresh"
+            matches!(context.next, NativeNextInput::Fresh),
+            "P T case 3 fresh user input is Fresh"
         );
         assert!(
             context.live_binding.is_none(),
@@ -8071,8 +8073,8 @@ mod tests {
             "P T case 6 live binding requires a results tail"
         );
         assert!(
-            matches!(context.next, NativeNextInput::None),
-            "P T case 6 no trailing results"
+            matches!(context.next, NativeNextInput::Fresh),
+            "P T case 6 a non-result tail is Fresh"
         );
         source.producing_bindings.clear();
         let context = native_pending_context(&source, &ledger, &[]);

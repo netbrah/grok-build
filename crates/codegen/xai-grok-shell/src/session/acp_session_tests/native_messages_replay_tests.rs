@@ -18195,3 +18195,10 @@ async fn messages_latch_only_teardown_with_nonentry_skill_retains_native_prefix(
         i7yx_output_diagnostic(I7yxChildRoute::NativeN, &output));
     assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_leftover_pending_is_projected_out() {
+    tokio::task::LocalSet::new()
+        .run_until(super::native_history_policy_tests::k3q_leftover_pending_projected_out())
+        .await;
+}
