@@ -14942,8 +14942,8 @@ async fn native_history_ordered_checkpoint_emits_each_block_once() {
     }
     assert_eq!(
         super::switch_projection::select_native_history(),
-        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive,
-        "ordered fidelity does not switch native search on"
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected,
+        "ordered fidelity keeps the production selector that K5 switched on"
     );
     }).await;
 }
@@ -14953,12 +14953,12 @@ async fn native_history_actual_outgoing_bytes_require_plan() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
         super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
-        NativeHistoryRequirement::Inactive
+        NativeHistoryRequirement::Selected
     );
     assert_eq!(
         super::switch_projection::select_native_history(),
-        NativeHistoryRequirement::Inactive,
-        "a fresh production request does not select native search"
+        NativeHistoryRequirement::Selected,
+        "a fresh production request selects native search"
     );
     let inactive = xai_chat_state::NativeHistoryEntry::send_only(NativeHistoryRequirement::Inactive);
     assert!(super::switch_projection::native_history_inactive_adapter(&inactive, None).is_ok());
@@ -14974,7 +14974,7 @@ async fn native_history_pending_input_and_compaction_respect_lifecycle() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
         super::switch_projection::select_native_history(),
-        NativeHistoryRequirement::Inactive
+        NativeHistoryRequirement::Selected
     );
     tokio::task::LocalSet::new()
         .run_until(k3q_pre_loss_compaction_and_backing())
@@ -15007,11 +15007,17 @@ fn native_history_paused_a_binding_and_fresh_b_policy() {
                 true,
             )
             .await;
-            let outcome = super::length_salvage_tests::run_prompt(&actor, "pause-w14").await;
+            let outcome = super::switch_projection::HISTORY_S3_TEST_REQUIREMENT
+                .scope(
+                    NativeHistoryRequirement::Inactive,
+                    super::length_salvage_tests::run_prompt(&actor, "pause-w14"),
+                )
+                .await;
             let err = outcome.expect_err("a paused turn ends as the typed incomplete result");
             assert_eq!(
                 crate::sampling::error::error_kind_from_error(&err),
-                Some(xai_grok_sampler::SamplingErrorKind::IncompleteTurn)
+                Some(xai_grok_sampler::SamplingErrorKind::IncompleteTurn),
+                "pause error was {err}"
             );
             assert!(format!("{err}").contains("pause_turn"));
             assert_eq!(server.messages_request_count(), 1);
@@ -15019,8 +15025,8 @@ fn native_history_paused_a_binding_and_fresh_b_policy() {
             assert!(body.contains("write out the numbers"));
             assert_eq!(
                 super::switch_projection::select_native_history(),
-                NativeHistoryRequirement::Inactive,
-                "the pause result does not switch native search on"
+                NativeHistoryRequirement::Selected,
+                "the pause result keeps the production selector that K5 switched on"
             );
         });
     });
@@ -15099,12 +15105,12 @@ async fn native_history_u9_u10_all_send_stays_inactive() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
         super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
-        NativeHistoryRequirement::Inactive,
-        "S5-H all-send acceptance does not switch native search on"
+        NativeHistoryRequirement::Selected,
+        "K5 switches native search on"
     );
     assert_eq!(
         super::switch_projection::select_native_history(),
-        NativeHistoryRequirement::Inactive
+        NativeHistoryRequirement::Selected
     );
     auxiliary_neutral_f_body().await;
     tokio::task::LocalSet::new().run_until(async {
@@ -15123,7 +15129,111 @@ async fn native_history_u9_u10_all_send_stays_inactive() {
     }).await;
     assert_eq!(
         super::switch_projection::select_native_history(),
-        NativeHistoryRequirement::Inactive,
-        "leaving the test scope restores the inactive production mode"
+        NativeHistoryRequirement::Selected,
+        "leaving the test scope restores the selected production mode"
     );
+}
+
+#[test]
+fn native_history_production_selected_requires_valid_plan() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    assert_eq!(
+        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        NativeHistoryRequirement::Selected,
+        "K5 switches native search on"
+    );
+    assert_eq!(
+        super::switch_projection::select_native_history(),
+        NativeHistoryRequirement::Selected
+    );
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("planned answer"),
+            );
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("refused plan must not send"),
+            );
+            let session = NativeHistorySession::new(&server).await;
+            let actor = session.actor.clone();
+            actor
+                .chat_state_handle
+                .push_user_message_and_ack(ConversationItem::user("production plan prompt"))
+                .await;
+            actor
+                .session_turn_active
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let planned = std::rc::Rc::new(std::cell::RefCell::new(Vec::<u8>::new()));
+            let record = planned.clone();
+            let mut prepare = move |request: &mut ConversationRequest, _: &xai_chat_state::RequestTransportBinding| {
+                let native = request.native_history.as_ref().expect("production Selected attaches a plan");
+                assert!(native.plan().is_some(), "the production path built a replay plan");
+                let bytes = request.encoded.as_ref().expect("finalized carrier").as_bytes().to_vec();
+                assert!(
+                    String::from_utf8_lossy(&bytes).contains("production plan prompt"),
+                    "the plan body is the outgoing history"
+                );
+                *record.borrow_mut() = bytes;
+                Ok(())
+            };
+            let mut salvage = super::length_salvage::LengthSalvage::new(None);
+            let mut sampling = Default::default();
+            let valid = actor
+                .process_conversation_turn_for_native_history_test(
+                    "k5-valid-plan",
+                    None,
+                    None,
+                    None,
+                    &mut salvage,
+                    &mut sampling,
+                    &mut prepare,
+                )
+                .await;
+            if let Err(err) = &valid {
+                panic!("a valid plan is what gets sent: {err}");
+            }
+            assert_eq!(server.messages_request_count(), 1);
+            let sent = server.request_bodies();
+            let planned_value: serde_json::Value =
+                serde_json::from_slice(&planned.borrow()).expect("plan carrier is json");
+            assert_eq!(
+                sent[0], planned_value,
+                "the sent body is the plan carrier, not a pin fallback"
+            );
+            actor
+                .chat_state_handle
+                .push_user_message_and_ack(ConversationItem::user("missing plan prompt"))
+                .await;
+            let mut refuse = |request: &mut ConversationRequest, _: &xai_chat_state::RequestTransportBinding| {
+                assert!(request.native_history.as_ref().unwrap().plan().is_some());
+                request.native_history.as_mut().unwrap().invalidate_plan();
+                Ok(())
+            };
+            let missing = actor
+                .process_conversation_turn_for_native_history_test(
+                    "k5-missing-plan",
+                    None,
+                    None,
+                    None,
+                    &mut salvage,
+                    &mut sampling,
+                    &mut refuse,
+                )
+                .await;
+            assert!(missing.is_err(), "a missing plan refuses");
+            assert_eq!(
+                server.messages_request_count(),
+                1,
+                "a missing plan does not send and does not fall back to the pin body"
+            );
+            actor
+                .session_turn_active
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    });
 }
