@@ -4938,7 +4938,7 @@ async fn k2lg_v_drive(case: &'static str) -> K2U5Handoff {
             .any(|group| group.state == "LivePending" && group.origin_ref == origin.origin_ref)
     );
     assert_eq!(server.messages_request_count(), 2);
-    if case == "W1" {
+    let w1_commands = if case == "W1" {
         let commands = k2lg_start_command_loop(&mut session);
         commands
             .send(SessionCommand::Interject {
@@ -4954,7 +4954,10 @@ async fn k2lg_v_drive(case: &'static str) -> K2U5Handoff {
         })
         .await
         .unwrap();
-    }
+        Some(commands)
+    } else {
+        None
+    };
     let mut defensive_failures = Vec::new();
     let mut defensive_delta = 0;
     let mut held = matches!(case, "live-defensive" | "W3" | "W1").then(|| {
@@ -5012,6 +5015,7 @@ async fn k2lg_v_drive(case: &'static str) -> K2U5Handoff {
             assert!(matches!(tokio::time::timeout(K0_TIMEOUT, &mut running).await.unwrap(),
                 Err(error) if error.is_cancelled()), "W1_REQUALIFIED_CONTROLLED_STOP");
             expectation.release();
+            drop(w1_commands);
             session.actor.session_turn_active.store(false, std::sync::atomic::Ordering::SeqCst);
             println!("K2LG_V {}", json!({"route":"V2","case":"W1","window":"W1",
                 "status":"OBSERVED_REQUALIFIED","time_bound":"accepted capture through continuation HTTP while exchange open",
@@ -5497,6 +5501,7 @@ struct K2lgNOptions {
 struct K2lgNPersistence {
     inner: crate::session::chat_persistence::ChannelChatPersistence,
     log: K2lgNLog,
+    n12_drop_next_native_ack: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl xai_chat_state::ChatPersistence for K2lgNPersistence {
@@ -5543,7 +5548,11 @@ impl xai_chat_state::ChatPersistence for K2lgNPersistence {
     ) -> tokio::sync::oneshot::Receiver<
         Result<xai_chat_state::persistence::native::NativeRead, k2_history::NativeUnavailable>,
     > {
-        xai_chat_state::ChatPersistence::read_native_history(&mut self.inner)
+        u6b_r7_watch_native_ack(
+            xai_chat_state::ChatPersistence::read_native_history(&mut self.inner),
+            "read",
+            self.log.clone(),
+        )
     }
     fn persist_native_generation_and_ack(
         &mut self,
@@ -5555,7 +5564,10 @@ impl xai_chat_state::ChatPersistence for K2lgNPersistence {
             .lock()
             .unwrap()
             .push(("native".into(), json!("generation")));
-        xai_chat_state::ChatPersistence::persist_native_generation_and_ack(&mut self.inner, write)
+        u6b_n12_maybe_drop_ack(
+            xai_chat_state::ChatPersistence::persist_native_generation_and_ack(&mut self.inner, write),
+            &self.n12_drop_next_native_ack, &self.log, "generation",
+        )
     }
     fn persist_native_projection_and_ack(
         &mut self,
@@ -5567,7 +5579,14 @@ impl xai_chat_state::ChatPersistence for K2lgNPersistence {
             .lock()
             .unwrap()
             .push(("native".into(), json!("projection")));
-        xai_chat_state::ChatPersistence::persist_native_projection_and_ack(&mut self.inner, write)
+        u6b_r7_watch_native_ack(
+            u6b_n12_maybe_drop_ack(
+                xai_chat_state::ChatPersistence::persist_native_projection_and_ack(&mut self.inner, write),
+                &self.n12_drop_next_native_ack, &self.log, "projection",
+            ),
+            "projection",
+            self.log.clone(),
+        )
     }
     fn persist_native_checkpoint_and_ack(
         &mut self,
@@ -5580,10 +5599,11 @@ impl xai_chat_state::ChatPersistence for K2lgNPersistence {
             .lock()
             .unwrap()
             .push(("native".into(), json!("checkpoint")));
-        xai_chat_state::ChatPersistence::persist_native_checkpoint_and_ack(
-            &mut self.inner,
-            write,
-            pending,
+        u6b_n12_maybe_drop_ack(
+            xai_chat_state::ChatPersistence::persist_native_checkpoint_and_ack(
+                &mut self.inner, write, pending,
+            ),
+            &self.n12_drop_next_native_ack, &self.log, "checkpoint",
         )
     }
 }
@@ -5761,6 +5781,7 @@ async fn k2lg_n_session(
                 persistence.tx.clone(),
             ),
             log: log.clone(),
+            n12_drop_next_native_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }),
         chat_event_tx,
         chat_token.clone(),
@@ -6143,12 +6164,30 @@ fn k2lg_n_native_persists(ops: &[(String, Value)]) -> usize {
 }
 
 fn k2lg_n_bodies(server: &MockInferenceServer) -> Vec<Value> {
-    server
+    let bodies: Vec<Value> = server
         .requests()
         .into_iter()
         .filter(|request| request.path == "/v1/messages")
         .filter_map(|request| request.body)
-        .collect()
+        .collect();
+    let _ = U6_ARM_OBSERVATIONS.try_with(|observations| {
+        observations.borrow_mut().push(json!({
+            "stage": "request traffic summary",
+            "requests": bodies.iter().map(|body| {
+                let encoded = serde_json::to_string(body).unwrap();
+                json!({
+                    "roles": body["messages"].as_array().map(|messages| messages.iter().map(|message| message["role"].clone()).collect::<Vec<_>>()),
+                    "tools": body["tools"].as_array().map(Vec::len),
+                    "tool_names": body["tools"].as_array().map(|tools| tools.iter().map(|tool| tool.get("name").cloned()).collect::<Vec<_>>()),
+                    "bytes": encoded.len(),
+                    "has_native_pending": encoded.contains("srvtoolu_k2_pending"),
+                    "has_notification": encoded.contains("U6b independent completion notification"),
+                    "has_monitor": encoded.contains("U6b lifecycle equal monitor payload"),
+                })
+            }).collect::<Vec<_>>()
+        }));
+    });
+    bodies
 }
 
 fn k2lg_n_text_count(body: &Value, native_body: &str) -> usize {
@@ -7638,6 +7677,8 @@ struct U6PersistenceControl {
     announcement_updates: Arc<std::sync::atomic::AtomicUsize>,
     plan_updates: Arc<std::sync::atomic::AtomicUsize>,
     plan_tools: bool,
+    idle_observer: Option<std::rc::Rc<K0IdleObserver>>,
+    n12_drop_next_native_ack: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct U6Fixture {
@@ -7659,10 +7700,14 @@ async fn u6_install_running(
         state.running_task.as_ref().unwrap().identity.clone()
     };
     *fx.session.actor.current_prompt_id.lock().unwrap() = Some(KOXD_U6_PROMPT.into());
-    fx.session
-        .actor
-        .session_turn_active
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    if !fx.session.actor.session_turn_active.load(std::sync::atomic::Ordering::SeqCst) {
+        let guard = super::turn_task::TurnActiveGuard::activate(Some(&fx.session.actor.session_turn_active));
+        fx.session.tasks.push(tokio::task::spawn_local(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        }));
+        u6_observe(json!({"stage":"R7 fixture-owned manual turn guard","active":true}));
+    }
     if let Some(command_rx) = fx.loop_rx.take() {
         let (chat_tx, chat_rx) = tokio::sync::mpsc::unbounded_channel();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -7785,7 +7830,12 @@ async fn u6_session(
     control: &U6PersistenceControl,
     image: Option<Arc<str>>,
 ) -> K2ReplaySession {
-    let directory = tempfile::tempdir().unwrap();
+    let idle_observer = control.idle_observer.clone();
+    let title_home = crate::util::grok_home::grok_home();
+    assert!(title_home.starts_with(std::env::temp_dir()), "H6_R7_PRIVATE_TITLE_HOME");
+    let title_cwd = title_home.to_string_lossy().into_owned();
+    let session_parent = crate::util::grok_home::ensure_sessions_cwd_dir_in(&title_home, &title_cwd).unwrap();
+    let directory = tempfile::Builder::new().prefix("k2lg-n-").tempdir_in(session_parent).unwrap();
     let config = xai_grok_sampler::SamplerConfig {
         base_url: server.url(),
         model: "k2-replay".into(),
@@ -7796,25 +7846,33 @@ async fn u6_session(
         ..Default::default()
     };
     let info = crate::session::info::Info {
-        id: acp::SessionId::new(format!(
-            "k2lg-n-{}",
-            directory.path().file_name().unwrap().to_string_lossy()
-        )),
-        cwd: directory.path().to_string_lossy().into_owned(),
+        id: acp::SessionId::new(directory.path().file_name().unwrap().to_string_lossy().into_owned()),
+        cwd: title_cwd,
     };
-    let persistence = crate::session::persistence::new_with_explicit_dir(
-        &info,
-        directory.path().to_path_buf(),
-        acp::ModelId::new("k2-replay"),
-        xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(),
-        "k2-replay".into(),
-        crate::session::persistence::ExplicitSessionOpen::New {
-            identity: None,
-            next_trace_turn: None,
-        },
-    )
-    .await
-    .unwrap();
+    let persistence = {
+        let initial = crate::session::persistence::new_with_explicit_dir(
+            &info, directory.path().to_path_buf(), acp::ModelId::new("k2-replay"),
+            xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(), "k2-replay".into(),
+            crate::session::persistence::ExplicitSessionOpen::New { identity: None, next_trace_turn: None },
+        ).await.unwrap();
+        const TITLE: &str = "U6b already generated fixture session title";
+        initial.tx.send(PersistenceMsg::GeneratedTitle(TITLE.into())).unwrap();
+        let (respond_to, persisted) = tokio::sync::oneshot::channel();
+        initial.tx.send(PersistenceMsg::FlushAndAck { respond_to }).unwrap();
+        tokio::time::timeout(K0_TIMEOUT, persisted).await.unwrap().unwrap().unwrap();
+        drop(initial);
+        let (loaded, handle) = crate::session::persistence::load_light(
+            &info, None, false, crate::session::persistence::SessionDeps {
+                sampling_client: xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(),
+                storage_mode: crate::config::StorageMode::Local, auth_manager: None, relay_sync: None, gateway: None,
+                session_summary_model: "k2-replay".into(), registry_title_sync: None,
+                search_index: crate::session::storage::search::SharedSearchIndex::never_indexed(), session_kind: None,
+            },
+        ).await.unwrap();
+        assert_eq!(loaded.summary.generated_title.as_deref(), Some(TITLE), "H6_R7_REAL_TITLED_RESUME");
+        u6_observe(json!({"stage":"R7 title fixture state","loaded_title":true,"real_load_surface":"persistence::load_light"}));
+        handle
+    };
     let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
     let cleanup_control = control.clone();
     let gateway = tokio::task::spawn_local(async move {
@@ -7909,6 +7967,7 @@ async fn u6_session(
                 persistence_tx.clone(),
             ),
             log: log.clone(),
+            n12_drop_next_native_ack: control.n12_drop_next_native_ack.clone(),
         }),
         chat_event_tx,
         chat_token.clone(),
@@ -8041,6 +8100,13 @@ async fn u6_session(
         },
         sampler_tx,
     );
+    actor.turn_summary_enabled = false;
+    actor.title_refresh_enabled = false;
+    if let Some(idle) = idle_observer.as_ref() {
+        let mut extensions = xai_agent_lifecycle::LocalExtensionRegistryBuilder::default();
+        extensions.session_lifecycle_contributor(idle.clone());
+        actor.extension_registry = extensions.build();
+    }
     let actor = Arc::new(actor);
     let drainer = actor.clone();
     let (source_tx, source_acks) = tokio::sync::mpsc::unbounded_channel();
@@ -8179,7 +8245,10 @@ async fn u6_handoff_with_salvage(
     let actor = fx.session.actor.clone();
     let domain = fx.session.domain(&fx.server);
     let observations = U6_ARM_OBSERVATIONS.with(Clone::clone);
+    let session_turn_active_guard =
+        super::turn_task::TurnActiveGuard::activate(Some(&actor.session_turn_active));
     let mut running = tokio::task::spawn_local(async move {
+        let _session_turn_active_guard = session_turn_active_guard;
         let mut prepare =
             move |request: &mut ConversationRequest,
                   binding: &xai_chat_state::RequestTransportBinding| {
@@ -8210,9 +8279,21 @@ async fn u6_handoff_with_salvage(
                 ),
             ),
         );
-        U6_ARM_OBSERVATIONS.scope(observations, U6SteppedTurn {
-            future: Box::pin(future),
-            stepper,
+        U6_ARM_OBSERVATIONS.scope(observations, async {
+            let outcome = U6SteppedTurn {
+                future: Box::pin(future),
+                stepper,
+            }.await;
+            if let Err(error) = &outcome {
+                u6_observe(json!({
+                    "stage": "direct turn error outcome",
+                    "error_code": error.data.as_ref().and_then(|data| data.get("code")).and_then(Value::as_str),
+                    "data_keys": error.data.as_ref().and_then(Value::as_object).map(|data| data.keys().cloned().collect::<Vec<_>>()),
+                    "message_digest": native_content_digest(error.message.as_bytes()),
+                    "local_message_digest": error.data.as_ref().and_then(|data| data.get("message")).and_then(Value::as_str).map(|message| native_content_digest(message.as_bytes())),
+                }));
+            }
+            outcome
         }).await
     });
     let (epoch, identity) = u6_install_running(fx, running.abort_handle()).await;
@@ -8460,7 +8541,9 @@ where
         captured_panics.lock().unwrap().push(json!({
             "file":info.location().map(|location| location.file()),
             "line":info.location().map(|location| location.line()),
-            "message_digest":native_content_digest(text.as_bytes())}));
+            "message_digest":native_content_digest(text.as_bytes()),
+            "left_u64":text.lines().find_map(|line| line.trim().strip_prefix("left: ").and_then(|value| value.parse::<u64>().ok())),
+            "right_u64":text.lines().find_map(|line| line.trim().strip_prefix("right: ").and_then(|value| value.parse::<u64>().ok()))}));
     }));
     let steppers = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let result = U6_ARM_OBSERVATIONS
@@ -8570,15 +8653,33 @@ async fn messages_pending_holds_harness_user_content() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut records = Vec::new();
+            u6_arm(&mut records, "L5", u6b_monitor_protocol("completion")).await;
+            u6_arm(&mut records, "L5-no-next-turn", u6b_monitor_protocol("no-next-turn")).await;
+            u6_arm(&mut records, "L6-before-admission", u6b_monitor_protocol("drop-before-admission")).await;
+            u6_arm(&mut records, "L6-pinned", u6b_monitor_protocol("drop-held")).await;
+            u6_arm(&mut records, "L6-retained-cancel", u6b_monitor_protocol("drop-after-cancel")).await;
+            u6_arm(&mut records, "L7-user-start", u6b_monitor_protocol("user-start")).await;
+            u6_arm(&mut records, "L7-consumed-completion", u6b_consumed_completion_dedupe()).await;
+            u6_arm(&mut records, "L7-idle", u6b_monitor_protocol("idle")).await;
+            u6_arm(&mut records, "L7-cancel", u6b_monitor_protocol("cancel")).await;
+            u6_arm(&mut records, "L7-rewind", u6b_monitor_protocol("rewind")).await;
+            u6_arm(&mut records, "L8", u6b_monitor_protocol("kill")).await;
+            u6_arm(&mut records, "L11", u6b_monitor_protocol("equal")).await;
+            u6_arm(&mut records, "L11-pinned-producer-cap", u6b_pinned_producer_cap()).await;
+            u6_arm(&mut records, "N-10", u6b_n10()).await;
+            u6_arm(&mut records, "N-1", u6b_human_band(300, 128, "H6_N1_HUMAN_UNCAPPED")).await;
+            u6_arm(&mut records, "N-2", u6b_n2()).await;
+            u6_arm(&mut records, "N-3", u6b_human_band(1, 256 * 1024, "H6_N3_HUMAN_UNCAPPED")).await;
+            u6_arm(&mut records, "N-4", u6b_monitor_band()).await;
+            u6_arm(&mut records, "N-7", u6b_deferred_image()).await;
+            u6_arm(&mut records, "N-8", u6b_deferred_band()).await;
             u6_arm(&mut records, "L1", u6_l1()).await;
             u6_arm(&mut records, "L1-N", u6_l1_native()).await;
             u6_arm(&mut records, "L1-unavailable-view", u6_unavailable_view_hold()).await;
             u6_arm(&mut records, "L2-pre-completion", u6_l2("pre-completion")).await;
             u6_arm(&mut records, "L2-tool-batch", u6_l2("tool-batch")).await;
             u6_arm(&mut records, "L2-empty-continuation", u6_l2("empty-continuation")).await;
-            records.push(json!({"label":"L2-loop-top","passed":null,"credited":false,
-                "status":"NOT_RUN","owed_unit":"koxd-U6.5","authority":"H-K3U6a-R8 R8-3",
-                "reason":"TodoGate discipline predicate is always false; the media resample diagnostic ends without a post-release HTTP"}));
+            u6_arm(&mut records, "L2-loop-top", u6_l2_loop_top_structured_output_retry()).await;
             u6_arm(&mut records, "L2-new-late-bookkeeping", u6_l2_late_bookkeeping()).await;
             u6_arm(&mut records, "L3-another-pending", u6_l3(false)).await;
             u6_arm(&mut records, "L3-rearm", u6_l3(true)).await;
@@ -8586,14 +8687,7 @@ async fn messages_pending_holds_harness_user_content() {
             u6_arm(&mut records, "L12", u6_l12()).await;
             u6_arm(&mut records, "TW-1-resident-arrival", u6_tw1(true)).await;
             u6_arm(&mut records, "TW-1-already-custody", u6_tw1(false)).await;
-            u6_arm(&mut records, "L10-records", u6_l10("records")).await;
-            u6_arm(&mut records, "L10-aggregate", u6_l10("aggregate")).await;
-            u6_arm(&mut records, "L10-entry", u6_l10("entry")).await;
-            u6_arm(&mut records, "L10-metadata", u6_l10("metadata")).await;
-            u6_arm(&mut records, "L10-parent-stamps", u6_l10("parent-stamps")).await;
-            u6_arm(&mut records, "L10-overlength-id", u6_l10_overlength_id()).await;
-            u6_arm(&mut records, "L10-terminal-reserve", u6_l10_reserve()).await;
-            u6_arm(&mut records, "L10-deferred-image", u6_l10_deferred_image()).await;
+            u6_arm(&mut records, "L10-parent-stamps", u6_parent_stamp_preservation()).await;
             u6_arm(&mut records, "L10b", u6_l10b()).await;
             u6_arm(&mut records, "L14", u6_l14()).await;
             u6_arm(&mut records, "L14c-base", u6_l14c(false)).await;
@@ -8604,6 +8698,76 @@ async fn messages_pending_holds_harness_user_content() {
             u6_arm(&mut records, "L14b-persistence-recovery", u6_l14b_persistence_recovery()).await;
             u6_arm(&mut records, "L14b-command-Cancel-new-owner", u6_l14b_command_cancel()).await;
             u6_arm(&mut records, "L14b-constructed-partial-loop", u6_l14b_constructed_partial_loop()).await;
+            u6_arm(&mut records, "N-12-u66-scoped", u6b_n12_u66_scoped_turn_end()).await;
+            u6_arm(&mut records, "N-12c-chat-close", u6b_n12c(U6bCloseCause::ChatClose)).await;
+            u6_arm(&mut records, "N-12c-ActorDrop", u6b_n12c(U6bCloseCause::ActorDrop)).await;
+            u6_arm(&mut records, "N-12c-HardTeardown", u6b_n12c(U6bCloseCause::HardTeardown)).await;
+            u6_arm(&mut records, "N-14-u66-scoped", u6b_n14_u66_scoped()).await;
+            u6_arm(&mut records, "L13b-preparation-ActorDrop", u6b_l13b(U6bTerminalAwait::Preparation, xai_message_delivery_core::TerminalCause::ActorDrop)).await;
+            u6_arm(&mut records, "L13b-preparation-HardTeardown", u6b_l13b(U6bTerminalAwait::Preparation, xai_message_delivery_core::TerminalCause::HardTeardown)).await;
+            u6_arm(&mut records, "L13b-persistence-ActorDrop", u6b_l13b(U6bTerminalAwait::PersistenceBarrier, xai_message_delivery_core::TerminalCause::ActorDrop)).await;
+            u6_arm(&mut records, "L13b-persistence-HardTeardown", u6b_l13b(U6bTerminalAwait::PersistenceBarrier, xai_message_delivery_core::TerminalCause::HardTeardown)).await;
+            u6_arm(&mut records, "N-6-long-id-steer", u6b_n6_long_id_steer()).await;
+            u6_arm(&mut records, "N-11-steer-receipt", u6b_n11_steer_receipt()).await;
+            u6_arm(&mut records, "N-5-33rd-steer", u6b_n5_33rd_steer()).await;
+            u6_arm(&mut records, "N-9-projecting-straddle", u6b_n9_projecting_straddle()).await;
+            u6_arm(&mut records, "R19-constructed-orphan-release", u6b_r19_constructed_orphan_release()).await;
+            u6_arm(&mut records, "U66-constructed-missing-stamp", u6b_u66_constructed_missing_stamp()).await;
+            u6_arm(&mut records, "L9-cancel-rebuild", u6b_l9_cancel_rebuild()).await;
+            u6_arm(&mut records, "L13-shared-take", u6b_l13_shared_leaders(U6bL13Operation::Release)).await;
+            u6_arm(&mut records, "L13-shared-unpin", u6b_l13_shared_leaders(U6bL13Operation::LogicalEnd)).await;
+            u6_arm(&mut records, "L13-shared-discard", u6b_l13_shared_leaders(U6bL13Operation::KillBackground)).await;
+            u6_arm(&mut records, "L18-wait-Cancel-rebuild-next", u6b_l18_wait_cancel(U6bL18Resume::NextAdmittedTurn)).await;
+            u6_arm(&mut records, "L18-wait-send-now", u6b_l18_wait_cancel(U6bL18Resume::SendNow)).await;
+            u6_arm(&mut records, "L18-ready-result-priority", u6b_l18_ready_result_priority()).await;
+            u6_arm(&mut records, "DB11-native-handoff-after-terminal", u6b_db11_native_handoff_after_terminal()).await;
+            u6_arm(&mut records, "DB11-constructed-terminal-stamp", u6b_db11_constructed_terminal_stamp()).await;
+            u6_arm(&mut records, "N-11-peer-text-crossing", u6b_n11_peer(false)).await;
+            u6_arm(&mut records, "N-11-peer-native-crossing", u6b_n11_peer(true)).await;
+            u6_arm(&mut records, "L15-memory", u6b_l15(U6bL15Source::Memory)).await;
+            u6_arm(&mut records, "L15-mcp", u6b_l15(U6bL15Source::Mcp)).await;
+            u6_arm(&mut records, "L19-Cancel-late", u6b_l19_hold(U6bL19Trigger::Cancel, U6bL19Skills::Late, U6bL19Native::Absent)).await;
+            u6_arm(&mut records, "L19-owned-error-late", u6b_l19_hold(U6bL19Trigger::OwnedError, U6bL19Skills::Late, U6bL19Native::Absent)).await;
+            u6_arm(&mut records, "L19-Cancel-refused-skill", u6b_l19_hold(U6bL19Trigger::Cancel, U6bL19Skills::RefusedResident, U6bL19Native::Absent)).await;
+            u6_arm(&mut records, "L19-owned-error-refused-skill", u6b_l19_hold(U6bL19Trigger::OwnedError, U6bL19Skills::RefusedResident, U6bL19Native::Absent)).await;
+            u6_arm(&mut records, "L19-native-Cancel-retention", u6b_l19_hold(U6bL19Trigger::Cancel, U6bL19Skills::Late, U6bL19Native::RetainedPrefix)).await;
+            u6_arm(&mut records, "L19-native-owned-error-retention", u6b_l19_hold(U6bL19Trigger::OwnedError, U6bL19Skills::Late, U6bL19Native::RetainedPrefix)).await;
+            u6_arm(&mut records, "L19-no-hold-Cancel", u6b_l19_unheld(U6bL19Trigger::Cancel)).await;
+            u6_arm(&mut records, "L19-no-hold-owned-error", u6b_l19_unheld(U6bL19Trigger::OwnedError)).await;
+            u6_arm(&mut records, "L20-revoked", u6b_l20(U6bL20Activation::Withdraw, U6bL20Completion::Closure)).await;
+            u6_arm(&mut records, "L20-on-off-on", u6b_l20(U6bL20Activation::Reenable, U6bL20Completion::Closure)).await;
+            u6_arm(&mut records, "L20-approval-revoked", u6b_l20(U6bL20Activation::ApprovalWithdraw, U6bL20Completion::Closure)).await;
+            u6_arm(&mut records, "L20-Cancel-revoked", u6b_l20(U6bL20Activation::Withdraw, U6bL20Completion::Cancel)).await;
+            u6_arm(&mut records, "L20-owned-error-revoked", u6b_l20(U6bL20Activation::Withdraw, U6bL20Completion::OwnedError)).await;
+            u6_arm(&mut records, "L21-media-held", u6b_l21_held(U6bL21Writer::MediaResample)).await;
+            u6_arm(&mut records, "L21-media-unheld", u6b_l21_unheld(U6bL21Writer::MediaResample)).await;
+            u6_arm(&mut records, "L21-tool-call-Length-held", u6b_l21_tool_call_length_tripwire()).await;
+            u6_arm(&mut records, "L21-tool-call-Length-unheld", u6b_l21_unheld(U6bL21Writer::ToolCallLength)).await;
+            u6_arm(&mut records, "L21-tool-free-Length-held", u6b_l21_held(U6bL21Writer::ToolFreeLength)).await;
+            u6_arm(&mut records, "L21-tool-free-Length-unheld", u6b_l21_unheld(U6bL21Writer::ToolFreeLength)).await;
+            u6_arm(&mut records, "N-11-stationarity-crossing-constructed", u6b_n11_u67_band_custody(super::interjection::HeldSource::StationarityReminder, "StationarityBandFull", "stationarity_band_full")).await;
+            u6_arm(&mut records, "N-11-S10-crossing-constructed", u6b_n11_u67_band_custody(super::interjection::HeldSource::LengthReminder, "LengthReminderBandFull", "length_reminder_band_full")).await;
+            u6_arm(&mut records, "N-11-media-band-crossing-constructed", u6b_n11_u67_band_custody(super::interjection::HeldSource::MediaResample, "MediaResampleBandFull", "media_resample_band_full")).await;
+            u6_arm(&mut records, "N-11-tool-free-Length-band-crossing-constructed", u6b_n11_u67_band_custody(super::interjection::HeldSource::ToolFreeLength, "ToolFreeLengthBandFull", "tool_free_length_band_full")).await;
+            u6_arm(&mut records, "N-11-skill-crossing", u6b_n11_u67_skill_crossing()).await;
+            u6_arm(&mut records, "N-11-peer-at-flush", u6b_n11_u67_peer_at_flush()).await;
+            u6_arm(&mut records, "N-11-peer-flush-refusal-constructed", u6b_n11_u67_peer_flush_refusal()).await;
+            u6_arm(&mut records, "N-12-U67-peer-S10-writer-band-extension", u6b_n12_u67_band_extension()).await;
+            u6_arm(&mut records, "N-13-full-steer-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::ParentSteer)).await;
+            u6_arm(&mut records, "N-13-full-monitor-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::MonitorEvent)).await;
+            u6_arm(&mut records, "N-13-full-deferred-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::DeferredFollowUp)).await;
+            u6_arm(&mut records, "N-13-full-stationarity-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::StationarityReminder)).await;
+            u6_arm(&mut records, "N-13-full-skill-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::SkillReminder)).await;
+            u6_arm(&mut records, "N-13-full-plan-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::PlanActivation)).await;
+            u6_arm(&mut records, "N-13-full-peer-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::PeerAgent)).await;
+            u6_arm(&mut records, "N-13-full-media-resample-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::MediaResample)).await;
+            u6_arm(&mut records, "N-13-full-tool-free-Length-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::ToolFreeLength)).await;
+            u6_arm(&mut records, "N-13-full-S10-isolated-constructed", u6b_n13_band_isolation(super::interjection::HeldSource::LengthReminder)).await;
+            u6_arm(&mut records, "N-13-real-mailbox-peer-human-isolation", u6b_n13_real_peer_isolation()).await;
+            u6_arm(&mut records, "L15m-native-memory-durable", u6b_l15m_native_memory(U6bL15mArm::Durable)).await;
+            u6_arm(&mut records, "L15m-native-memory-rearm-once", u6b_l15m_native_memory(U6bL15mArm::Rearm)).await;
+            u6_arm(&mut records, "L15m-selected-no-checkpoint-system-head", u6b_l15m_selected_no_checkpoint()).await;
+            u6_arm(&mut records, "L15m-inactive-guard-system-head", u6b_l15m_inactive_guard()).await;
             u6_write_proof(&records);
             for record in &records {
                 println!("KOXD_U6_ARM {}", record);
@@ -10228,117 +10392,50 @@ fn u6_image(side: u32) -> acp::ImageContent {
 
 async fn u6_l14() -> Value {
     const CUSTODY: &str = "U6 L14 raw custody";
-    let (mut fixture, mut turn, stepper, continuation) =
-        u6_u63_prepare_fixture(Some(CUSTODY)).await;
+    let (fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(Some(CUSTODY)).await;
     let _stop = K0Abort(turn.running.abort_handle());
-    let fx = &mut fixture.fx;
-    u6_queue_resident(fx, "U6 L14 resident image", vec![u6_image(47)]).await;
-    let original = u6_resident_keys(&fx.session.actor);
-    let before = fx
-        .session
-        .actor
-        .state
-        .lock()
-        .await
-        .message_delivery
-        .held_input
-        .occupancy();
-    let barriers = fixture
-        .persistence_control
-        .barriers
-        .load(std::sync::atomic::Ordering::SeqCst);
-    u6_release_after_checkpoint(
-        &fixture.fx,
-        &mut turn.running,
-        &continuation,
-        false,
-        "H6_R15_L14_CLOSED_CHECKPOINT",
-    )
-    .await;
+    u6_queue_resident(&fixture.fx, "U6 L14 resident image", vec![u6_image(47)]).await;
+    let original = u6_resident_keys(&fixture.fx.session.actor);
+    let before = u6_check_bands(&fixture.fx, &[]).await;
+    let barriers = fixture.persistence_control.barriers.load(std::sync::atomic::Ordering::SeqCst);
+    u6_release_after_checkpoint(&fixture.fx, &mut turn.running, &continuation, false,
+        "H6_R15_L14_CLOSED_CHECKPOINT").await;
     u6_u63_step_to_preparation(&fixture, &stepper, barriers).await;
-    let (during, expected_during, raw_shared) = {
+    let during = u6_check_bands(&fixture.fx, &[]).await;
+    let raw_shared = {
         let state = fixture.fx.session.actor.state.lock().await;
-        let ledger = &state.message_delivery.held_input;
-        let mut expected = u6_expected_occupancy(&fixture.fx, &state, &[]);
-        let entry = ledger
-            .entries
-            .iter()
-            .find(|entry| {
-                matches!(&entry.body,
-            super::interjection::HeldBody::Human(raw) if raw.text == CUSTODY)
-            })
-            .unwrap();
-        let super::interjection::HeldBody::Human(raw) = &entry.body else {
-            unreachable!()
-        };
-        let typed = crate::session::placeholder_images::strip_paths_from_image_placeholders(
-            raw.text.clone(),
-        );
-        let wrapped = xai_interjection_core::format_interjection(typed.clone());
-        let item = ConversationItem::interjection(wrapped.clone());
-        expected.entry_bytes += u6_accounted_preparation(
-            entry.key.as_u64(),
-            json!({"key":entry.key.as_u64(),"wrapped":wrapped,"typed":typed,"images":[],"item":item}),
-        );
-        (
-            ledger.occupancy(),
-            expected,
-            ledger.entries.iter().any(|entry| {
-                matches!(&entry.body, super::interjection::HeldBody::Human(raw)
-                if raw.text == CUSTODY && Arc::strong_count(raw) > 1)
-            }),
-        )
+        state.message_delivery.held_input.entries.iter().any(|entry|
+            matches!(&entry.body, super::interjection::HeldBody::Human(raw)
+                if raw.text == CUSTODY && Arc::strong_count(raw) > 1))
     };
+    assert_eq!(during, before, "H6_L14_BANDS_UNCHANGED_DURING_PREPARATION");
     u6_interject(&fixture.fx, "U6 L14 later resident", Vec::new()).await;
     let later = u6_resident_keys(&fixture.fx.session.actor);
     turn.running.abort();
-    assert!(
-        matches!(turn.running.await, Err(error) if error.is_cancelled()),
-        "H6_L14_REAL_PREPARATION_ABORT"
-    );
+    assert!(matches!(turn.running.await, Err(error) if error.is_cancelled()), "H6_L14_REAL_PREPARATION_ABORT");
     let restored = u6_resident_keys(&fixture.fx.session.actor);
     let expected: Vec<_> = original.into_iter().chain(later).collect();
-    assert_eq!(
-        restored, expected,
-        "H6_L14_ORIGINAL_KEYS_FRONT_ORDER_ATTACHMENTS"
-    );
+    assert_eq!(restored, expected, "H6_L14_ORIGINAL_KEYS_FRONT_ORDER_ATTACHMENTS");
     let state = fixture.fx.session.actor.state.lock().await;
     let ledger = &state.message_delivery.held_input;
     assert!(ledger.entries.iter().any(|entry|
         matches!(&entry.body, super::interjection::HeldBody::Human(raw) if raw.text == CUSTODY)),
         "H6_L14_RAW_CUSTODY_NEVER_LEFT");
-    assert_eq!(
-        ledger.occupancy(),
-        before,
-        "H6_L14_ABORT_CLEARS_PREPARED_CHARGE"
-    );
+    assert_eq!(ledger.bands(fixture.fx.session.actor.live_parent_steer_slots(&state)), before,
+        "H6_L14_ABORT_CLEARS_PREPARED_CHARGE");
+    assert!(ledger.entries.iter().filter_map(|entry| entry.preparing.as_ref()).all(|preparing|
+        !preparing.load(std::sync::atomic::Ordering::Acquire)), "H6_L14_PREPARATION_OWNER_RELEASED");
     assert!(raw_shared, "H6_L14_ACTUAL_RAW_PREPARATION_REFERENCE");
-    u6_observe(
-        json!({"stage":"L14 real preparation abort", "prepared_raw_reference":raw_shared,
-        "entry_bytes_before":before.entry_bytes,"entry_bytes_during":during.entry_bytes,
-        "barriers_sent":fixture.persistence_control.barriers.load(std::sync::atomic::Ordering::SeqCst)-barriers}),
-    );
-    assert_eq!(
-        during, expected_during,
-        "H6_L10_INDEPENDENT_LIVE_COPY_OCCUPANCY_EQUALITY"
-    );
-    assert!(
-        during.entry_bytes > before.entry_bytes,
-        "H6_L14_LIVE_COPY_CHARGED"
-    );
-    assert!(
-        !fixture
-            .persistence_control
-            .updates
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|update| update.to_string().contains(CUSTODY)
-                || update.to_string().contains("U6 L14 resident image")),
-        "H6_L14_NO_HUMAN_PERSISTENCE"
-    );
+    drop(state);
+    u6_observe(json!({"stage":"L14 real preparation abort","prepared_raw_reference":raw_shared,
+        "bands_unchanged":during == before,
+        "barriers_sent":fixture.persistence_control.barriers.load(std::sync::atomic::Ordering::SeqCst)-barriers}));
+    assert!(!fixture.persistence_control.updates.lock().unwrap().iter().any(|update|
+        update.to_string().contains(CUSTODY) || update.to_string().contains("U6 L14 resident image")),
+        "H6_L14_NO_HUMAN_PERSISTENCE");
     json!({"await":"merged release prepare_interjection_images; fresh resident PNG, guard held and no FlushAndAck",
-        "drop":"actual turn future abort","resident_keys_restored":true,"custody_retained":true})
+        "raw_custody_retained":true,"resident_order_restored":true,"bands_unchanged":true,
+        "prepared_raw_reference":raw_shared})
 }
 
 async fn u6_l14c(straddling: bool) -> Value {
@@ -10519,427 +10616,67 @@ fn u6_source_name(source: super::interjection::HeldSource) -> &'static str {
         HeldSource::StationarityReminder => "stationarity_reminder",
         HeldSource::SkillReminder => "skill_reminder",
         HeldSource::PlanActivation => "plan_activation",
+        HeldSource::PeerAgent => "peer_agent",
+        HeldSource::MediaResample => "media_resample",
+        HeldSource::ToolFreeLength => "tool_free_length",
+        HeldSource::LengthReminder => "length_reminder",
     }
 }
 
-fn u6_accounted_record(
-    key: u64,
-    source: &str,
-    reference: Value,
-    meta: &Value,
-    payload: Value,
-) -> u32 {
-    let mut size = 0;
-    for _ in 0..12 {
-        let record = json!({"key":key,"source":source,"ref":reference,"meta":meta,"payload":payload,
-            "preparation_control":if source == "human_interjection" { json!({"key":key,"maximum_charge":u32::MAX}) } else { Value::Null },"charged":size});
-        let next = u32::try_from(serde_json::to_vec(&record).unwrap().len()).unwrap();
-        if next == size {
-            return size;
-        }
-        size = next;
-    }
-    panic!("H6_L10_INDEPENDENT_CANONICAL_RECORD_FIXPOINT");
-}
-
-fn u6_expected_occupancy(
+async fn u6_check_bands(
     fx: &K2lgN,
-    state: &State,
-    parents: &[U6ParentReceipt],
-) -> super::interjection::HeldOccupancy {
-    use super::interjection::{HeldBody, HeldOccupancy};
-    let ledger = &state.message_delivery.held_input;
-    let binding = |meta: Option<&super::interjection::HeldBindingMeta>| {
-        meta.map_or(
-            Value::Null,
-            |meta| json!({"prompt_id":meta.prompt_id,"epoch":meta.epoch}),
-        )
-    };
-    let header = json!({"latch":binding(ledger.latch_meta.as_ref()),"latch_metadata":binding(ledger.latch_meta.as_ref()),
-        "delivery_owner":binding(ledger.parent_owner_meta.as_ref()),"delivery_owner_metadata":binding(ledger.parent_owner_meta.as_ref()),
-        "parent_persisted":ledger.parent_persisted,"pin_owner":ledger.pin_owner.map(|key| key.as_u64()),
-        "pin_handle":if ledger.pinned_in.is_some() { json!("monitor_event_buffer") } else { Value::Null },
-        "terminal":u8::from(ledger.terminal),"parent_stamps":[]});
-    let stamp_slots: Vec<_> = (0..32)
-        .map(|_| json!({"message_id":"x".repeat(126),"key":u64::MAX}))
-        .collect();
-    let header_bytes = u32::try_from(
-        serde_json::to_vec(&header).unwrap().len()
-            + serde_json::to_vec(&stamp_slots).unwrap().len()
-            - 2,
-    )
-    .unwrap();
-    let owner = ledger
-        .pin_owner
-        .unwrap_or_else(xai_interjection_core::events::next_occurrence);
-    let view = fx
-        .session
-        .actor
-        .tool_context
-        .monitor_event_buffer
-        .as_ref()
-        .unwrap()
-        .release_view(owner, |_| true);
-    let mut entry_bytes = 0;
-    for entry in &ledger.entries {
-        let reference = match &entry.body {
-            HeldBody::Parent(id) => json!({"message_id":id}),
-            HeldBody::Monitor => json!({"occurrence":entry.key.as_u64()}),
-            HeldBody::Plan => json!({"activation_slot":1}),
-            HeldBody::Human(_) | HeldBody::Owned(_) => Value::Null,
-        };
-        let payload = match &entry.body {
-            HeldBody::Human(raw) => json!({"text":raw.text,"attachments":raw.attachments}),
-            HeldBody::Owned(item) => serde_json::to_value(item).unwrap(),
-            HeldBody::Monitor => {
-                let event = view
-                    .iter()
-                    .find_map(|(key, event)| (key == entry.key).then_some(event))
-                    .unwrap();
-                json!({"owner_session_id":event.owner_session_id,"task_id":event.task_id,"event_text":event.event_text,"slot_pin":owner.as_u64()})
-            }
-            HeldBody::Parent(id) => {
-                let input = &parents
-                    .iter()
-                    .find(|parent| &parent.input.message_id == id)
-                    .expect("H6_L10_OBSERVED_PARENT_INPUT")
-                    .input;
-                let task = state.running_task.as_ref().unwrap();
-                json!({"identity":id,"message_id":input.message_id,"prompt_id":input.prompt_id,
-                    "binding_prompt_id":task.prompt_id,"epoch":format!("{:?}",task.epoch),
-                    "sender_session_id":input.sender_session_id,"source":"agent","text":input.text,"telemetry_reference":1})
-            }
-            HeldBody::Plan => {
-                json!({"text":fx.session.actor.plan_mode.lock().pending_activation_text().unwrap(),"prior_state_bits":1})
-            }
-        };
-        entry_bytes += u6_accounted_record(
-            entry.key.as_u64(),
-            u6_source_name(entry.source),
-            reference,
-            &entry.meta,
-            payload,
-        );
-    }
-    let mut reserve_bytes = 0;
-    for source in [
-        "human_interjection",
-        "parent_steer",
-        "monitor_event",
-        "deferred_followup",
-        "stationarity_reminder",
-        "skill_reminder",
-        "plan_activation",
-    ] {
-        for reason in [
-            "records",
-            "entry_bytes",
-            "total_bytes",
-            "accounting",
-            "terminal",
-        ] {
-            reserve_bytes = reserve_bytes.max(
-                u32::try_from(
-                    serde_json::to_vec(&json!({"source":source,"reason":reason,
-                "key":u64::MAX,"observed_len":u64::MAX}))
-                    .unwrap()
-                    .len(),
-                )
-                .unwrap(),
-            );
-        }
-    }
-    HeldOccupancy {
-        records: ledger.entries.len(),
-        header_bytes,
-        entry_bytes,
-        reserve_bytes,
-    }
-}
-
-async fn u6_check_occupancy(
-    fx: &K2lgN,
-    parents: &[U6ParentReceipt],
-) -> super::interjection::HeldOccupancy {
+    _parents: &[U6ParentReceipt],
+) -> super::interjection::HeldBands {
+    use super::interjection::{HeldBand, HeldSource};
     let state = fx.session.actor.state.lock().await;
-    let expected = u6_expected_occupancy(fx, &state, parents);
-    let actual = state.message_delivery.held_input.occupancy();
-    assert_eq!(actual, expected, "H6_L10_INDEPENDENT_OCCUPANCY_EQUALITY");
+    let ledger = &state.message_delivery.held_input;
+    assert!(ledger.refusal.is_none(), "H6_N10_UNREFUSED_MIXED_FIXTURE");
+    let count = |source| ledger.entries.iter().filter(|entry| entry.source == source).count();
+    let band = |source, limit| HeldBand { held: count(source), limit, refused_total: 0 };
+    let monitor_pins = match (ledger.pin_owner, fx.session.actor.tool_context.monitor_event_buffer.as_ref()) {
+        (Some(owner), Some(buffer)) => buffer.release_view(owner, |_| false).iter().count(),
+        _ => 0,
+    };
+    let live = fx.session.actor.live_parent_steer_slots(&state);
+    let actual = ledger.bands(live);
+    let expected = [
+        band(HeldSource::HumanInterjection, None),
+        HeldBand { held: live, limit: Some(32), refused_total: 0 },
+        HeldBand { held: monitor_pins, limit: Some(128), refused_total: 0 },
+        band(HeldSource::DeferredFollowUp, Some(128)),
+        band(HeldSource::StationarityReminder, Some(128)),
+        band(HeldSource::SkillReminder, Some(128)),
+        band(HeldSource::PlanActivation, Some(1)),
+    ];
+    assert_eq!([actual.human, actual.steer, actual.monitor, actual.deferred, actual.stationarity, actual.skill, actual.plan],
+        expected, "H6_N10_BAND_STORE_RECOUNT");
+    assert_eq!(actual.parent_stamps, ledger.parent_stamps.len(), "H6_N10_STAMP_RECOUNT");
     actual
 }
 
-async fn u6_l10(mode: &str) -> Value {
-    let mut fixture = u6_fixture(None, K2lgNOptions::default()).await;
-    let fx = &mut fixture.fx;
-    let turn = u6_handoff(fx).await;
+async fn u6_parent_stamp_preservation() -> Value {
+    let (fixture, mut turn, _, continuation) = u6_u63_prepare_fixture(None).await;
     let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
     let mut parents = Vec::new();
-    let mut refused = false;
-    if mode == "parent-stamps" {
-        for index in 0..32 {
-            let before = u6_check_occupancy(fx, &parents).await;
-            let mut parent = u6_admit_steer(
-                &fx.session.actor,
-                "U6 L10 parent payload fixed",
-                &format!("u6-parent-{index:04}-{}", "p".repeat(index * 20)),
-            )
-            .await;
-            assert!(
-                parent.result.try_recv().is_err(),
-                "H6_L10_NO_EARLY_PARENT_DELIVERY_ACK"
-            );
-            parents.push(parent);
-            assert!(
-                !k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
-                "H6_L10_PARENT_HOLD"
-            );
-            let after = u6_check_occupancy(fx, &parents).await;
-            assert_eq!(
-                after.records,
-                before.records + 1,
-                "H6_L10_REAL_PARENT_STAMP_ADMISSION"
-            );
-            u6_observe(
-                json!({"stage":"L10 admission","mode":mode,"records":after.records,
-                "entry_delta":after.entry_bytes-before.entry_bytes,"header_bytes":after.header_bytes,"reserve_bytes":after.reserve_bytes}),
-            );
-        }
-        assert_eq!(
-            fx.session
-                .actor
-                .state
-                .lock()
-                .await
-                .message_delivery
-                .held_input
-                .parent_stamps
-                .len(),
-            32,
-            "H6_L10_ALL_REAL_PARENT_STAMPS"
-        );
-    } else {
-        let attempts = match mode {
-            "records" => 129,
-            "aggregate" => 12,
-            "entry" => 2,
-            "metadata" => 4,
-            _ => unreachable!(),
-        };
-        for index in 0..attempts {
-            let before = u6_check_occupancy(fx, &parents).await;
-            if mode == "metadata" {
-                u6_monitor_fixed_payload(
-                    fx,
-                    &format!(
-                        "u6-{}-{index}",
-                        "m".repeat([4000, 6000, 8000, 17000][index])
-                    ),
-                )
-                .await;
-                k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
-            } else {
-                let length = match mode {
-                    "records" => 32,
-                    "aggregate" => 30_900,
-                    "entry" => [32_000, 32_768][index],
-                    _ => unreachable!(),
-                };
-                u6_interject(
-                    fx,
-                    &format!("U6 L10 {mode} {}", "x".repeat(length)),
-                    Vec::new(),
-                )
-                .await;
-                assert!(
-                    !k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point())
-                        .await,
-                    "H6_L10_REAL_HELD_ADMISSION"
-                );
-            }
-            let after = u6_check_occupancy(fx, &parents).await;
-            let accepted = after.records == before.records + 1;
-            if !accepted {
-                assert_eq!(after, before, "H6_L10_REFUSAL_BEFORE_GROWTH");
-                refused = true;
-            }
-            assert!(
-                u64::from(after.header_bytes)
-                    + u64::from(after.entry_bytes)
-                    + u64::from(after.reserve_bytes)
-                    <= 262_144,
-                "H6_L10_AGGREGATE_BOUND"
-            );
-            u6_observe(
-                json!({"stage":"L10 real admission event","mode":mode,"attempt":index,"accepted":accepted,
-                "records":after.records,"entry_delta":after.entry_bytes-before.entry_bytes,"header_bytes":after.header_bytes,"reserve_bytes":after.reserve_bytes}),
-            );
-            if !accepted {
-                break;
-            }
-        }
-        assert!(refused, "H6_L10_EACH_REAL_CROSSING_REFUSES");
+    for index in 0..32 {
+        let before = u6_check_bands(fx, &parents).await;
+        let mut parent = u6_admit_steer(&fx.session.actor, "U6 L10 parent payload fixed",
+            &format!("u6-parent-{index:04}-{}", "p".repeat(index * 20))).await;
+        assert!(parent.result.try_recv().is_err(), "H6_L10_NO_EARLY_PARENT_DELIVERY_ACK");
+        parents.push(parent);
+        assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+            "H6_L10_PARENT_HOLD");
+        let after = u6_check_bands(fx, &parents).await;
+        assert_eq!(after.steer.held, before.steer.held + 1, "H6_L10_REAL_PARENT_STAMP_ADMISSION");
     }
-    let history = fx.session.actor.chat_state_handle.get_conversation().await;
-    assert!(
-        !history
-            .iter()
-            .any(|item| item.text_content().contains("U6 L10")),
-        "H6_L10_NO_HISTORY_ADMISSION_OR_ACK"
-    );
-    assert!(
-        !fixture
-            .persistence_control
-            .updates
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|update| update.to_string().contains("U6 L10")),
-        "H6_L10_NO_PERSISTED_HUMAN_CHUNK"
-    );
-    json!({"mode":mode,"real_producers":true,"oracle":"W11 independent canonical JSON; no charge functions or stored charge fields",
-        "refused":refused,"shared_control_reporting":"deferred to apex-e4qs"})
-}
-
-async fn u6_monitor_fixed_payload(fx: &K2lgN, task: &str) {
-    let buffer = fx
-        .session
-        .actor
-        .tool_context
-        .monitor_event_buffer
-        .as_ref()
-        .unwrap();
-    let before = buffer.len();
-    fx.loop_tx
-        .send(SessionCommand::InjectNotification {
-            prompt_id: format!("u6-fixed-{task}"),
-            prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(
-                "U6 L10 fixed monitor payload",
-            ))],
-            priority: NotificationPriority::Next,
-            source: NotificationSource::MonitorEvent {
-                task_id: task.to_owned(),
-            },
-        })
-        .unwrap();
-    tokio::time::timeout(K0_TIMEOUT, async {
-        while buffer.len() <= before {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("H6_L10_METADATA_ONLY_REAL_MONITOR_INGRESS");
-}
-
-async fn u6_l10_reserve() -> Value {
-    let mut fixture = u6_fixture(None, K2lgNOptions::default()).await;
-    let fx = &mut fixture.fx;
-    let turn = u6_handoff(fx).await;
-    let _stop = K0Abort(turn.running.abort_handle());
-    for index in 0..8 {
-        u6_check_occupancy(fx, &[]).await;
-        let n = if index < 7 { 30_900 } else { 16_000 };
-        u6_interject(fx, &"r".repeat(n), Vec::new()).await;
-        assert!(
-            !k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
-            "H6_L10_RESERVE_REAL_FILL"
-        );
-        u6_check_occupancy(fx, &[]).await;
-    }
-    let before = u6_check_occupancy(fx, &[]).await;
-    let free_without_reserve = 262_144 - before.header_bytes - before.entry_bytes;
-    let key = xai_interjection_core::events::next_occurrence();
-    let meta =
-        json!({"owner_session_id":fx.session.actor.session_info.id.0.as_ref(),"raw_references":1});
-    let overhead = u6_accounted_record(
-        key.as_u64(),
-        "human_interjection",
-        Value::Null,
-        &meta,
-        json!({"text":"","attachments":[]}),
-    );
-    let length =
-        usize::try_from(free_without_reserve - overhead - before.reserve_bytes / 2).unwrap();
-    u6_interject(fx, &"v".repeat(length), Vec::new()).await;
-    let owner = xai_interjection_core::events::next_occurrence();
-    let view = fx
-        .session
-        .actor
-        .pending_interjections
-        .release_view(owner, |_| true);
-    let (actual_key, input) = view.iter().next().unwrap();
-    let candidate = u6_accounted_record(
-        actual_key.as_u64(),
-        "human_interjection",
-        Value::Null,
-        &meta,
-        json!({"text":input.text,"attachments":input.attachments}),
-    );
-    drop(view);
-    assert!(
-        candidate <= 32_768
-            && candidate <= free_without_reserve
-            && candidate + before.reserve_bytes > free_without_reserve,
-        "H6_L10_MEASURED_RESERVE_BOUNDARY"
-    );
-    assert!(
-        !k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
-        "H6_L10_RESERVE_PENDING_HOLD"
-    );
-    let after = u6_check_occupancy(fx, &[]).await;
-    assert_eq!(
-        after, before,
-        "H6_L10_RESERVE_CROSSING_REFUSES_BEFORE_GROWTH"
-    );
-    assert!(
-        !fx.session.actor.pending_interjections.is_empty(),
-        "H6_L10_RESERVE_RESIDENT_BACKPRESSURE"
-    );
-    u6_observe(
-        json!({"stage":"L10 exact reserve crossing","candidate":candidate,"reserve":before.reserve_bytes,
-        "free_without_reserve":free_without_reserve,"occupancy_unchanged":true}),
-    );
-    json!({"terminal_reserve_bytes":before.reserve_bytes,"candidate_fits_without_reserve":true,"refused_with_reserve":true})
-}
-
-async fn u6_l10_deferred_image() -> Value {
-    let mut fixture =
-        u6_fixture(Some(Arc::<str>::from(u6_png(160))), K2lgNOptions::default()).await;
-    let fx = &mut fixture.fx;
-    let mut turn = u6_handoff(fx).await;
-    let _stop = K0Abort(turn.running.abort_handle());
-    u6_interject(fx, "U6 L10 accepted prefix", Vec::new()).await;
-    assert!(
-        !k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
-        "H6_L10_IMAGE_PREFIX_ADMITTED"
-    );
-    let before = u6_check_occupancy(fx, &[]).await;
-    fx.session.releases[1].add_permits(1);
-    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running)
-        .await
-        .expect("H6_L10_DEFERRED_IMAGE_TYPED_OUTCOME")
-        .unwrap();
-    let code = outcome
-        .as_ref()
-        .err()
-        .and_then(|error| error.data.as_ref())
-        .and_then(|data| data.get("code"))
-        .and_then(Value::as_str);
-    assert_eq!(
-        code,
-        Some("native_held_input_incomplete"),
-        "H6_L10_OVERSIZED_DEFERRED_IMAGE_TYPED_INCOMPLETE"
-    );
-    let after = u6_check_occupancy(fx, &[]).await;
-    assert_eq!(
-        after, before,
-        "H6_L10_DEFERRED_IMAGE_ACCEPTED_PREFIX_RETAINED"
-    );
-    assert_eq!(
-        fx.server.messages_request_count(),
-        2,
-        "H6_L10_DEFERRED_IMAGE_NO_CONTINUATION_HTTP"
-    );
-    json!({"source":"real client MCP image follow-up","outcome":"native_held_input_incomplete", "accepted_prefix_retained":true})
+    assert_eq!(fx.session.actor.state.lock().await.message_delivery.held_input.parent_stamps.len(),
+        32, "H6_L10_ALL_REAL_PARENT_STAMPS");
+    continuation.release();
+    turn.running.abort();
+    let _ = turn.running.await;
+    json!({"mode":"parent-stamps","kind":"existing all-mode stamp-bound preservation before U6.6 requalification",
+        "real_admissions":32,"unsubmitted_parent_receipts":32})
 }
 
 async fn u6_l10b() -> Value {
@@ -10955,21 +10692,16 @@ async fn u6_l10b() -> Value {
     let original = u6_resident_keys(&fx.session.actor);
     u6_monitor(fx, "u6-l10b", "U6 L10b pinned monitor").await;
     k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
-    assert_eq!(
-        u6_resident_keys(&fx.session.actor),
-        original,
-        "H6_L10B_IMAGE_STAYS_UNADMITTED_RESIDENT"
-    );
+    assert!(fx.session.actor.pending_interjections.is_empty(), "H6_L10B_IMAGE_MOVED_TO_CUSTODY");
+    let image_key = original.first().and_then(|entry| entry["key"].as_u64()).expect("H6_L10B_ORIGINAL_IMAGE_KEY");
     let state = fx.session.actor.state.lock().await;
-    assert!(
-        state
-            .message_delivery
-            .held_input
-            .entries
-            .iter()
-            .all(|entry| entry.source != super::interjection::HeldSource::HumanInterjection),
-        "H6_L10B_NO_HELD_IMAGE_ADMISSION"
-    );
+    let humans = state.message_delivery.held_input.entries.iter()
+        .filter(|entry| entry.source == super::interjection::HeldSource::HumanInterjection).collect::<Vec<_>>();
+    assert_eq!(humans.len(), 1, "H6_L10B_ONE_HELD_HUMAN_IMAGE");
+    assert_eq!(humans[0].key.as_u64(), image_key, "H6_L10B_IMAGE_ORIGINAL_OCCURRENCE");
+    let super::interjection::HeldBody::Human(raw) = &humans[0].body else { panic!("H6_L10B_ORIGINAL_RAW_IMAGE"); };
+    assert_eq!(native_content_digest(&serde_json::to_vec(&raw.attachments).unwrap()),
+        original[0]["image_digest"].as_str().unwrap(), "H6_L10B_ORIGINAL_IMAGE_BYTES");
     assert!(
         state
             .message_delivery
@@ -10979,6 +10711,9 @@ async fn u6_l10b() -> Value {
             .any(|entry| entry.source == super::interjection::HeldSource::MonitorEvent),
         "H6_L10B_LATER_MONITOR_PINNED"
     );
+    assert!(state.message_delivery.held_input.entries.iter().any(|entry|
+        entry.source == super::interjection::HeldSource::MonitorEvent && entry.key.as_u64() > image_key),
+        "H6_L10B_IMAGE_KEY_BEFORE_MONITOR");
     drop(state);
     fx.server.enqueue_response(
         "/v1/messages",
@@ -11033,59 +10768,6 @@ async fn u6_l10b() -> Value {
     continuation.assert_satisfied();
     json!({"producer":"QueueInputRequest->queue_input->promote_queued_as_interjections (prompt_queue 638-655)",
         "oversized_resident_preparation_not_held_admission":true,"order":"image,monitor", "new_prompt_or_cancel":false})
-}
-
-fn u6_accounted_preparation(key: u64, payload: Value) -> u32 {
-    let mut size = 0;
-    for _ in 0..12 {
-        let value = json!({"key":key,"raw_reference":key,"charge_reference":key,"prepared":payload,"charged":size});
-        let next = u32::try_from(serde_json::to_vec(&value).unwrap().len()).unwrap();
-        if size == next {
-            return size;
-        }
-        size = next;
-    }
-    panic!("H6_L10_INDEPENDENT_PREPARATION_RECORD_FIXPOINT");
-}
-
-async fn u6_l10_overlength_id() -> Value {
-    let mut fixture = u6_fixture(None, K2lgNOptions::default()).await;
-    let turn = u6_handoff(&mut fixture.fx).await;
-    let _stop = K0Abort(turn.running.abort_handle());
-    let id = "p".repeat(127);
-    assert!(
-        serde_json::to_vec(&id).unwrap().len() > 128,
-        "H6_L10_OVERLENGTH_ID_ENCODED_BOUND"
-    );
-    let mut state = fixture.fx.session.actor.state.lock().await;
-    let ledger = &mut state.message_delivery.held_input;
-    let before = ledger.parent_stamps.len();
-    ledger.stamp_parent(&id);
-    assert_eq!(
-        ledger.parent_stamps.len(),
-        before,
-        "H6_L10_OVERLENGTH_ID_NOT_EARLY_STAMPED"
-    );
-    let view = super::interjection::HeldParentView {
-        key: ledger.parent_key(&id),
-        message_id: id,
-        text: Arc::<str>::from("constructed overlength parent"),
-        payload: Value::Null,
-    };
-    assert!(
-        view.key.is_none(),
-        "H6_L10_OVERLENGTH_PARENT_HAS_NO_EARLY_KEY"
-    );
-    let lower = xai_interjection_core::events::next_occurrence();
-    let release = view.release_key();
-    let upper = xai_interjection_core::events::next_occurrence();
-    assert!(
-        lower < release && release < upper,
-        "H6_L10_OVERLENGTH_PARENT_RECEIVES_RELEASE_KEY"
-    );
-    json!({"evidence":"constructed ordinary-ledger/view boundary, not a real overlength coordinator message",
-        "real_coordinator_id_shape":"UUID; the 32 real-parent-stamp arm is separate",
-        "no_early_stamp":true,"production_release_key_fallback":true})
 }
 
 async fn u6_step_to_persistence_barrier(stepper: &U6TurnStepper, control: &U6PersistenceControl) {
@@ -11506,7 +11188,7 @@ async fn u6_l14b_closed(latch_state: &str) -> Value {
         "H6_L14B_NO_FAILED_RELEASE_HTTP"
     );
     let parents = [mixed.parent, second];
-    let _occupancy = u6_check_occupancy(&mixed.fixture.fx, &parents).await;
+    let _bands = u6_check_bands(&mixed.fixture.fx, &parents).await;
     mixed.continuation.assert_satisfied();
     json!({"latch_state":latch_state,"real_precomp_and_post_bookkeeping":true,"second_steer_between_attempts":true,
         "closed_mailbox_reopened":false,"human_persistence":0,"parent_persistence_per_identity":1})
@@ -11658,6 +11340,15 @@ async fn u6_l14b_command_cancel() -> Value {
         .held_input
         .parent_persisted;
     let old_epoch = mixed.turn.epoch;
+    let (parent_entries_before_cancel, old_parent_ids) = {
+        let state = mixed.fixture.fx.session.actor.state.lock().await;
+        let ids: Vec<_> = state.message_delivery.held_input.entries.iter()
+            .filter_map(|entry| match &entry.body {
+                super::interjection::HeldBody::Parent(identity) => Some(identity.clone()),
+                _ => None,
+            }).collect();
+        (ids.len(), ids)
+    };
     mixed
         .fixture
         .fx
@@ -11701,6 +11392,34 @@ async fn u6_l14b_command_cancel() -> Value {
         && matches!(&done.completion_kind, crate::session::commands::PromptCompletionKind::Cancelled { .. })),
         "H6_L14B_OLD_PARENT_OWNER_SETTLED"
     );
+    {
+        let actor = &mixed.fixture.fx.session.actor;
+        let state = actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        let parent_entries_after_cancel = ledger.entries.iter()
+            .filter(|entry| matches!(&entry.body, super::interjection::HeldBody::Parent(_))).count();
+        let stamps_live = ledger.parent_stamps.iter()
+            .all(|(identity, _)| actor.parent_identity_is_live(&state, identity));
+        let references_live = ledger.entries.iter().all(|entry| match &entry.body {
+            super::interjection::HeldBody::Parent(identity) => actor.parent_identity_is_live(&state, identity),
+            _ => true,
+        });
+        let old_stamps_absent = ledger.parent_stamps.iter()
+            .all(|(identity, _)| !old_parent_ids.contains(identity));
+        let old_references_absent = ledger.entries.iter().all(|entry| match &entry.body {
+            super::interjection::HeldBody::Parent(identity) => !old_parent_ids.contains(identity),
+            _ => true,
+        });
+        u6_observe(json!({"stage":"R19 real command Cancel pruning", "constructed":false,
+            "parent_entries_before_cancel":parent_entries_before_cancel,
+            "parent_entries_after_cancel":parent_entries_after_cancel,
+            "live_parent_slots":actor.live_parent_steer_slots(&state),
+            "stamp_count":ledger.parent_stamps.len(), "stamps_live":stamps_live,
+            "references_live":references_live, "old_stamps_absent":old_stamps_absent,
+            "old_references_absent":old_references_absent}));
+        assert!(stamps_live && old_stamps_absent, "H6_R19_CANCEL_STAMP_PRUNE");
+        assert!(references_live && old_references_absent, "H6_R19_CANCEL_ORPHAN_PRUNE");
+    }
     let retained = u6_mixed_keys(&mixed.fixture.fx).await;
     for source in ["human_interjection", "deferred_followup", "skill_reminder"] {
         let before: Vec<_> = mixed
@@ -12493,4 +12212,6034 @@ async fn u6_await_turn_progress<F, P>(
         Ok(true) => u6_turn_ended(running.await, stage, ended_tag, json!({})),
         Err(_) => u6_bound_expired(running, stage, tag, json!({})),
     }
+}
+
+async fn u6b_n2() -> Value {
+    let mut legs = Vec::new();
+    for (count, width) in [(3, 21_500), (9, 30_917)] {
+        let (mut fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(None).await;
+        let _stop = K0Abort(turn.running.abort_handle());
+        let fx = &mut fixture.fx;
+        let mut prefixes = Vec::new();
+        for index in 0..count {
+            let prefix = format!("U6b N2 {count} {index}:");
+            let text = format!("{prefix}{}", "h".repeat(width - prefix.len()));
+            u6_queue_resident(fx, &text, Vec::new()).await;
+            prefixes.push(prefix);
+        }
+        let original = u6_resident_keys(&fx.session.actor);
+        assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+            "H6_N2_NO_EARLY_RELEASE");
+        {
+            let state = fx.session.actor.state.lock().await;
+            let ledger = &state.message_delivery.held_input;
+            assert_eq!(ledger.entries.iter().filter(|entry| entry.source ==
+                super::interjection::HeldSource::HumanInterjection).count(), count,
+                "H6_N2_FIRST_RELEASE_PROGRESS");
+            assert_eq!(ledger.entries.iter().map(|entry| entry.key.as_u64()).collect::<Vec<_>>(),
+                original.iter().map(|entry| entry["key"].as_u64().unwrap()).collect::<Vec<_>>(),
+                "H6_N2_ORIGINAL_KEYS_HELD");
+        }
+        fx.server.enqueue_response("/v1/messages",
+            k2_script(k2lg_n_after_frames("msg_u6b_n2_after")));
+        u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+            "H6_N2_READABLE_CLOSED_CHECKPOINT").await;
+        stepper.resume();
+        let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+            .expect("H6_N2_FIRST_RELEASE_PROGRESS").expect("H6_N2_TURN_TASK");
+        assert!(outcome.is_ok(), "H6_N2_FIRST_RELEASE_PROGRESS");
+        let bodies = k2lg_n_bodies(&fx.server);
+        assert_eq!(bodies.len(), 4, "H6_N2_FIRST_RELEASE_PROGRESS");
+        let text = u6_body_text(bodies.last().unwrap());
+        let mut previous = 0;
+        for (index, prefix) in prefixes.iter().enumerate() {
+            assert_eq!(text.matches(prefix).count(), 1, "H6_N2_FIRST_RELEASE_PROGRESS");
+            let position = text.find(prefix).expect("H6_N2_FIRST_RELEASE_PROGRESS");
+            assert!(index == 0 || previous < position, "H6_N2_KEY_ORDER");
+            previous = position;
+        }
+        assert!(fx.session.actor.state.lock().await.message_delivery.held_input.entries.is_empty(),
+            "H6_N2_RELEASE_EMPTIES_CUSTODY");
+        continuation.assert_satisfied();
+        legs.push(json!({"count":count,"input_bytes":count*width,"same_turn":true,
+            "http_count":bodies.len(),"once_only_key_order":true,"fallback_row":false,
+            "producer":"QueueInputRequest->queue_input->promote_queued_as_interjections"}));
+    }
+    json!({"legs":legs,"release_oracle":"H6_N2_FIRST_RELEASE_PROGRESS"})
+}
+
+async fn u6b_human_band(count: usize, width: usize, tag: &'static str) -> Value {
+    let (mut fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &mut fixture.fx;
+    let mut texts = Vec::new();
+    let mut prefixes = Vec::new();
+    for index in 0..count {
+        let prefix = format!("U6b {tag} {index}:");
+        let text = format!("{prefix}{}", "q".repeat(width - prefix.len()));
+        u6_queue_resident(fx, &text, Vec::new()).await;
+        prefixes.push(prefix);
+        texts.push(text);
+    }
+    let original = u6_resident_keys(&fx.session.actor);
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_HUMAN_BAND_NO_EARLY_RELEASE");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let keys = state.message_delivery.held_input.entries.iter()
+            .filter(|entry| entry.source == super::interjection::HeldSource::HumanInterjection)
+            .map(|entry| entry.key.as_u64()).collect::<Vec<_>>();
+        assert_eq!(keys.len(), count, "{tag}");
+        assert_eq!(keys, original.iter().map(|entry| entry["key"].as_u64().unwrap())
+            .collect::<Vec<_>>(), "H6_HUMAN_BAND_ORIGINAL_KEYS");
+        assert!(fx.session.actor.pending_interjections.snapshot().is_empty(), "{tag}");
+    }
+    fx.server.enqueue_response("/v1/messages",
+        k2_script(k2lg_n_after_frames("msg_u6b_human_band_after")));
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_HUMAN_BAND_READABLE_CLOSED_CHECKPOINT").await;
+    stepper.resume();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_HUMAN_BAND_RELEASE_PROGRESS").expect("H6_HUMAN_BAND_TURN_TASK");
+    assert!(outcome.is_ok(), "H6_HUMAN_BAND_RELEASE_PROGRESS");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 4, "H6_HUMAN_BAND_NO_FALLBACK_REQUEST");
+    let text = u6_body_text(bodies.last().unwrap());
+    let mut previous = 0;
+    for (index, prefix) in prefixes.iter().enumerate() {
+        assert_eq!(text.matches(prefix).count(), 1, "H6_HUMAN_BAND_ONCE_ONLY");
+        let position = text.find(prefix).expect("H6_HUMAN_BAND_ONCE_ONLY");
+        assert!(index == 0 || previous < position, "H6_HUMAN_BAND_KEY_ORDER");
+        previous = position;
+    }
+    if count == 1 && width >= 256 * 1024 {
+        let expected = xai_interjection_core::format_interjection(texts[0].clone());
+        assert!(expected.len() < texts[0].len(), "H6_N3_EXISTING_FORMATTER_CUT");
+        assert!(text.contains(&expected), "H6_N3_FORMATTED_MODEL_TEXT");
+    }
+    let state = fx.session.actor.state.lock().await;
+    assert!(state.message_delivery.held_input.entries.is_empty(), "H6_HUMAN_BAND_EMPTY");
+    assert!(state.pending_inputs.iter().all(|input| input.prompt_id == KOXD_U6_PROMPT),
+        "H6_HUMAN_BAND_NO_FALLBACK_ROW");
+    drop(state);
+    continuation.assert_satisfied();
+    json!({"producer":"QueueInputRequest->queue_input->promote_queued_as_interjections",
+        "count":count,"input_bytes":count*width,"first_closed_safe_point_release":true,
+        "same_turn":true,"once_only_key_order":true,"fallback_row":false,
+        "formatter_cut_only":count==1 && width>=256*1024})
+}
+
+async fn u6b_monitor_ingress(
+    fx: &K2lgN,
+    running: &mut tokio::task::JoinHandle<Result<TurnOutcome, acp::Error>>,
+    task: &str,
+    text: &str,
+) -> u64 {
+    let buffer = fx.session.actor.tool_context.monitor_event_buffer.as_ref().unwrap();
+    fx.loop_tx.send(SessionCommand::InjectNotification {
+        prompt_id: format!("u6b-monitor-{task}"),
+        prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(format!(
+            "<monitor-event description=\"u6b\" task_id=\"{task}\">\n{text}\n</monitor-event>")))],
+        priority: NotificationPriority::Next,
+        source: NotificationSource::MonitorEvent { task_id: task.into() },
+    }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = running => panic!("H6_U65_MONITOR_INGRESS_TURN_ENDED"),
+            key = async {
+                loop {
+                    let key = buffer.release_view(xai_interjection_core::events::next_occurrence(),
+                        |event| event.task_id == task && event.event_text.contains(text))
+                        .iter().find_map(|(key, event)|
+                            (event.task_id == task && event.event_text.contains(text)).then_some(key.as_u64()));
+                    if let Some(key) = key {
+                        return key;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            } => key,
+        }
+    }).await.expect("H6_U65_MONITOR_INGRESS_BOUND")
+}
+
+async fn u6b_monitor_band() -> Value {
+    let (mut fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &mut fixture.fx;
+    const HUMAN: &str = "U6b N4 independent human";
+    u6_queue_resident(fx, HUMAN, Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N4_HUMAN_HELD");
+    for index in 0..129 {
+        let task = format!("u6b-n4-{index}");
+        let text = format!("U6b N4 monitor {index:03}");
+        u6b_monitor_ingress(fx, &mut turn.running, &task, &text).await;
+        k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+    }
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source ==
+            super::interjection::HeldSource::MonitorEvent).count(), 128,
+            "H6_N4_MONITOR_BAND_COUNT");
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source ==
+            super::interjection::HeldSource::HumanInterjection).count(), 1,
+            "H6_N4_HUMAN_INDEPENDENT");
+        let refusal = ledger.refusal.as_ref().expect("H6_N4_REFUSAL_RECORD");
+        assert_eq!(refusal.source, super::interjection::HeldSource::MonitorEvent,
+            "H6_N4_REFUSAL_SOURCE");
+        assert_eq!(format!("{:?}", refusal.reason), "MonitorBandFull", "H6_N4_REFUSAL_REASON");
+        assert_eq!(refusal.observed_len, 128, "H6_N4_REFUSAL_COUNT");
+    }
+    assert_eq!(u6_pinned_monitor_keys(fx).await.len(), 128, "H6_N4_OWNER_PINS");
+    let buffer = fx.session.actor.tool_context.monitor_event_buffer.as_ref().unwrap();
+    let unpinned = buffer.release_view(xai_interjection_core::events::next_occurrence(),
+        |event| event.task_id == "u6b-n4-128").iter().count();
+    assert_eq!(unpinned, 1, "H6_N4_REFUSED_PIN_STAYS_RESIDENT");
+    fx.server.enqueue_response("/v1/messages",
+        k2_script(k2lg_n_after_frames("msg_u6b_n4_after")));
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_N4_READABLE_CLOSED_CHECKPOINT").await;
+    stepper.resume();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N4_RELEASE_PROGRESS").expect("H6_N4_TURN_TASK");
+    assert!(outcome.is_ok(), "H6_N4_RELEASE_PROGRESS");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 4, "H6_N4_NO_FALLBACK_REQUEST");
+    let text = u6_body_text(bodies.last().unwrap());
+    assert_eq!(text.matches(HUMAN).count(), 1, "H6_N4_HUMAN_RELEASED_ONCE");
+    for index in 0..129 {
+        assert_eq!(text.matches(&format!("U6b N4 monitor {index:03}")).count(), 1,
+            "H6_N4_MONITOR_RELEASED_ONCE");
+    }
+    assert!(u6_pinned_monitor_keys(fx).await.is_empty(), "H6_N4_PINS_EMPTY");
+    continuation.assert_satisfied();
+    json!({"producer":"SessionCommand::InjectNotification", "pinned":128,
+        "refusal":"monitor_band_full", "refused_resident_released":true,
+        "human_band_independent":true, "once_only_monitor_count":129})
+}
+
+async fn u6b_deferred_image() -> Value {
+    let mut fixture = u6_fixture(Some(Arc::<str>::from(u6_png(160))), K2lgNOptions::default()).await;
+    let fx = &mut fixture.fx;
+    let mut turn = u6_handoff(fx).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let (checkpoint, _) = u6_quiescent_reload(fx, "H6_N7_INITIAL_CHECKPOINT").await;
+    let mut continuation = fx.server.expect_response_blocked("U6b N7 results-only continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2lg_n_closure_frames()));
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_n7_after")));
+    fx.session.releases[1].add_permits(1);
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = continuation.wait_blocked() => {},
+            _ = &mut turn.running => panic!("H6_N7_CONTINUATION_PROGRESS"),
+        }
+    }).await.expect("H6_N7_CONTINUATION_PROGRESS");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let deferred = state.message_delivery.held_input.entries.iter()
+            .filter(|entry| entry.source == super::interjection::HeldSource::DeferredFollowUp)
+            .collect::<Vec<_>>();
+        assert_eq!(deferred.len(), 1, "H6_N7_FOLLOWUP_HELD");
+        assert!(deferred.iter().any(|entry| matches!(&entry.body,
+            super::interjection::HeldBody::Owned(item)
+            if serde_json::to_vec(item).unwrap().len() > 32_768)),
+            "H6_N7_REAL_OVERSIZED_FOLLOWUP");
+    }
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 3, "H6_N7_PENDING_REQUEST_COUNT");
+    u6_assert_results_only(&checkpoint, &bodies[1], &bodies[2]);
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_N7_READABLE_CLOSED_CHECKPOINT").await;
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N7_RELEASE_PROGRESS").expect("H6_N7_TURN_TASK");
+    assert!(outcome.is_ok(), "H6_N7_RELEASE_PROGRESS");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 4, "H6_N7_FIRST_RELEASE_REQUEST");
+    let image_count = bodies[3]["messages"].as_array().unwrap().iter()
+        .flat_map(|message| message["content"].as_array().unwrap())
+        .filter(|part| part["type"] == "image").count();
+    assert_eq!(image_count, 1, "H6_N7_IMAGE_RELEASED_ONCE");
+    assert!(fx.session.actor.state.lock().await.message_delivery.held_input.entries.is_empty(),
+        "H6_N7_CUSTODY_EMPTY");
+    continuation.assert_satisfied();
+    json!({"source":"real client MCP image follow-up", "image_side":160,
+        "per_entry_byte_limit":false,"held_before_closure":true,
+        "first_closed_safe_point_release":true,"image_once":true,"same_turn":true})
+}
+
+async fn u6b_deferred_band() -> Value {
+    let (mut fixture, mut turn, _, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &mut fixture.fx;
+    u6_queue_resident(fx, "U6b N8 independent human", Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N8_HUMAN_HELD");
+    for index in 0..128 {
+        k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+            ConversationItem::system_reminder(format!("U6b N8 constructed follow-up {index}")),
+            super::interjection::HeldSource::DeferredFollowUp)).await
+            .expect("H6_N8_ACCEPTED_PREFIX");
+    }
+    let error = k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+        ConversationItem::system_reminder("U6b N8 refused constructed follow-up"),
+        super::interjection::HeldSource::DeferredFollowUp)).await
+        .expect_err("H6_N8_BAND_LIMIT");
+    assert_eq!(error.data.as_ref().and_then(|data| data.get("code")).and_then(Value::as_str),
+        Some("native_held_input_incomplete"), "H6_N8_TYPED_INCOMPLETE");
+    let message = error.data.as_ref().and_then(|data| data.get("message"))
+        .and_then(Value::as_str).unwrap_or(&error.message);
+    assert!(message.contains("deferred_band_full"), "H6_N8_NAMED_REASON");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source ==
+            super::interjection::HeldSource::DeferredFollowUp).count(), 128,
+            "H6_N8_PREFIX_RETAINED");
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source ==
+            super::interjection::HeldSource::HumanInterjection).count(), 1,
+            "H6_N8_HUMAN_INDEPENDENT");
+        let refusal = ledger.refusal.as_ref().expect("H6_N8_REFUSAL_RECORD");
+        assert_eq!(refusal.source, super::interjection::HeldSource::DeferredFollowUp,
+            "H6_N8_REFUSAL_SOURCE");
+        assert_eq!(format!("{:?}", refusal.reason), "DeferredBandFull", "H6_N8_REFUSAL_REASON");
+        assert_eq!(refusal.observed_len, 128, "H6_N8_REFUSAL_COUNT");
+    }
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N8_NO_NEW_CONTINUATION_HTTP");
+    assert!(!turn.running.is_finished(), "H6_N8_REAL_LATCH_STILL_ACTIVE");
+    continuation.release();
+    turn.running.abort();
+    let _ = turn.running.await;
+    json!({"kind":"constructed custody-call fallback on a real active native latch",
+        "producer":"SessionActor::hold_or_push_user_item, not a 129-follow-up tool fixture",
+        "typed_outcome":"native_held_input_incomplete", "reason":"deferred_band_full",
+        "accepted_prefix":128,"human_independent":true,"new_http":0,
+        "real_129_followup_exchange_end_proven":false})
+}
+
+async fn u6b_drop_monitor(fx: &K2lgN, running: &mut U6Running, task: &str) {
+    fx.loop_tx.send(SessionCommand::DropMonitorNotifications { task_id: task.into() }).unwrap();
+    let buffer = fx.session.actor.tool_context.monitor_event_buffer.as_ref().unwrap();
+    u6_await_turn_progress(running, "real monitor drop", "H6_L6_DROP_REMOVES_OCCURRENCE",
+        "H6_L6_DROP_TURN_ENDED", || async {
+            buffer.release_view(xai_interjection_core::events::next_occurrence(),
+                |event| event.task_id == task).iter().count() == 0
+        }).await;
+}
+
+async fn u6b_monitor_protocol(mode: &str) -> Value {
+    const TASK: &str = "u6b-lifecycle";
+    const TEXT: &str = "U6b lifecycle equal monitor payload";
+    let idle = std::rc::Rc::new(K0IdleObserver::default());
+    let mut fixture = u6_fixture_controlled(None, K2lgNOptions::default(), U6PersistenceControl {
+        idle_observer: Some(idle.clone()), ..Default::default()
+    }).await;
+    let fx = &mut fixture.fx;
+    let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false});
+    let mut turn = u6_handoff_with_salvage(fx, None, Some(schema), None, None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let mut closing = fx.server.expect_response_blocked("U6b final server closure + valid StructuredOutput",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2_frames("msg_u6b_monitor_final", vec![
+            k2_result("srvtoolu_k2_pending", "alpha__lookup"),
+            (json!({"type":"tool_use","id":"client_u6b_monitor_so","name":"StructuredOutput","input":{"answer":"finished"}}), Vec::new())
+        ], "tool_use")));
+    fx.session.releases[1].add_permits(1);
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = closing.wait_blocked() => {},
+            _ = &mut turn.running => panic!("H6_L5_FINAL_SAMPLE_TURN_ENDED"),
+        }
+    }).await.expect("H6_L5_FINAL_SAMPLE_BOUND");
+    let first = u6b_monitor_ingress(fx, &mut turn.running, TASK, TEXT).await;
+    if mode == "drop-before-admission" {
+        u6b_drop_monitor(fx, &mut turn.running, TASK).await;
+    } else {
+        k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+        assert_eq!(u6_pinned_monitor_keys(fx).await.len(), 1, "H6_L5_REAL_OWNER_PIN");
+    }
+    let dropped = matches!(mode, "drop-before-admission" | "drop-held" | "drop-after-cancel");
+    let mut delivered_key = first;
+    if matches!(mode, "drop-held" | "equal") {
+        u6b_drop_monitor(fx, &mut turn.running, TASK).await;
+        if mode == "equal" {
+            delivered_key = u6b_monitor_ingress(fx, &mut turn.running, TASK, TEXT).await;
+            assert!(delivered_key > first, "H6_L11_EQUAL_PAYLOAD_DISTINCT_OCCURRENCE");
+            k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+        }
+    }
+    if mode == "user-start" {
+        assert!(fx.session.actor.consume_deferred_completions().await.is_empty(), "H6_L7_USER_START_NO_COMPLETION");
+        assert_eq!(u6_pinned_monitor_keys(fx).await.len(), 1, "H6_L7_USER_START_KEEPS_PIN");
+    }
+    let foreign_owner = xai_interjection_core::events::next_occurrence();
+    if mode == "kill" {
+        let buffer = fx.session.actor.tool_context.monitor_event_buffer.as_ref().unwrap();
+        buffer.push(xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventNotification {
+            task_id: "u6b-foreign-pin".into(), event_text: "foreign monitor must stay resident".into(),
+            owner_session_id: Some("u6b-foreign-session".into()),
+        });
+        buffer.pin_matching(foreign_owner, |event| event.task_id == "u6b-foreign-pin", |_, _| true);
+        assert_eq!(buffer.release_view(foreign_owner, |_| false).iter().count(), 1, "H6_L8_FOREIGN_PIN_ESTABLISHED");
+    }
+    if matches!(mode, "cancel" | "rewind" | "kill" | "drop-after-cancel") {
+        if mode == "rewind" { fx.session.actor.state.lock().await.rewindable = true; }
+        let options = crate::session::CancelOptions {
+            cancel_subagents: false, kill_background_tasks: mode == "kill", user_initiated: true,
+            trigger: Some(crate::session::CancelTrigger::CtrlC),
+            history: if mode == "rewind" { crate::session::CancelHistoryDisposition::RewindIfNoOutput {
+                prompt_id: Some(KOXD_U6_PROMPT.into())
+            }} else { crate::session::CancelHistoryDisposition::Keep },
+        };
+        let outcome = fx.session.actor.cancel_running_task(options).await;
+        assert!(outcome.turn_stopped, "H6_L7_CANCEL_STOPS_REAL_TURN");
+        let joined = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await.expect("H6_L7_CANCEL_OUTCOME_BOUND");
+        assert!(matches!(joined, Err(error) if error.is_cancelled()), "H6_L7_CANCEL_OWNS_ABORT");
+        if mode == "drop-after-cancel" {
+            fx.loop_tx.send(SessionCommand::DropMonitorNotifications { task_id: TASK.into() }).unwrap();
+            tokio::time::timeout(K0_TIMEOUT, async {
+                while !u6_pinned_monitor_keys(fx).await.is_empty() { tokio::task::yield_now().await; }
+            }).await.expect("H6_L6_RETAINED_CANCEL_DROP_REMOVES_PIN");
+        }
+        if mode == "kill" {
+            let buffer = fx.session.actor.tool_context.monitor_event_buffer.as_ref().unwrap();
+            assert_eq!(buffer.release_view(foreign_owner, |_| false).iter().count(), 1, "H6_L8_FOREIGN_PIN_SURVIVES_KILL");
+            buffer.unpin_all(foreign_owner);
+        }
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert!(state.pending_notifications.iter().all(|notice| !matches!(&notice.source,
+            NotificationSource::MonitorEvent { task_id } if task_id == TASK)), "H6_L7_CANCEL_NO_NOTIFICATION_COPY");
+        let monitor_entries = ledger.entries.iter().filter(|entry| entry.source == super::interjection::HeldSource::MonitorEvent).count();
+        assert_eq!(monitor_entries, usize::from(mode != "kill"), "H6_L8_KILL_DISCARDS_OWN_CUSTODY");
+        return json!({"mode":mode,"constructed":false,"cancelled":true,"monitor_entries":monitor_entries,
+            "dropped":dropped,"http":fx.server.messages_request_count()});
+    }
+    closing.release();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await.expect("H6_L5_FINAL_OUTCOME_BOUND");
+    assert!(matches!(outcome, Ok(Ok(TurnOutcome::Completed { structured_output: Some(Ok(_)), .. }))),
+        "H6_L5_MATCHING_FINAL_RESPONSE_COMPLETED");
+    let (checkpoint, _) = u6_quiescent_reload(fx, "H6_L5_COMMITTED_CLOSURE_READ").await;
+    let response = checkpoint.source.responses.iter().find(|response|
+        response.provider_response_id.as_ref().and_then(Value::as_str) == Some("msg_u6b_monitor_final"))
+        .expect("H6_L5_MATCHING_SERVER_RESULT");
+    assert!(checkpoint.ledger.transitions.iter().any(|entry|
+        entry["request"].as_str() == Some(response.request.as_str()) &&
+        entry["occurrence"].as_u64() == Some(response.occurrence) && entry["primary_resolution"] == "Committed"),
+        "H6_L5_PRIMARY_COMMITTED");
+    fx.session.actor.state.lock().await.notifications_suppressed = true;
+    let (processed, acknowledgement) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+        prompt_id: KOXD_U6_PROMPT.into(), epoch: turn.epoch,
+        result: Box::new(crate::session::commands::ok_end_turn(0, None)), elapsed_ms: Some(0), processed,
+    }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, acknowledgement).await.expect("H6_L5_COMPLETION_COMMAND_BOUND").unwrap();
+    tokio::time::timeout(K0_TIMEOUT, idle.notification.notified()).await.expect("H6_L5_POST_DRAIN_IDLE_OBSERVER");
+    assert!(idle.count.get() > 0, "H6_L5_REGISTERED_IDLE_CONTRIBUTOR");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.running_task.is_none(), "H6_L5_IDLE_AFTER_REAL_COMPLETION");
+        assert!(state.pending_notifications.iter().all(|notice| !matches!(&notice.source,
+            NotificationSource::MonitorEvent { task_id } if task_id == TASK)), "H6_L5_NO_SECOND_PENDING_EVENT");
+        let ledger = &state.message_delivery.held_input;
+        let pinned = ledger.bands(fx.session.actor.live_parent_steer_slots(&state)).monitor.held;
+        assert_eq!(pinned, usize::from(!dropped), "H6_L7_COMPLETION_SWEEP_KEEPS_OWNER_PIN");
+        if !dropped {
+            assert!(ledger.entries.iter().any(|entry| entry.key.as_u64() == delivered_key),
+                "H6_L7_COMPLETION_SWEEP_KEEPS_LEDGER_REFERENCE");
+        }
+    }
+    if mode == "idle" {
+        fx.session.actor.state.lock().await.notifications_suppressed = false;
+        let (completion_tx, _completion_rx) = tokio::sync::mpsc::unbounded_channel();
+        fx.session.actor.clone().maybe_drain_notifications(completion_tx).await;
+        assert_eq!(u6_pinned_monitor_keys(fx).await.len(), 1, "H6_L7_IDLE_SWEEP_KEEPS_PIN");
+        fx.session.actor.state.lock().await.notifications_suppressed = true;
+    }
+    if mode == "no-next-turn" {
+        assert_eq!(fx.server.messages_request_count(), 3, "H6_L5_NO_NEXT_TURN_NO_HTTP");
+        return json!({"mode":mode,"constructed":false,"post_drain_observer":true,"http":3,
+            "pinned_key":delivered_key,"idle_count":idle.count.get()});
+    }
+    let mut next = fx.server.expect_response_blocked("U6b actual next notification-turn request",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2lg_n_after_frames("msg_u6b_monitor_next")));
+    fx.session.actor.state.lock().await.notifications_suppressed = false;
+    fx.loop_tx.send(SessionCommand::InjectNotification {
+        prompt_id: "u6b-monitor-next-notification".into(),
+        prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new("U6b independent completion notification"))],
+        priority: NotificationPriority::Next,
+        source: NotificationSource::MonitorCompleted { task_id: "u6b-independent-next".into() },
+    }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, next.wait_blocked()).await.expect("H6_L5_ACTUAL_NEXT_NOTIFICATION_HTTP");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 4, "H6_L5_NEXT_NOTIFICATION_ONLY_ONE_REQUEST");
+    let monitor_count = |body: &Value| body["messages"].as_array().into_iter().flatten()
+        .filter(|message| message["role"] == "user")
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str())
+        .map(|text| text.matches(TEXT).count()).sum::<usize>();
+    let counts = bodies.iter().map(monitor_count).collect::<Vec<_>>();
+    assert_eq!(counts, vec![0, 0, 0, usize::from(!dropped)], "H6_L11_ONLY_CURRENT_EQUAL_OCCURRENCE_DELIVERS");
+    assert!(u6_pinned_monitor_keys(fx).await.is_empty(), "H6_L5_SUBMITTED_PIN_REMOVED");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.message_delivery.held_input.entries.iter().all(|entry|
+            entry.source != super::interjection::HeldSource::MonitorEvent), "H6_L6_ABSENT_KEY_SUPPRESSES_AND_PRUNES_RELEASE");
+    }
+    next.release();
+    tokio::time::timeout(K0_TIMEOUT, idle.notification.notified()).await.expect("H6_L5_NEXT_NOTIFICATION_COMPLETES");
+    closing.assert_satisfied();
+    next.assert_satisfied();
+    json!({"mode":mode,"constructed":false,"post_drain_observer":true,"http":4,
+        "monitor_counts":counts,"first_key":first,"delivered_key":delivered_key})
+}
+
+async fn u6b_n10() -> Value {
+    use super::interjection::{HeldBand, HeldBands, HeldBindingMeta, HeldCommitError, HeldParentSelection, HeldSource};
+    let (fixture, turn, stepper, _continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    stepper.pause();
+    let actor = &fixture.fx.session.actor;
+    let _parent = u6_admit_steer(actor, "U6b N10 live projecting Steer", "u6b-n10").await;
+    let mut state = actor.state.lock().await;
+    let task = state.running_task.as_ref().expect("H6_N10_RUNNING_OWNER");
+    let binding = xai_message_delivery_core::TurnBinding::new(task.prompt_id.clone(), task.epoch);
+    let meta = HeldBindingMeta { prompt_id: task.prompt_id.clone(), epoch: format!("{:?}", task.epoch) };
+    assert_eq!(actor.live_parent_steer_slots(&state), 1, "H6_N10_PENDING_STEER_SLOT");
+    let result = actor.commit_held_parent_batch(&mut state, &binding, &meta, HeldParentSelection::All,
+        |parents, _| {
+            assert_eq!(parents.len(), 1, "H6_N10_REAL_PARENT_COMMIT_MEMBERSHIP");
+            Err(HeldCommitError::ChatStateUnavailable)
+        });
+    assert!(matches!(result, Err(HeldCommitError::ChatStateUnavailable)), "H6_N10_PROJECTING_FAILURE_INSTALLED");
+    assert!(actor.held_parent_views(&state, &binding, &meta).is_empty(), "H6_N10_PENDING_ONLY_VIEW_EMPTY");
+    let live = actor.live_parent_steer_slots(&state);
+    assert_eq!(live, 1, "H6_N10_ALL_LIVE_STEER_SLOTS");
+    let ledger = &state.message_delivery.held_input;
+    let count = |source| ledger.entries.iter().filter(|entry| entry.source == source).count();
+    let entry_band = |source, limit| HeldBand { held: count(source), limit, refused_total: 0 };
+    let pin_count = match (ledger.pin_owner, actor.tool_context.monitor_event_buffer.as_ref()) {
+        (Some(owner), Some(buffer)) => buffer.release_view(owner, |_| false).iter().count(),
+        _ => 0,
+    };
+    let expected = [
+        entry_band(HeldSource::HumanInterjection, None),
+        HeldBand { held: 1, limit: Some(32), refused_total: 0 },
+        HeldBand { held: pin_count, limit: Some(128), refused_total: 0 },
+        entry_band(HeldSource::DeferredFollowUp, Some(128)),
+        entry_band(HeldSource::StationarityReminder, Some(128)),
+        entry_band(HeldSource::SkillReminder, Some(128)),
+        entry_band(HeldSource::PlanActivation, Some(1)),
+    ];
+    let actual: HeldBands = ledger.bands(live);
+    assert_eq!([actual.human, actual.steer, actual.monitor, actual.deferred, actual.stationarity, actual.skill, actual.plan],
+        expected, "H6_N10_BAND_STORE_RECOUNT");
+    assert_eq!(actual.parent_stamps, ledger.parent_stamps.len(), "H6_N10_STAMP_RECOUNT");
+    json!({"constructed":true,"reason":"real admitted parent, deliberately failed batch creates Projecting",
+        "live_steer_slots":live,"pending_view":0,"monitor_pins":pin_count,"parent_stamps":actual.parent_stamps,
+        "human":actual.human.held,"deferred":actual.deferred.held,"stationarity":actual.stationarity.held,
+        "skill":actual.skill.held,"plan":actual.plan.held})
+}
+
+async fn u6_l2_loop_top_structured_output_retry() -> Value {
+    const HUMAN: &str = "SOQ L2 loop-top held human";
+    const INVALID_CALL: &str = "client_soq_so_invalid";
+    const VALID_CALL: &str = "client_soq_so_valid";
+    let last_stage = std::cell::Cell::new("S1");
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let record = |check: &str, token: &str, observed: Value, expected: Value, holds: bool, premises: &[&str]| {
+            u6_observe(json!({"stage":"SOQ oracle","check":check,"observed":observed,"expected":expected,"holds":holds,"premises":premises}));
+            assert!(holds, "{token}");
+        };
+        let digest = |value: &Value, token: &str| {
+            format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(serde_json::to_vec(value).expect(token)))
+        };
+        let parts = |body: &Value| -> Vec<(usize, usize, Value)> {
+            body.get("messages").and_then(Value::as_array).into_iter().flatten().enumerate()
+                .flat_map(|(i, message)| message.get("content").and_then(Value::as_array).into_iter().flatten().enumerate()
+                    .map(move |(j, part)| (i, j, part.clone())))
+                .collect()
+        };
+        let user_parts = |body: &Value| -> Vec<(usize, usize, Value)> {
+            parts(body).into_iter().filter(|(i, _, _)| body["messages"][*i]["role"] == "user").collect()
+        };
+        let containment = |body: &Value| user_parts(body).iter()
+            .filter(|(_, _, part)| part["type"] == "text" && part["text"].as_str().is_some_and(|text| text.contains(HUMAN))).count();
+        let primary = |checkpoint: &K2Checkpoint, request: &str, lease: u64, attempt: u64, occurrence: u64| -> Vec<Value> {
+            checkpoint.ledger.transitions.iter().filter(|entry| entry.get("primary_resolution").is_some()
+                && entry["request"].as_str() == Some(request) && entry["lease"].as_u64() == Some(lease)
+                && entry["attempt"].as_u64() == Some(attempt) && entry["occurrence"].as_u64() == Some(occurrence)).cloned().collect()
+        };
+        let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false});
+        let invalid_input = json!({"verdict":7});
+        let valid_input = json!({"answer":"SOQ final valid structured output"});
+        u6_observe(json!({"stage":"SOQ S1 real fixture","bookkeeping_feedback":false,"media_resample":false}));
+        let mut fixture = u6_fixture_with_bookkeeping(None, K2lgNOptions::default(), false, false).await;
+        let updates = fixture.persistence_control.updates.clone();
+        let fx = &mut fixture.fx;
+        last_stage.set("S2");
+        let budget: Option<u32> = None;
+        u6_observe(json!({"stage":"SOQ S2 schema-bearing handoff","schema_sha256":digest(&schema,"H6_SOQ_S5_DECLARATIONS"),"salvage_budget_enabled":budget.is_some_and(|value| value > 0)}));
+        let mut turn = u6_handoff_with_salvage(fx, budget, Some(schema.clone()), None, None).await;
+        last_stage.set("S3");
+        let _stop = K0Abort(turn.running.abort_handle());
+        last_stage.set("S4");
+        u6_observe(json!({"stage":"SOQ S4 LivePending checkpoint"}));
+        let (checkpoint, _) = u6_quiescent_reload(fx, "H6_SOQ_R20_RELOAD").await;
+        let live = k2lg_n_live(&checkpoint);
+        let origin = checkpoint.source.producing_bindings.last().map(|binding| binding.origin_ref.clone());
+        u6_observe(json!({"stage":"SOQ S4 live and origin","live":live,"origin_found":origin.is_some()}));
+        assert!(live && origin.is_some(), "H6_SOQ_S4_LIVE_PENDING");
+        let origin = origin.expect("H6_SOQ_S4_LIVE_PENDING");
+        let original_groups: Vec<_> = checkpoint.ledger.groups.iter().filter(|group| {
+            group.origin_ref == origin && group.members.iter().any(|member| {
+                checkpoint.source.ordered_blocks.get(member.occurrence as usize)
+                    .and_then(|block| checkpoint.blobs.get(&block.block.digest))
+                    .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+                    .is_some_and(|raw| raw["id"] == "srvtoolu_k2_pending")
+            })
+        }).collect();
+        u6_observe(json!({"stage":"SOQ S4 original group","matching_groups":original_groups.len()}));
+        assert!(original_groups.len() == 1, "H6_SOQ_S4_LIVE_PENDING");
+        let original_group = (*original_groups[0]).clone();
+        last_stage.set("S5");
+        let initial_bodies = k2lg_n_bodies(&fx.server);
+        u6_observe(json!({"stage":"SOQ S5 request snapshot","http":initial_bodies.len()}));
+        assert!(initial_bodies.len() == 2, "H6_SOQ_S5_DECLARATIONS");
+        let tools = initial_bodies[1]["tools"].clone();
+        let tool_entries: Vec<_> = tools.as_array().into_iter().flatten().collect();
+        let mut tool_names: Vec<_> = tool_entries.iter().filter_map(|tool| tool["name"].as_str().map(str::to_owned)).collect();
+        tool_names.sort();
+        let tools_digest = digest(&tools, "H6_SOQ_S5_DECLARATIONS");
+        u6_observe(json!({"stage":"SOQ S5 declaration names","names":tool_names,"tools_sha256":tools_digest}));
+        assert!(["alpha__lookup","zeta__fetch"].iter().all(|name| tool_names.iter().any(|actual| actual == name)), "H6_SOQ_S5_DECLARATIONS");
+        let so_entries: Vec<_> = tool_entries.iter().filter(|tool| tool["name"] == "StructuredOutput").collect();
+        let so_schema_equal = so_entries.first().is_some_and(|entry| entry["input_schema"] == schema);
+        u6_observe(json!({"stage":"SOQ S5 StructuredOutput declaration","count":so_entries.len(),"input_schema_equal":so_schema_equal}));
+        assert!(so_entries.len() == 1 && so_schema_equal, "H6_SOQ_S5_STRUCTURED_OUTPUT_DECLARATION");
+        let so_digest = digest(so_entries[0], "H6_SOQ_S5_STRUCTURED_OUTPUT_DECLARATION");
+        let schema_reminder = user_parts(&initial_bodies[1]).iter().any(|(_, _, part)| part["type"] == "text"
+            && part["text"].as_str().is_some_and(|text| text.contains("A response schema is required")));
+        u6_observe(json!({"stage":"SOQ S5 declaration snapshot","tools_sha256":tools_digest,"structured_output_declaration_sha256":so_digest,"schema_reminder_present":schema_reminder}));
+        last_stage.set("S6");
+        u6_observe(json!({"stage":"SOQ S6 real resident ingress"}));
+        u6_interject(fx, HUMAN, Vec::new()).await;
+        let resident_s6 = fx.session.actor.pending_interjections.snapshot().iter().filter(|item| item.text == HUMAN).count();
+        let history_s6 = fx.session.actor.chat_state_handle.get_conversation().await;
+        let history_count_s6 = history_s6.iter().filter(|item| item.text_content().contains(HUMAN)).count();
+        u6_observe(json!({"stage":"SOQ S6 resident precondition","resident":resident_s6,"human_in_history":history_count_s6}));
+        assert!(resident_s6 == 1 && history_count_s6 == 0, "H6_SOQ_S6_RESIDENT");
+        last_stage.set("S7");
+        let matcher = xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages);
+        let mut n = fx.server.expect_response_blocked("SOQ N closure + invalid StructuredOutput", matcher, k2_script(k2_frames(
+            "msg_soq_n_closed", vec![k2_result("srvtoolu_k2_pending", "alpha__lookup"),
+                (json!({"type":"tool_use","id":INVALID_CALL,"name":"StructuredOutput","input":invalid_input.clone()}), Vec::new())], "tool_use")));
+        let mut n1 = fx.server.expect_response_blocked("SOQ N+1 valid StructuredOutput", matcher, k2_script(k2_frames(
+            "msg_soq_n1_valid", vec![(json!({"type":"tool_use","id":VALID_CALL,"name":"StructuredOutput","input":valid_input.clone()}), Vec::new())], "tool_use")));
+        last_stage.set("S8");
+        u6_observe(json!({"stage":"SOQ S8 release second handoff client"}));
+        fx.session.releases[1].add_permits(1);
+        last_stage.set("S9");
+        let reached = tokio::time::timeout(K0_TIMEOUT, async {
+            tokio::select! { biased; _ = n.wait_blocked() => None, outcome = &mut turn.running => Some(outcome) }
+        }).await;
+        let progress = json!({"http_count":fx.server.messages_request_count(),"human_in_history":fx.session.actor.chat_state_handle.get_conversation().await.iter().filter(|item| item.text_content().contains(HUMAN)).count()});
+        match reached {
+            Ok(None) => {},
+            Ok(Some(outcome)) => u6_turn_ended(outcome, "SOQ S9 Barrier B1", "H6_SOQ_B1_TURN_ENDED", progress),
+            Err(_) => u6_bound_expired(&turn.running, "SOQ S9 Barrier B1", "H6_SOQ_B1_BOUND", progress),
+        }
+        u6_observe(json!({"stage":"SOQ barrier","barrier":"B1"}));
+        let b1_index = U6_ARM_OBSERVATIONS.with(|records| records.borrow().len().saturating_sub(1));
+        last_stage.set("O1");
+        let bodies_b1 = k2lg_n_bodies(&fx.server);
+        record("O1.1", "H6_SOQ_O1_1", json!({"http":bodies_b1.len()}), json!({"http":3}), bodies_b1.len() == 3, &["PR-01","PR-03"]);
+        u6_observe(json!({"stage":"SOQ O1.1 committed results-only check"}));
+        u6_assert_results_only(&checkpoint, &bodies_b1[1], &bodies_b1[2]);
+        let history_b1 = fx.session.actor.chat_state_handle.get_conversation().await;
+        let history_count_b1 = history_b1.iter().filter(|item| item.text_content().contains(HUMAN)).count();
+        let containment_b1 = containment(&bodies_b1[2]);
+        record("O1.2", "H6_SOQ_O1_2", json!({"body_containment":containment_b1,"history":history_count_b1}), json!({"body_containment":0,"history":0}), containment_b1 == 0 && history_count_b1 == 0, &["PR-03"]);
+        let running_b1 = !turn.running.is_finished();
+        record("O1.3", "H6_SOQ_O1_3", json!(running_b1), json!(true), running_b1, &["PR-17"]);
+        let held_b1 = {
+            let state = fx.session.actor.state.lock().await;
+            state.message_delivery.held_input.entries.iter().filter(|entry| matches!(&entry.body, super::interjection::HeldBody::Human(raw) if raw.text == HUMAN)).count()
+        };
+        let resident_b1 = fx.session.actor.pending_interjections.snapshot().iter().filter(|item| item.text == HUMAN).count();
+        record("O1.4", "H6_SOQ_O1_4", json!({"held":held_b1,"resident":resident_b1}), json!({"held":1,"resident":0}), held_b1 == 1 && resident_b1 == 0, &["PR-03","PR-10"]);
+        u6_observe(json!({"stage":"SOQ B1 snapshots","body_sha256":bodies_b1.iter().map(|body| digest(body,"H6_SOQ_O1_1")).collect::<Vec<_>>(),"human_containment_by_body":bodies_b1.iter().map(|body| containment(body)).collect::<Vec<_>>()}));
+        last_stage.set("S10");
+        let stepper = u6_current_stepper();
+        let was_paused = stepper.0.paused.get();
+        stepper.pause();
+        let n_ownership_snapshot: std::collections::HashSet<_> = {
+            let owned = fx.session.actor.turn_stream_drained.lock();
+            owned.keys().cloned().collect()
+        };
+        u6_observe(json!({"stage":"SOQ C1 ownership snapshot","n_ownership_snapshot_size":n_ownership_snapshot.len()}));
+        assert!(!n_ownership_snapshot.is_empty(), "H6_SOQ_N_OWNERSHIP_SNAPSHOT_EMPTY");
+        n.release();
+        let steps = std::cell::Cell::new(0u32);
+        let drain_holds = std::cell::Cell::new(0u32);
+        let persisted_reads = std::cell::Cell::new(0u32);
+        let rounds = std::cell::Cell::new(0u32);
+        let last_counter = std::cell::Cell::new(std::time::Instant::now());
+        let n_response_found = std::cell::Cell::new(None::<usize>);
+        let last_primary = std::cell::RefCell::new(Value::Null);
+        let saved = std::cell::RefCell::new(None);
+        let (f, st, s, d, pr, r, clock, ownership, found, resolution, saved_ref, primary_ref) =
+            (&*fx, &stepper, &steps, &drain_holds, &persisted_reads, &rounds, &last_counter,
+             &n_ownership_snapshot, &n_response_found, &last_primary, &saved, &primary);
+        u6_await_turn_progress(&mut turn.running, "SOQ S10 N committed closure", "H6_SOQ_N_COMMITTED_CHECKPOINT", "H6_SOQ_N_COMMITTED_TURN_ENDED", || async move {
+            let mut new_ownership_keys: Vec<_> = {
+                let owned = f.session.actor.turn_stream_drained.lock();
+                owned.keys().filter(|key| !ownership.contains(*key)).map(|key| key.as_str().to_owned()).collect()
+            };
+            new_ownership_keys.sort();
+            let http = f.server.messages_request_count();
+            r.set(r.get() + 1);
+            if !new_ownership_keys.is_empty() || http > 3 {
+                u6_observe(json!({"stage":"SOQ C1 negative","request_after_n_before_committed":true,"new_ownership_keys":new_ownership_keys,"messages_request_count":http,"round":r.get(),"steps":s.get(),"drain_holds":d.get(),"persisted_reads":pr.get(),"n_response_found":found.get(),"n_primary":resolution.borrow().clone()}));
+                panic!("H6_SOQ_O2_6");
+            }
+            if r.get() == 1 || clock.get().elapsed() >= Duration::from_millis(250) {
+                u6_observe(json!({"stage":"SOQ wait counters","round":r.get(),"steps":s.get(),"drain_holds":d.get(),"persisted_reads":pr.get(),"messages_request_count":http,"n_response_found":found.get(),"n_primary":resolution.borrow().clone(),"new_ownership_keys":new_ownership_keys}));
+                clock.set(std::time::Instant::now());
+            }
+            let draining = !f.session.actor.turn_stream_drained.lock().is_empty();
+            if draining {
+                d.set(d.get() + 1);
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                return false;
+            }
+            let actor = f.session.actor.chat_state_handle.read_native_history().await;
+            if let Some(checkpoint) = actor.as_ref().ok().and_then(|read| read.checkpoint.as_ref()) {
+                let responses: Vec<_> = checkpoint.source.responses.iter().filter(|response|
+                    response.provider_response_id.as_ref().and_then(Value::as_str) == Some("msg_soq_n_closed")).collect();
+                found.set(Some(responses.len()));
+                let n_primary = if responses.len() == 1 {
+                    let response = responses[0];
+                    primary_ref(checkpoint, &response.request, response.lease, response.attempt, response.occurrence)
+                } else { Vec::new() };
+                let current = if n_primary.len() == 1 { n_primary[0]["primary_resolution"].clone() } else { Value::Null };
+                resolution.replace(current.clone());
+                if n_primary.len() == 1 && current == "Rejected" {
+                    u6_observe(json!({"stage":"SOQ C1 negative","n_primary":"Rejected","n_response_found":responses.len(),"round":r.get(),"steps":s.get()}));
+                    panic!("H6_SOQ_O2_3");
+                }
+                if n_primary.len() == 1 && current == "Committed" {
+                    pr.set(pr.get() + 1);
+                    let disk = u6_persisted_native_read(f).await;
+                    if disk.as_ref().ok().and_then(|read| read.checkpoint.as_ref()).is_some_and(|disk| disk.source == checkpoint.source && disk.ledger == checkpoint.ledger) {
+                        saved_ref.replace(Some((**checkpoint).clone()));
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    return false;
+                }
+            }
+            if st.0.finished.get() { return false; }
+            if st.0.wake.ready.load(std::sync::atomic::Ordering::SeqCst) {
+                s.set(s.get() + 1);
+                if s.get() > 512 {
+                    u6_observe(json!({"stage":"SOQ C1 step bound","steps":s.get(),"round":r.get()}));
+                    panic!("H6_SOQ_N_COMMITTED_STEP_BOUND");
+                }
+                let _ = st.step().await;
+            } else {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            false
+        }).await;
+        last_stage.set("O2");
+        let closed = saved.into_inner();
+        u6_observe(json!({"stage":"SOQ O2 saved checkpoint","found":closed.is_some(),"stepper_paused":stepper.0.paused.get()}));
+        assert!(closed.is_some() && stepper.0.paused.get(), "H6_SOQ_N_COMMITTED_CHECKPOINT");
+        let closed = closed.expect("H6_SOQ_N_COMMITTED_CHECKPOINT");
+        let n_responses: Vec<_> = closed.source.responses.iter().filter(|response|
+            response.provider_response_id.as_ref().and_then(Value::as_str) == Some("msg_soq_n_closed")).collect();
+        record("O2.1", "H6_SOQ_O2_1", json!({"n_responses":n_responses.len()}), json!({"n_responses":1}), n_responses.len() == 1, &["PR-04","PR-22"]);
+        let n_response = n_responses[0];
+        let n_usages: Vec<_> = closed.ledger.usage.iter().filter(|usage| usage.request == n_response.request
+            && usage.lease == n_response.lease && usage.attempt == n_response.attempt
+            && usage.response_occurrence == Some(n_response.occurrence)).collect();
+        record("O2.1", "H6_SOQ_O2_1", json!({"usage_count":n_usages.len()}), json!({"usage_count":1}), n_usages.len() == 1, &["PR-04","PR-22"]);
+        let n_usage = n_usages[0];
+        let accepted = matches!(n_response.status, k2_history::NativeResponseStatus::Accepted)
+            && matches!(n_usage.outcome, k2_history::NativeResponseStatus::Accepted);
+        let tool_use_stop = n_usage.source_stop_reason.as_deref() == Some("tool_use");
+        u6_observe(json!({"stage":"SOQ N coordinates","request":n_response.request,"lease":n_response.lease,"attempt":n_response.attempt,"occurrence":n_response.occurrence,"source_stop_reason":n_usage.source_stop_reason,"status":n_response.status,"outcome":n_usage.outcome}));
+        record("O2.1", "H6_SOQ_O2_1", json!({"n_responses":n_responses.len(),"usage_count":n_usages.len(),"accepted":accepted,"tool_use_stop":tool_use_stop}), json!({"n_responses":1,"usage_count":1,"accepted":true,"tool_use_stop":true}), accepted && tool_use_stop, &["PR-04","PR-22"]);
+        let groups: Vec<_> = closed.ledger.groups.iter().filter(|group| group.key == original_group.key && group.origin_ref == origin).collect();
+        let member_from_n = |group: &k2_history::NativeGroupRecord| group.members.iter().any(|member|
+            closed.source.ordered_blocks.get(member.occurrence as usize).is_some_and(|block| block.coordinates.response == n_response.occurrence));
+        let matching_result = groups.first().is_some_and(|group| group.members.iter().any(|member| {
+            closed.source.ordered_blocks.get(member.occurrence as usize).filter(|block| block.coordinates.response == n_response.occurrence)
+                .and_then(|block| closed.blobs.get(&block.block.digest)).and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+                .is_some_and(|raw| raw["type"] == "tool_search_tool_result" && raw["tool_use_id"] == "srvtoolu_k2_pending")
+        }));
+        let orphan_groups = closed.ledger.groups.iter().filter(|group| group.key != original_group.key && member_from_n(group)).count();
+        let completed_join = groups.first().is_some_and(|group| group.state == "Completed" && group.validated_join.as_deref() == Some("srvtoolu_k2_pending"));
+        record("O2.2", "H6_SOQ_O2_2", json!({"same_group_count":groups.len(),"completed_validated_join":completed_join,"matching_result_from_n":matching_result,"other_groups_from_n":orphan_groups}), json!({"same_group_count":1,"completed_validated_join":true,"matching_result_from_n":true,"other_groups_from_n":0}), groups.len() == 1 && completed_join && matching_result && orphan_groups == 0, &["PR-05"]);
+        let n_primary = primary(&closed, &n_response.request, n_response.lease, n_response.attempt, n_response.occurrence);
+        let committed = n_primary.len() == 1 && n_primary[0]["primary_resolution"] == "Committed";
+        record("O2.3", "H6_SOQ_O2_3", json!({"primary_count":n_primary.len(),"committed":committed}), json!({"primary_count":1,"committed":true}), committed, &["PR-06"]);
+        let history_c1 = fx.session.actor.chat_state_handle.get_conversation().await;
+        let n_history = history_c1.iter().filter(|item| matches!(item, ConversationItem::Assistant(assistant) if assistant.tool_calls.iter().any(|call| call.id.as_ref() == INVALID_CALL))).count();
+        let n_roles: Vec<_> = closed.active.view_links.iter().filter(|link| link.source.response == n_response.occurrence)
+            .map(|link| serde_json::to_value(&link.role).expect("H6_SOQ_O2_4")).collect();
+        let discovery_link = n_roles.iter().any(|role| role == "Discovery");
+        record("O2.4", "H6_SOQ_O2_4", json!({"history_assistant_calls":n_history,"view_links":n_roles.len(),"roles":n_roles,"discovery_link":discovery_link}), json!({"history_assistant_calls":1,"has_view_links":true,"discovery_link":true}), n_history == 1 && !n_roles.is_empty() && discovery_link, &["PR-06"]);
+        let masked_groups = closed.ledger.groups.iter().filter(|group| group.state == "LivePending" || group.state == "AbandonedPending").count();
+        record("O2.5", "H6_SOQ_O2_5", json!({"masked_groups":masked_groups,"live":k2lg_n_live(&closed)}), json!({"masked_groups":0,"live":false}), masked_groups == 0 && !k2lg_n_live(&closed), &["PR-05"]);
+        let held_c1 = {
+            let state = fx.session.actor.state.lock().await;
+            state.message_delivery.held_input.entries.iter().filter(|entry| matches!(&entry.body, super::interjection::HeldBody::Human(raw) if raw.text == HUMAN)).count()
+        };
+        let resident_c1 = fx.session.actor.pending_interjections.snapshot().iter().filter(|item| item.text == HUMAN).count();
+        let history_count_c1 = history_c1.iter().filter(|item| item.text_content().contains(HUMAN)).count();
+        let bodies_c1 = k2lg_n_bodies(&fx.server);
+        let containment_c1 = bodies_c1.get(2).map(&containment);
+        let observations_c1 = U6_ARM_OBSERVATIONS.with(|records| records.borrow().clone());
+        let b6_b1_c1: Vec<_> = observations_c1.iter().skip(b1_index + 1).filter(|event| matches!(event["stage"].as_str(), Some("native safe point" | "merged commit recheck" | "merged release outcome"))).cloned().collect();
+        let release_before_c1 = b6_b1_c1.iter().any(|event| event["stage"] == "merged release outcome" || (event["stage"] == "native safe point" && event["release_path"] == "merged_release"));
+        let running_c1 = !turn.running.is_finished();
+        record("O2.6", "H6_SOQ_O2_6", json!({"held":held_c1,"resident":resident_c1,"history":history_count_c1,"http":fx.server.messages_request_count(),"body_containment":containment_c1,"release_record":release_before_c1,"running":running_c1}), json!({"held":1,"resident":0,"history":0,"http":3,"body_containment":0,"release_record":false,"running":true}), held_c1 == 1 && resident_c1 == 0 && history_count_c1 == 0 && fx.server.messages_request_count() == 3 && containment_c1 == Some(0) && !release_before_c1 && running_c1, &["PR-09","PR-16"]);
+        u6_observe(json!({"stage":"SOQ B6 window B1 C1","observations":b6_b1_c1}));
+        let submits_c1 = turn.submits.borrow().clone();
+        let bound_c1 = submits_c1.len() == 2 && submits_c1[0]["tools"] == submits_c1[1]["tools"] && submits_c1[0]["bound_model"] == submits_c1[1]["bound_model"];
+        let body_authority_c1 = bodies_c1.len() == 3 && bodies_c1[2]["tools"] == tools && bodies_c1[2]["model"] == initial_bodies[1]["model"];
+        record("O2.7", "H6_SOQ_O2_7", json!({"submits":submits_c1.len(),"equal_bound_tools_model":bound_c1,"equal_body_tools_model":body_authority_c1}), json!({"submits":2,"equal_bound_tools_model":true,"equal_body_tools_model":true}), bound_c1 && body_authority_c1, &["PR-18"]);
+        u6_observe(json!({"stage":"SOQ closure checkpoint C1","steps":steps.get(),"drain_holds":drain_holds.get(),"persisted_reads":persisted_reads.get(),"rounds":rounds.get(),"n_response_found":n_response_found.get(),"n_primary":last_primary.borrow().clone()}));
+        let c1_index = U6_ARM_OBSERVATIONS.with(|records| records.borrow().len().saturating_sub(1));
+        if !was_paused { stepper.resume(); }
+        last_stage.set("S11");
+        let reached = tokio::time::timeout(K0_TIMEOUT, async {
+            tokio::select! { biased; _ = n1.wait_blocked() => None, outcome = &mut turn.running => Some(outcome) }
+        }).await;
+        let progress = json!({"http_count":fx.server.messages_request_count(),"human_in_history":fx.session.actor.chat_state_handle.get_conversation().await.iter().filter(|item| item.text_content().contains(HUMAN)).count()});
+        match reached {
+            Ok(None) => {},
+            Ok(Some(outcome)) => u6_turn_ended(outcome, "SOQ S11 first release HTTP", "H6_SOQ_NO_RELEASE_HTTP", progress),
+            Err(_) => u6_bound_expired(&turn.running, "SOQ S11 first release HTTP", "H6_SOQ_B2_BOUND", progress),
+        }
+        u6_observe(json!({"stage":"SOQ barrier","barrier":"B2"}));
+        let b2_index = U6_ARM_OBSERVATIONS.with(|records| records.borrow().len().saturating_sub(1));
+        let n1_owned_request_names: Vec<_> = {
+            let owned = fx.session.actor.turn_stream_drained.lock();
+            owned.keys().map(|key| key.as_str().to_owned()).collect()
+        };
+        last_stage.set("O3");
+        let saved_b2 = std::cell::RefCell::new(None);
+        let (f, saved_ref) = (&*fx, &saved_b2);
+        u6_await_turn_progress(&mut turn.running, "SOQ O3 checkpoint read", "H6_SOQ_O3_UNREADABLE", "H6_SOQ_B2_TURN_ENDED", || async move {
+            let actor = f.session.actor.chat_state_handle.read_native_history().await;
+            let disk = u6_persisted_native_read(f).await;
+            if let Some(checkpoint) = actor.as_ref().ok().and_then(|read| read.checkpoint.as_ref())
+                && disk.as_ref().ok().and_then(|read| read.checkpoint.as_ref()).is_some_and(|disk| disk.source == checkpoint.source && disk.ledger == checkpoint.ledger)
+            {
+                saved_ref.replace(Some((**checkpoint).clone()));
+                true
+            } else {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                false
+            }
+        }).await;
+        let released = saved_b2.into_inner();
+        u6_observe(json!({"stage":"SOQ O3 saved checkpoint","found":released.is_some()}));
+        assert!(released.is_some(), "H6_SOQ_O3_UNREADABLE");
+        let released = released.expect("H6_SOQ_O3_UNREADABLE");
+        let n_still_primary = primary(&released, &n_response.request, n_response.lease, n_response.attempt, n_response.occurrence);
+        let same_group = released.ledger.groups.iter().any(|group| group.key == original_group.key && group.origin_ref == origin && group.state == "Completed" && group.validated_join.as_deref() == Some("srvtoolu_k2_pending"));
+        let masked_b2 = released.ledger.groups.iter().filter(|group| group.state == "LivePending" || group.state == "AbandonedPending").count();
+        let still_committed = n_still_primary.len() == 1 && n_still_primary[0]["primary_resolution"] == "Committed";
+        let later_responses = released.source.responses.iter().filter(|response| response.occurrence > n_response.occurrence).count();
+        let later_usage = released.ledger.usage.iter().filter(|usage| usage.response_occurrence.is_some_and(|occurrence| occurrence > n_response.occurrence)).count();
+        let later_primary = released.ledger.transitions.iter().filter(|entry| entry.get("primary_resolution").is_some() && entry["occurrence"].as_u64().is_some_and(|occurrence| occurrence > n_response.occurrence)).count();
+        u6_observe(json!({"stage":"SOQ O3.1 later records diagnostic","responses":later_responses,"usage":later_usage,"primary":later_primary,"required":false}));
+        record("O3.1", "H6_SOQ_O3_1", json!({"n_committed":still_committed,"same_completed_join":same_group,"masking_groups":masked_b2}), json!({"n_committed":true,"same_completed_join":true,"masking_groups":0}), still_committed && same_group && masked_b2 == 0, &["PR-05","PR-06","PR-13"]);
+        let bodies_b2 = k2lg_n_bodies(&fx.server);
+        record("O3.2", "H6_SOQ_O3_2", json!({"http":bodies_b2.len()}), json!({"http":4}), bodies_b2.len() == 4, &["PR-07","PR-12"]);
+        let body_parts = parts(&bodies_b2[3]);
+        let invalid_calls: Vec<_> = body_parts.iter().filter(|(i, _, part)| bodies_b2[3]["messages"][*i]["role"] == "assistant"
+            && part["type"] == "tool_use" && part["id"] == INVALID_CALL && part["name"] == "StructuredOutput").collect();
+        let corrections: Vec<_> = user_parts(&bodies_b2[3]).into_iter().filter(|(_, _, part)| part["type"] == "tool_result" && part["tool_use_id"] == INVALID_CALL).collect();
+        let argument_equal = invalid_calls.first().is_some_and(|call| call.2["input"] == invalid_input);
+        let is_error = corrections.first().is_some_and(|part| part.2["is_error"] == true);
+        let corrective_text = corrections.first().map(|part| {
+            if let Some(text) = part.2["content"].as_str() { text.to_owned() } else {
+                part.2["content"].as_array().into_iter().flatten().filter(|content| content["type"] == "text")
+                    .filter_map(|content| content["text"].as_str()).collect::<Vec<_>>().concat()
+            }
+        }).unwrap_or_default();
+        let corrective_present = corrective_text.contains("Fix the arguments and call StructuredOutput again.");
+        let corrective_ordered = invalid_calls.first().zip(corrections.first()).is_some_and(|(call, result)| (result.0, result.1) > (call.0, call.1));
+        let valid_call_parts = body_parts.iter().filter(|(_, _, part)| part["id"] == VALID_CALL || part["tool_use_id"] == VALID_CALL).count();
+        let history_b2 = fx.session.actor.chat_state_handle.get_conversation().await;
+        let invalid_results_history = history_b2.iter().filter(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == INVALID_CALL)).count();
+        record("O3.2", "H6_SOQ_O3_2", json!({"http":bodies_b2.len(),"invalid_tool_use":invalid_calls.len(),"input_equal":argument_equal,"corrective_results":corrections.len(),"is_error":is_error,"corrective_text_present":corrective_present,"result_after_call":corrective_ordered,"valid_call_parts":valid_call_parts,"history_results":invalid_results_history}), json!({"http":4,"invalid_tool_use":1,"input_equal":true,"corrective_results":1,"is_error":true,"corrective_text_present":true,"result_after_call":true,"valid_call_parts":0,"history_results":1}), invalid_calls.len() == 1 && argument_equal && corrections.len() == 1 && is_error && corrective_present && corrective_ordered && valid_call_parts == 0 && invalid_results_history == 1, &["PR-07","PR-12"]);
+        u6_observe(json!({"stage":"SOQ corrective part digests","tool_use_sha256":digest(&invalid_calls[0].2,"H6_SOQ_O3_2"),"tool_result_sha256":digest(&corrections[0].2,"H6_SOQ_O3_2")}));
+        let (pending_notifications, executed_notifications, output_notifications) = {
+            let updates = updates.lock().expect("H6_SOQ_O3_3");
+            let mut counts = (0usize, 0usize, 0usize);
+            for update in updates.iter() {
+                let payload = update.get("update").unwrap_or(update);
+                let id = payload.get("toolCallId").or_else(|| payload.get("tool_call_id")).and_then(Value::as_str);
+                if id == Some(INVALID_CALL) {
+                    match payload["status"].as_str() {
+                        Some("pending") => counts.0 += 1,
+                        Some("in_progress" | "inProgress" | "completed") => counts.1 += 1,
+                        _ => {},
+                    }
+                    if payload.get("content").and_then(Value::as_array).is_some_and(|parts| !parts.is_empty()) { counts.2 += 1; }
+                }
+            }
+            counts
+        };
+        let mut clients = fx.session.executions.lock().expect("H6_SOQ_O3_3").clone();
+        clients.sort();
+        let clients_unchanged = clients == vec!["alpha__lookup".to_owned(),"zeta__fetch".to_owned()];
+        let structured_dispatches = executed_notifications + output_notifications + clients.iter().filter(|name| name.as_str() == "StructuredOutput").count();
+        record("O3.3", "H6_SOQ_O3_3", json!({"client_execution_names":clients,"clients_unchanged":clients_unchanged,"pending_notifications":pending_notifications,"executed_notifications":executed_notifications,"output_notifications":output_notifications,"structured_output_dispatches_observed":structured_dispatches}), json!({"clients_unchanged":true,"executed_notifications":0,"output_notifications":0,"structured_output_dispatches_observed":0}), clients_unchanged && executed_notifications == 0 && output_notifications == 0 && structured_dispatches == 0, &["PR-07","PR-21"]);
+        let released_human: Vec<_> = history_b2.iter().filter(|item| item.text_content().contains(HUMAN))
+            .filter(|item| !history_c1.iter().any(|before| before.text_content() == item.text_content())).map(ConversationItem::text_content).collect();
+        record("O3.4", "H6_SOQ_O3_4", json!({"newly_released_history_items":released_human.len()}), json!({"newly_released_history_items":1}), released_human.len() == 1, &["PR-09","PR-10","PR-15","PR-17"]);
+        let reference = &released_human[0];
+        let human_counts: Vec<_> = bodies_b2.iter().map(|body| user_parts(body).iter().filter(|(_, _, part)| part["type"] == "text" && part["text"].as_str() == Some(reference.as_str())).count()).collect();
+        let containment_counts: Vec<_> = bodies_b2.iter().map(|body| containment(body)).collect();
+        let human_positions: Vec<_> = user_parts(&bodies_b2[3]).into_iter().filter(|(_, _, part)| part["type"] == "text" && part["text"].as_str() == Some(reference.as_str())).map(|(i, j, _)| (i, j)).collect();
+        let ordered = human_positions.first().is_some_and(|position| *position > (invalid_calls[0].0, invalid_calls[0].1) && *position > (corrections[0].0, corrections[0].1));
+        let (held_b2, same_task_epoch) = {
+            let state = fx.session.actor.state.lock().await;
+            (state.message_delivery.held_input.entries.iter().filter(|entry| matches!(&entry.body, super::interjection::HeldBody::Human(raw) if raw.text == HUMAN)).count(),
+             state.running_task.as_ref().is_some_and(|task| task.identity == turn.identity && task.epoch == turn.epoch))
+        };
+        let history_count_b2 = history_b2.iter().filter(|item| item.text_content().contains(HUMAN)).count();
+        let running_b2 = !turn.running.is_finished();
+        let counts_hold = human_counts == vec![0,0,0,1] && containment_counts == human_counts
+            && containment_b1 == human_counts[2] && containment_c1 == Some(human_counts[2]);
+        u6_observe(json!({"stage":"SOQ structural HUMAN rule","rule":"user text part byte-equals the unique actor-history item newly released after C1; per-part containment agrees at B1 and C1","human_count_by_body":human_counts,"human_containment_by_body":containment_counts,"matched_text_sha256":format!("{:x}",<sha2::Sha256 as sha2::Digest>::digest(reference.as_bytes())),"body_sha256":bodies_b2.iter().map(|body| digest(body,"H6_SOQ_O3_4")).collect::<Vec<_>>()}));
+        record("O3.4", "H6_SOQ_O3_4", json!({"counts_hold":counts_hold,"human_positions":human_positions.len(),"after_assistant_and_result":ordered,"history":history_count_b2,"held":held_b2,"same_task_epoch":same_task_epoch,"running_b1":running_b1,"running_c1":running_c1,"running_b2":running_b2}), json!({"counts_hold":true,"human_positions":1,"after_assistant_and_result":true,"history":1,"held":0,"same_task_epoch":true,"running_b1":true,"running_c1":true,"running_b2":true}), counts_hold && human_positions.len() == 1 && ordered && history_count_b2 == 1 && held_b2 == 0 && same_task_epoch && running_b1 && running_c1 && running_b2, &["PR-09","PR-10","PR-15","PR-17"]);
+        let observations_b2 = U6_ARM_OBSERVATIONS.with(|records| records.borrow().clone());
+        let b6_c1_b2: Vec<_> = observations_b2.iter().skip(c1_index + 1).take(b2_index.saturating_sub(c1_index + 1))
+            .filter(|event| matches!(event["stage"].as_str(), Some("native safe point" | "merged commit recheck" | "merged release outcome"))).cloned().collect();
+        let submitted = b6_c1_b2.iter().enumerate().any(|(index, event)| event["stage"] == "merged release outcome" && event["release_path"] == "submitted"
+            && b6_c1_b2.iter().take(index).any(|before| before["stage"] == "native safe point" && before["holding"] == false && before["release_path"] == "merged_release"));
+        u6_observe(json!({"stage":"SOQ B6 window C1 B2","observations":b6_c1_b2,"submit_after_closed_safe_point":submitted}));
+        record("O3.4", "H6_SOQ_O3_4_NO_SUBMIT_OBSERVATION", json!({"submit_after_closed_safe_point":submitted}), json!({"submit_after_closed_safe_point":true}), submitted, &["PR-15"]);
+        let tool_batch_excluded = clients_unchanged && structured_dispatches == 0;
+        let nonempty_tool_calls = invalid_calls.len() == 1 && corrective_present && is_error;
+        let empty_continuation_excluded = budget.is_none() && tool_use_stop;
+        let caller_proven = tool_batch_excluded && nonempty_tool_calls && empty_continuation_excluded && submitted && same_task_epoch;
+        let inferred_caller = if caller_proven { "loop-top" } else { "unqualified" };
+        let caller_premises = json!([
+            {"premise":"PR-09","caller":"tool-batch","excluded":tool_batch_excluded,"observation":"O3.3"},
+            {"premise":"PR-09","caller":"pre-completion","excluded":nonempty_tool_calls,"observation":"O3.2"},
+            {"premise":"PR-09","caller":"post-bookkeeping","excluded":nonempty_tool_calls,"observation":"O3.2"},
+            {"premise":"PR-09","caller":"empty-continuation","excluded":empty_continuation_excluded,"observation":"S2 and O2.1"}]);
+        u6_observe(json!({"stage":"SOQ caller premises","caller":inferred_caller,"reading":"D-2","premises":caller_premises}));
+        record("O3.5", "H6_SOQ_O3_5", json!({"tool_batch_excluded":tool_batch_excluded,"pre_completion_excluded":nonempty_tool_calls,"post_bookkeeping_excluded":nonempty_tool_calls,"empty_continuation_excluded":empty_continuation_excluded,"loop_top_inferred":caller_proven}), json!({"tool_batch_excluded":true,"pre_completion_excluded":true,"post_bookkeeping_excluded":true,"empty_continuation_excluded":true,"loop_top_inferred":true}), caller_proven, &["PR-09"]);
+        let submits_b2 = turn.submits.borrow().clone();
+        let bound_b2 = submits_b2.len() == 3 && submits_b2.iter().all(|submit| submit["tools"] == submits_b2[0]["tools"] && submit["bound_model"] == submits_b2[0]["bound_model"]);
+        let body_authority_b2 = bodies_b2[3]["tools"] == tools && bodies_b2[3]["model"] == initial_bodies[1]["model"];
+        record("O3.6", "H6_SOQ_O3_6", json!({"submits":submits_b2.len(),"equal_bound_tools_model":bound_b2,"equal_body_tools_model":body_authority_b2,"actual_http":fx.server.messages_request_count() == 4}), json!({"submits":3,"equal_bound_tools_model":true,"equal_body_tools_model":true,"actual_http":true}), bound_b2 && body_authority_b2 && fx.server.messages_request_count() == 4, &["PR-11","PR-18"]);
+        let after_n_user_parts: Vec<_> = user_parts(&bodies_b2[3]).into_iter().filter(|(i, j, _)| (*i, *j) > (invalid_calls[0].0, invalid_calls[0].1)).collect();
+        let reminder_parts: Vec<_> = after_n_user_parts.iter().filter(|(_, _, part)| part["type"] == "text" && part["text"].as_str().is_some_and(|text| text.starts_with("<system-reminder>"))).collect();
+        let new_prompt_parts = after_n_user_parts.iter().filter(|(_, _, part)| {
+            !((part["type"] == "tool_result" && part["tool_use_id"] == INVALID_CALL)
+                || (part["type"] == "text" && part["text"].as_str() == Some(reference.as_str()))
+                || (part["type"] == "text" && part["text"].as_str().is_some_and(|text| text.starts_with("<system-reminder>"))))
+        }).count();
+        u6_observe(json!({"stage":"SOQ O3.7 reminder parts","count":reminder_parts.len(),"kinds":reminder_parts.iter().map(|_| "system-reminder").collect::<Vec<_>>(),"sha256":reminder_parts.iter().map(|part| digest(&part.2,"H6_SOQ_O3_7")).collect::<Vec<_>>()}));
+        record("O3.7", "H6_SOQ_O3_7", json!({"http":fx.server.messages_request_count(),"new_prompt_parts":new_prompt_parts}), json!({"http":4,"new_prompt_parts":0}), fx.server.messages_request_count() == 4 && new_prompt_parts == 0, &["PR-20"]);
+        last_stage.set("S12");
+        n1.release();
+        let outcome = match tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await {
+            Ok(outcome) => outcome,
+            Err(_) => u6_bound_expired(&turn.running, "SOQ S12 finish", "H6_SOQ_FINISH_BOUND", json!({"http_count":fx.server.messages_request_count()})),
+        };
+        let turn_outcome = u6_turn_end_names(&outcome);
+        u6_observe(json!({"stage":"SOQ final outcome","turn":turn_outcome}));
+        let structured_value = match &outcome {
+            Ok(Ok(TurnOutcome::Completed { structured_output: Some(Ok(value)), .. })) => Some(value),
+            _ => None,
+        };
+        let structured_matches = structured_value.is_some_and(|value| *value == valid_input);
+        let structured_digest = structured_value.map(|value| digest(value, "H6_SOQ_O4_OUTCOME"));
+        record("O4.OUTCOME", "H6_SOQ_O4_OUTCOME", json!({"result_ok":turn_outcome["result"] == "ok","completed_with_valid_structured_output":structured_matches,"structured_output_sha256":structured_digest}), json!({"result_ok":true,"completed_with_valid_structured_output":true}), turn_outcome["result"] == "ok" && structured_matches, &["PR-14"]);
+        let final_count = fx.server.messages_request_count();
+        record("O4.COUNT", "H6_SOQ_O4_COUNT", json!(final_count), json!(4), final_count == 4, &["PR-17"]);
+        let final_history = fx.session.actor.chat_state_handle.get_conversation().await;
+        let final_human = final_history.iter().filter(|item| item.text_content().contains(HUMAN)).count();
+        let final_valid_results = final_history.iter().filter(|item| matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == VALID_CALL && !result.is_error)).count();
+        record("O4.HISTORY", "H6_SOQ_O4_HISTORY", json!({"human":final_human,"non_error_valid_tool_results":final_valid_results}), json!({"human":1,"non_error_valid_tool_results":1}), final_human == 1 && final_valid_results == 1, &["PR-14"]);
+        let final_read = tokio::time::timeout(K0_TIMEOUT, u6_persisted_native_read(fx)).await;
+        let final_checkpoint = final_read.as_ref().ok().and_then(|read| read.as_ref().ok()).and_then(|read| read.checkpoint.as_ref());
+        let n1_records = final_checkpoint.map(|checkpoint| {
+            let owned_request = |request: &str| n1_owned_request_names.iter().any(|name| name == request);
+            let responses = checkpoint.source.responses.iter().filter(|response| response.occurrence > n_response.occurrence
+                || response.provider_response_id.as_ref().and_then(Value::as_str) == Some("msg_soq_n1_valid") || owned_request(&response.request)).count();
+            let usage = checkpoint.ledger.usage.iter().filter(|entry| entry.response_occurrence.is_some_and(|occurrence| occurrence > n_response.occurrence) || owned_request(&entry.request)).count();
+            let primary = checkpoint.ledger.transitions.iter().filter(|entry| entry.get("primary_resolution").is_some()
+                && (entry["occurrence"].as_u64().is_some_and(|occurrence| occurrence > n_response.occurrence) || entry["request"].as_str().is_some_and(owned_request))).count();
+            let terminal = checkpoint.ledger.lifecycle.terminal.iter().filter(|(key, marker)| marker.last_accepted_response.is_some_and(|occurrence| occurrence > n_response.occurrence)
+                || n1_owned_request_names.iter().any(|request| key.starts_with(&format!("{request}:")))).count();
+            json!({"responses":responses,"usage":usage,"primary":primary,"terminal":terminal})
+        }).unwrap_or(Value::Null);
+        u6_observe(json!({"stage":"SOQ O4.F1 diagnostic","checkpoint_readable":final_checkpoint.is_some(),"n1_records_found":n1_records,"request_keys_observed":n1_owned_request_names.len(),"required":false,"premises":["PR-13"]}));
+        last_stage.set("S13");
+        let satisfied = n.is_satisfied() && n1.is_satisfied();
+        record("O4.SATISFIED", "H6_SOQ_O4_SATISFIED", json!(satisfied), json!(true), satisfied, &["PR-14"]);
+        n.assert_satisfied();
+        n1.assert_satisfied();
+        last_stage.set("S14");
+        json!({"route":"S-A","credited":true,"qualification_only":false,"caller":inferred_caller,"caller_reading":"D-2","closure_reading":"D-10",
+            "suffix_requests":final_count.saturating_sub(initial_bodies.len()),"http":final_count,"human_occurrences_in_release":human_counts[3],
+            "structured_output_retries":corrections.len(),"structured_output_dispatches_observed":structured_dispatches,
+            "tools_snapshot_sha256":tools_digest,"structured_output_declaration_sha256":so_digest,
+            "body_sha256":bodies_b2.iter().map(|body| digest(body,"H6_SOQ_O4_COUNT")).collect::<Vec<_>>(),
+            "human_count_by_body":human_counts,"human_containment_by_body":containment_counts,
+            "final_structured_output_matches":structured_matches,"final_structured_output_sha256":structured_digest,"n1_records_found":n1_records})
+    }).await;
+    match result {
+        Ok(value) => value,
+        Err(_) => {
+            u6_observe(json!({"stage":"SOQ candidate arm ceiling","last_stage":last_stage.get()}));
+            panic!("H6_SOQ_CANDIDATE_ARM_60S_CEILING");
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "U6.5 remaining RED only; cumulative coverage is the H6 test"]
+async fn messages_u6b_remaining_u65_proofs() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut records = Vec::new();
+        u6_arm(&mut records, "L5", u6b_monitor_protocol("completion")).await;
+        u6_arm(&mut records, "L5-no-next-turn", u6b_monitor_protocol("no-next-turn")).await;
+        u6_arm(&mut records, "L6-before-admission", u6b_monitor_protocol("drop-before-admission")).await;
+        u6_arm(&mut records, "L6-pinned", u6b_monitor_protocol("drop-held")).await;
+        u6_arm(&mut records, "L6-retained-cancel", u6b_monitor_protocol("drop-after-cancel")).await;
+        u6_arm(&mut records, "L7-user-start", u6b_monitor_protocol("user-start")).await;
+        u6_arm(&mut records, "L7-idle", u6b_monitor_protocol("idle")).await;
+        u6_arm(&mut records, "L7-cancel", u6b_monitor_protocol("cancel")).await;
+        u6_arm(&mut records, "L7-rewind", u6b_monitor_protocol("rewind")).await;
+        u6_arm(&mut records, "L8", u6b_monitor_protocol("kill")).await;
+        u6_arm(&mut records, "L11", u6b_monitor_protocol("equal")).await;
+        u6_arm(&mut records, "N-10", u6b_n10()).await;
+        u6_arm(&mut records, "L2-loop-top", u6_l2_loop_top_structured_output_retry()).await;
+        for record in &records {
+            println!("KOXD_U6_REMAINING_ARM {}", record);
+        }
+        assert!(records.iter().all(|record| record["passed"] == true), "H6_U65_REMAINING_ARM_FAILURE");
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "U6 direct-turn fixture activity control"]
+async fn messages_u6b_direct_turn_activity_control() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut records = Vec::new();
+        u6_arm(&mut records, "U65-activity-control", async {
+        let mut fixture = u6_fixture(None, K2lgNOptions::default()).await;
+        let fx = &mut fixture.fx;
+        let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false});
+        let mut turn = u6_handoff_with_salvage(fx, None, Some(schema), None, None).await;
+        let _stop = K0Abort(turn.running.abort_handle());
+        assert!(fx.session.actor.session_turn_active.load(std::sync::atomic::Ordering::SeqCst),
+            "H6_U65_DIRECT_TURN_ACTIVITY_SET");
+        fx.server.enqueue_response("/v1/messages", k2_script(k2_frames("msg_u6b_activity", vec![
+            k2_result("srvtoolu_k2_pending", "alpha__lookup"),
+            (json!({"type":"tool_use","id":"client_u6b_activity_so","name":"StructuredOutput","input":{"answer":"complete"}}), Vec::new())
+        ], "tool_use")));
+        fx.session.releases[1].add_permits(1);
+        let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await.expect("H6_U65_ACTIVITY_OUTCOME_BOUND");
+        assert!(matches!(outcome, Ok(Ok(TurnOutcome::Completed { structured_output: Some(Ok(_)), .. }))),
+            "H6_U65_ACTIVITY_REAL_DECODER_COMPLETED");
+        assert!(!fx.session.actor.session_turn_active.load(std::sync::atomic::Ordering::SeqCst),
+            "H6_U65_DIRECT_TURN_ACTIVITY_CLEARED");
+        json!({"activity_cleared_after_real_completion":true})
+        }).await;
+        for record in &records { println!("KOXD_U6_ACTIVITY_ARM {}", record); }
+        assert!(records.iter().all(|record| record["passed"] == true), "H6_U65_ACTIVITY_CONTROL_FAILURE");
+    }).await;
+}
+
+async fn u6b_consumed_completion_dedupe() -> Value {
+    const TASK: &str = "u6b-consumed-completion";
+    const MONITOR: &str = "U6b consumed pinned monitor must not leak";
+    const COMPLETION: &str = "U6b consumed TaskCompleted sole signal";
+    let (fixture, mut turn, stepper, _continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    stepper.pause();
+    let fx = &fixture.fx;
+    let key = u6b_monitor_ingress(fx, &mut turn.running, TASK, MONITOR).await;
+    k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+    fx.loop_tx.send(SessionCommand::InjectNotification {
+        prompt_id: "u6b-consumed-completion-notice".into(),
+        prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(COMPLETION))],
+        priority: NotificationPriority::Later,
+        source: NotificationSource::MonitorCompleted { task_id: TASK.into() },
+    }).unwrap();
+    u6_await_turn_progress(&mut turn.running, "real pending completion notice", "H6_L7_COMPLETION_NOTICE_BOUND",
+        "H6_L7_COMPLETION_NOTICE_TURN_ENDED", || async {
+            fx.session.actor.state.lock().await.pending_notifications.iter().any(|notice|
+                matches!(&notice.source, NotificationSource::MonitorCompleted { task_id } if task_id == TASK))
+        }).await;
+    assert_eq!(fx.session.actor.consume_deferred_completions().await, vec![TASK.to_owned()],
+        "H6_L7_CONSUMED_COMPLETION_IDENTITY");
+    assert!(u6_pinned_monitor_keys(fx).await.is_empty(), "H6_L7_CONSUMED_COMPLETION_DISCARDS_PIN");
+    assert!(fx.session.actor.state.lock().await.message_delivery.held_input.entries.iter()
+        .all(|entry| entry.key.as_u64() != key), "H6_L7_CONSUMED_COMPLETION_PRUNES_LEDGER_REFERENCE");
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert!(history.iter().all(|item| !item.text_content().contains(MONITOR)), "H6_L7_COMPLETION_SOLE_SIGNAL_NO_MONITOR_COPY");
+    assert_eq!(history.iter().filter(|item| item.text_content().contains(COMPLETION)).count(),
+        1, "H6_L7_COMPLETION_SOLE_SIGNAL_ONCE");
+    turn.running.abort();
+    let _ = turn.running.await;
+    json!({"source":"real InjectNotification producers and consume_deferred_completions boundary",
+        "pinned_occurrences":0,"ledger_references":0,"completion_signals":1})
+}
+
+async fn u6b_pinned_producer_cap() -> Value {
+    let (fixture, mut turn, stepper, _continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    stepper.pause();
+    let fx = &fixture.fx;
+    let pinned = u6b_monitor_ingress(fx, &mut turn.running, "u6b-pinned-cap", "U6b pinned producer-cap payload").await;
+    k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+    for index in 0..51 {
+        u6b_monitor_ingress(fx, &mut turn.running, &format!("u6b-unpinned-cap-{index}"),
+            &format!("U6b unpinned producer-cap payload {index}")).await;
+    }
+    let keys = u6_pinned_monitor_keys(fx).await;
+    assert_eq!(keys.len(), 1, "H6_L11_PRODUCER_CAP_PRESERVES_PIN");
+    assert_eq!(keys[0]["key"].as_u64(), Some(pinned), "H6_L11_PRODUCER_CAP_PRESERVES_OCCURRENCE");
+    let buffer = fx.session.actor.tool_context.monitor_event_buffer.as_ref().unwrap();
+    let unpinned = buffer.release_view(xai_interjection_core::events::next_occurrence(),
+        |event| event.owned_by_session(Some(fx.session.actor.session_info.id.0.as_ref()))).iter().count();
+    assert_eq!(unpinned, 50, "H6_L11_PRODUCER_CAP_COUNTS_ONLY_UNPINNED");
+    turn.running.abort();
+    let _ = turn.running.await;
+    json!({"constructed":false,"source":"SessionCommand::InjectNotification -> real push_capped",
+        "pinned_occurrences":1,"unpinned_residents":50,"pinned_key":pinned})
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "U6.5 real producer-cap preservation; cumulative coverage is H6"]
+async fn messages_u6b_pinned_producer_cap_preservation() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut records = Vec::new();
+        u6_arm(&mut records, "L11-pinned-producer-cap", u6b_pinned_producer_cap()).await;
+        for record in &records { println!("KOXD_U6_PRESERVATION_ARM {}", record); }
+        assert!(records.iter().all(|record| record["passed"] == true), "H6_L11_PRODUCER_CAP_PRESERVATION");
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "R6 fixture diagnostics; no unit proof credit"]
+async fn messages_u6b_r6_fixture_diagnostics() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut records = Vec::new();
+        u6_arm(&mut records, "N-1", u6b_human_band(300, 128, "H6_N1_HUMAN_UNCAPPED")).await;
+        u6_arm(&mut records, "L5", u6b_monitor_protocol("completion")).await;
+        u6_write_proof(&records);
+        for record in &records {
+            println!("KOXD_U6_ARM {}", json!({"label":record["label"],"passed":record["passed"],"assertion":record["assertion"]}));
+        }
+        assert!(records.iter().all(|record| record["passed"] == true), "H6_R6_FIXTURE_DIAGNOSTICS");
+    }).await;
+}
+
+fn u6b_r7_watch_native_ack<T: Send + 'static>(
+    received: tokio::sync::oneshot::Receiver<Result<T, k2_history::NativeUnavailable>>,
+    operation: &'static str,
+    log: K2lgNLog,
+) -> tokio::sync::oneshot::Receiver<Result<T, k2_history::NativeUnavailable>> {
+    let started = std::time::Instant::now();
+    log.lock().unwrap().push(("R7 native acknowledgement".into(),
+        json!({"operation":operation,"phase":"started","elapsed_ms":0})));
+    let (sent, returned) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let outcome = received.await;
+        let code = match &outcome {
+            Ok(Ok(_)) => "accepted",
+            Ok(Err(_)) => "refused",
+            Err(_) => "channel_closed",
+        };
+        let unavailable = outcome.as_ref().ok().and_then(|result| result.as_ref().err())
+            .map(|reason| serde_json::to_value(reason).unwrap());
+        log.lock().unwrap().push(("R7 native acknowledgement".into(),
+            json!({"operation":operation,"phase":"finished",
+                "elapsed_ms":started.elapsed().as_millis(),"result":code,"unavailable":unavailable})));
+        if let Ok(result) = outcome {
+            let _ = sent.send(result);
+        }
+    });
+    returned
+}
+
+impl Drop for U6Fixture {
+    fn drop(&mut self) {
+        let requests = self.fx.server.requests().into_iter()
+            .filter(|request| request.path == "/v1/messages")
+            .filter_map(|request| request.body).collect::<Vec<_>>();
+        let acknowledgements = self.fx.log.lock().unwrap().iter()
+            .filter(|(kind, _)| kind == "R7 native acknowledgement")
+            .map(|(_, value)| value.clone()).collect::<Vec<_>>();
+        let _ = U6_ARM_OBSERVATIONS.try_with(|observations| {
+            observations.borrow_mut().push(json!({"stage":"R7 fixture drop snapshot",
+                "requests":requests,"native_acknowledgements":acknowledgements}));
+        });
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "R7 fixture diagnostics; no unit proof credit"]
+async fn messages_u6b_r7_fixture_diagnostics() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut records = Vec::new();
+        u6_arm(&mut records, "N-1", u6b_human_band(300, 128, "H6_N1_HUMAN_UNCAPPED")).await;
+        u6_arm(&mut records, "L5", u6b_monitor_protocol("completion")).await;
+        u6_arm(&mut records, "L2-new-late-bookkeeping", u6_l2_late_bookkeeping()).await;
+        u6_write_proof(&records);
+        for record in &records {
+            println!("KOXD_U6_ARM {}", json!({"label":record["label"],"passed":record["passed"],"assertion":record["assertion"]}));
+        }
+        assert!(records.iter().all(|record| record["passed"] == true), "H6_R7_FIXTURE_DIAGNOSTICS");
+    }).await;
+}
+
+fn u6b_n12_maybe_drop_ack<T>(
+    incoming: tokio::sync::oneshot::Receiver<T>,
+    switch: &std::sync::atomic::AtomicBool,
+    log: &K2lgNLog,
+    operation: &'static str,
+) -> tokio::sync::oneshot::Receiver<T> {
+    if !switch.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return incoming;
+    }
+    drop(incoming);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    drop(sender);
+    log.lock().unwrap().push(("N12_ACK_DROPPED".into(), json!({"operation": operation})));
+    receiver
+}
+
+async fn u6b_n12_route_qualification() -> Value {
+    let (fixture, mut turn, stepper, continuation) = u6b_n12_tool_call_fixture().await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let prefix = "U6 N12 route held human:";
+    let human = format!("{prefix}{}", "h".repeat(256 * 1024 - prefix.len()));
+    u6_queue_resident(fx, &human, Vec::new()).await;
+    let original = u6_resident_keys(&fx.session.actor);
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N12_ROUTE_LIVE_HOLD");
+    let before_http = k2lg_n_bodies(&fx.server).len();
+    assert_eq!(before_http, 3, "H6_N12_ROUTE_POST_HTTP_PRECONDITION");
+    fixture.persistence_control.n12_drop_next_native_ack.store(true, std::sync::atomic::Ordering::SeqCst);
+    continuation.release();
+    stepper.resume();
+    let ended = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N12_ROUTE_TURN_OUTCOME");
+    let names = u6_turn_end_names(&ended);
+    let owned_error = ended.as_ref().ok().and_then(|outcome| outcome.as_ref().err());
+    let owned_error_code = owned_error.and_then(|error| error.data.as_ref())
+        .and_then(|data| data.get("code")).cloned();
+    let owned_error_reason = owned_error.and_then(|error| error.data.as_ref())
+        .and_then(|data| data.get("message")).cloned();
+    let read = tokio::time::timeout(K0_TIMEOUT, fx.session.actor.chat_state_handle.read_native_history())
+        .await.expect("H6_N12_ROUTE_NATIVE_READ");
+    let reason = read.as_ref().err().copied();
+    let sampling = tokio::time::timeout(K0_TIMEOUT, fx.session.actor.chat_state_handle.get_sampling_config())
+        .await.expect("H6_N12_ROUTE_CHAT_STATUS");
+    let dropped: Vec<Value> = fx.log.lock().unwrap().iter()
+        .filter(|(kind, _)| kind == "N12_ACK_DROPPED")
+        .map(|(_, value)| value.clone()).collect();
+    let after_http = k2lg_n_bodies(&fx.server).len();
+    let held_keys = {
+        let state = fx.session.actor.state.lock().await;
+        state.message_delivery.held_input.entries.iter()
+            .filter(|entry| entry.source == super::interjection::HeldSource::HumanInterjection)
+            .map(|entry| entry.key.as_u64()).collect::<Vec<_>>()
+    };
+    let expected_keys = original.iter().map(|entry| entry["key"].as_u64().unwrap()).collect::<Vec<_>>();
+    u6_observe(json!({"stage":"N12 W11 route qualification", "before_http_count":before_http,
+        "after_http_count":after_http, "dropped_ack_operations":dropped.clone(),
+        "native_unavailable":reason, "chat_open":sampling.is_some(), "turn_outcome":names.clone(),
+        "held_keys":held_keys.clone(), "original_keys":expected_keys.clone()}));
+    assert_eq!(dropped.len(), 1, "H6_N12_ROUTE_CHOSEN_APPEND");
+    assert_eq!(reason, Some(k2_history::NativeUnavailable::Indeterminate),
+        "H6_N12_ROUTE_INDETERMINATE");
+    assert!(sampling.is_some(), "H6_N12_ROUTE_CHAT_OPEN");
+    assert!(["error_code", "error_kind", "error_type"].iter()
+        .any(|key| names[*key].as_str() == Some("native_history_read_refused")),
+        "H6_N12_ROUTE_NAMED_READ_REFUSAL");
+    assert!(names["native_unavailable"].as_array().is_some_and(|values|
+        values.iter().any(|value| value.as_str() == Some("Indeterminate"))),
+        "H6_N12_ROUTE_NAMED_INDETERMINATE");
+    assert_eq!(after_http, before_http, "H6_N12_ROUTE_NO_HTTP_AFTER_REFUSAL");
+    assert_eq!(held_keys, expected_keys, "H6_N12_ROUTE_CUSTODY_RETAINED");
+    continuation.assert_satisfied();
+    json!({"kind":"N12_W11_ROUTE_QUALIFICATION", "native_operation":dropped[0]["operation"],
+        "native_unavailable":reason, "turn_outcome":names, "post_http_request_count":before_http,
+        "owned_error_code":owned_error_code, "owned_error_reason":owned_error_reason,
+        "held_key_count":held_keys.len(), "credit_scope":"route qualification only; no unit RED or GREEN credit"})
+}
+
+async fn u6b_n12_tool_call_fixture() -> (
+    U6Fixture,
+    K2lgNTurn,
+    U6TurnStepper,
+    xai_grok_test_support::InferenceExpectation,
+) {
+    let mut fixture = u6_fixture(None, K2lgNOptions::default()).await;
+    let stepper = U6TurnStepper::default();
+    let mut turn =
+        u6_handoff_with_salvage(&mut fixture.fx, None, None, None, Some(stepper.clone())).await;
+    stepper.pause();
+    let mut continuation = fixture.fx.server.expect_response_blocked(
+        "U6 N12 tool-call checkpoint continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ),
+        k2_script(k2_frames(
+            "msg_u6b_n12_checkpoint",
+            vec![
+                k2_result("srvtoolu_k2_pending", "alpha__lookup"),
+                (json!({"type":"tool_use","id":"client_u6b_n12_must_not_run",
+                    "name":"alpha__lookup","input":{"value":"N12 refused before execution"}}), Vec::new()),
+            ],
+            "tool_use",
+        )),
+    );
+    fixture.fx.session.releases[1].add_permits(1);
+    u6_step_to_http(&stepper, &mut continuation).await;
+    assert!(!turn.running.is_finished(), "H6_N12_ROUTE_CONTINUATION_IN_FLIGHT");
+    (fixture, turn, stepper, continuation)
+}
+
+async fn u6b_n12_end_fixture() -> (
+    U6Fixture,
+    K2lgNTurn,
+    U6TurnStepper,
+    xai_grok_test_support::InferenceExpectation,
+    std::rc::Rc<K0IdleObserver>,
+) {
+    let idle = std::rc::Rc::new(K0IdleObserver::default());
+    let mut fixture = u6_fixture_controlled(None, K2lgNOptions::default(), U6PersistenceControl {
+        plan_tools: true, idle_observer: Some(idle.clone()), ..Default::default()
+    }).await;
+    let stepper = U6TurnStepper::default();
+    let turn =
+        u6_handoff_with_salvage(&mut fixture.fx, None, None, None, Some(stepper.clone())).await;
+    stepper.pause();
+    let mut continuation = fixture.fx.server.expect_response_blocked(
+        "U6 N12 end tool-call checkpoint continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ),
+        k2_script(k2_frames("msg_u6b_n12_end_checkpoint", vec![
+            k2_result("srvtoolu_k2_pending", "alpha__lookup"),
+            (json!({"type":"tool_use","id":"client_u6b_n12_end_must_not_run",
+                "name":"alpha__lookup","input":{"value":"N12 owned refusal"}}), Vec::new()),
+        ], "tool_use")),
+    );
+    fixture.fx.session.releases[1].add_permits(1);
+    u6_step_to_http(&stepper, &mut continuation).await;
+    assert!(!turn.running.is_finished(), "H6_N12_END_LIVE_CONTINUATION");
+    (fixture, turn, stepper, continuation, idle)
+}
+
+fn u6b_collect_host_records(value: &Value, records: &mut Vec<Value>) {
+    match value {
+        Value::String(text) => {
+            if let Ok(record) = serde_json::from_str::<Value>(text)
+                && record["kind"] == "held_input_host_record"
+            {
+                records.push(record);
+            }
+        }
+        Value::Array(values) => {
+            for value in values { u6b_collect_host_records(value, records); }
+        }
+        Value::Object(values) => {
+            for value in values.values() { u6b_collect_host_records(value, records); }
+        }
+        _ => {}
+    }
+}
+
+async fn u6b_host_records(fx: &K2lgN) -> Vec<Value> {
+    let (respond_to, persisted) = tokio::sync::oneshot::channel();
+    fx.session.actor.notifications.persistence_tx.send(PersistenceMsg::FlushAndAck { respond_to }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, persisted).await
+        .expect("H6_U66_HOST_RECORD_PERSISTENCE_BARRIER").unwrap().unwrap();
+    let raw = tokio::fs::read_to_string(fx.session.directory.path().join("updates.jsonl"))
+        .await.expect("H6_U66_HOST_RECORD_STREAM");
+    let mut records = Vec::new();
+    for line in raw.lines() {
+        let value: Value = serde_json::from_str(line).expect("H6_U66_HOST_RECORD_JSONL");
+        u6b_collect_host_records(&value, &mut records);
+    }
+    records
+}
+
+async fn u6b_u66_next_prompt(
+    fx: &K2lgN,
+    prompt: &'static str,
+    tag: &'static str,
+) -> (xai_grok_test_support::InferenceExpectation, K0Abort) {
+    let mut next = fx.server.expect_response_blocked(
+        "U6.6 next admitted user prompt",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ),
+        k2_script(k2lg_n_after_frames("msg_u6b_u66_next")),
+    );
+    let (respond_to, mut response) = tokio::sync::oneshot::channel();
+    let (ready, mut ready_rx) = tokio::sync::oneshot::channel();
+    let mut request = super::prompt_queue::QueueInputRequest::from_input_origin(
+        vec![acp::ContentBlock::Text(acp::TextContent::new(prompt))],
+        "u6b-u66-next-owner".into(), InputOrigin::new(PromptOrigin::User),
+        PromptMode::Agent, respond_to,
+    );
+    request.client_identifier = Some("U6".into());
+    request.initial_child_prompt_ready = Some(ready);
+    assert!(!fx.session.actor.queue_input(request).await, "H6_U66_NEXT_REAL_ADMISSION");
+    let (completion, _completion_rx) = tokio::sync::mpsc::unbounded_channel();
+    fx.session.actor.clone().maybe_start_running_task(completion).await;
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            result = &mut ready_rx => {
+                let release = result.expect("H6_U66_NEXT_READINESS");
+                release.send(()).expect("H6_U66_NEXT_RELEASE");
+            },
+            _ = &mut response => panic!("{tag}"),
+        }
+    }).await.expect("H6_U66_NEXT_READY_BOUND");
+    let handle = fx.session.actor.state.lock().await.running_task.as_ref()
+        .expect("H6_U66_NEXT_RUNNING_OWNER").handle.clone();
+    let stop = K0Abort(handle);
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = next.wait_blocked() => {},
+            _ = &mut response => panic!("{tag}"),
+        }
+    }).await.unwrap_or_else(|_| panic!("{tag}"));
+    (next, stop)
+}
+
+fn u6b_band_record_counts(record: &Value) -> Value {
+    json!([
+        record["bands"]["human_interjection"],
+        record["bands"]["parent_steer"],
+        record["bands"]["monitor_event"],
+        record["bands"]["deferred_followup"],
+        record["bands"]["stationarity_reminder"],
+        record["bands"]["skill_reminder"],
+        record["bands"]["plan_activation"],
+    ])
+}
+
+async fn u6b_n12_turn_end() -> Value {
+    use super::interjection::HeldSource;
+    const HUMAN: &str = "U6 N12 large held human:";
+    const RESIDENT: &str = "U6 N12 resident after custody";
+    const PROMPT: &str = "U6 N12 next admitted user prompt";
+    const MONITOR: &str = "U6 N12 held monitor";
+    const DEFERRED: &str = "U6 N12 held deferred";
+    const STATIONARITY: &str = "U6 N12 held stationarity";
+    const SKILL: &str = "U6 N12 held skill";
+    let (fixture, mut turn, stepper, continuation, idle) = u6b_n12_end_fixture().await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let human = format!("{HUMAN}{}", "h".repeat(256 * 1024 - HUMAN.len()));
+    u6_queue_resident(fx, &human, Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N12_HUMAN_CUSTODY");
+    u6_monitor(fx, "u6b-n12-monitor", MONITOR).await;
+    k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+    for (text, source) in [(DEFERRED, HeldSource::DeferredFollowUp),
+        (STATIONARITY, HeldSource::StationarityReminder)]
+    {
+        k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+            ConversationItem::system_reminder(text), source,
+        )).await.expect("H6_N12_MACHINE_CUSTODY");
+    }
+    let (responds_to, mut replied) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::SessionMode {
+        session_mode: acp::SessionModeId::new("plan"), responds_to,
+    }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            result = &mut replied => result.expect("H6_N12_PLAN_MODE_REPLY"),
+            _ = &mut turn.running => panic!("H6_N12_PLAN_TURN_ENDED"),
+        }
+    }).await.expect("H6_N12_PLAN_COMMAND_BOUND");
+    fx.session.actor.apply_skill_update_effects(
+        xai_grok_tools::types::skill_discovery_tracker::SkillUpdateEffects {
+            system_reminder: Some(SKILL.into()), send_available_commands: false,
+            kind: xai_grok_tools::types::skill_discovery_tracker::SkillUpdateKind::Discovery,
+        },
+    ).await;
+    k2lg_n_selected(fx, fx.session.actor.flush_skills_at_native_safe_point()).await;
+    let mut keys = u6_mixed_keys(fx).await;
+    assert_eq!(keys.len(), 6, "H6_N12_EVERY_PRESENT_BAND_ADMITTED");
+    assert!(keys.iter().all(|entry| entry["source"] != "parent_steer"), "H6_N12_S4_EXCLUDED");
+    let plan = fx.session.actor.plan_mode.lock().pending_activation_text()
+        .expect("H6_N12_HELD_PLAN_REFERENCE").to_owned();
+    u6_queue_resident(fx, RESIDENT, Vec::new()).await;
+    let residents = u6_resident_keys(&fx.session.actor);
+    assert_eq!(residents.len(), 1, "H6_N12_ONE_LATE_RESIDENT");
+    let resident_key = residents[0]["key"].as_u64().unwrap();
+    keys.push(json!({"key":resident_key,"source":"late_resident"}));
+    keys.sort_by_key(|entry| entry["key"].as_u64().unwrap());
+    fixture.persistence_control.n12_drop_next_native_ack.store(true, std::sync::atomic::Ordering::SeqCst);
+    continuation.release();
+    stepper.resume();
+    let ended = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N12_OWNED_ERROR_OUTCOME").expect("H6_N12_OWNED_ERROR_JOIN");
+    let error = ended.err().expect("H6_N12_OWNED_ERROR_REQUIRED");
+    assert_eq!(error.data.as_ref().and_then(|data| data.get("code")),
+        Some(&json!("native_history_read_refused")), "H6_N12_QUALIFIED_OWNED_REFUSAL");
+    let read = fx.session.actor.chat_state_handle.read_native_history().await;
+    assert_eq!(read.as_ref().err(), Some(&k2_history::NativeUnavailable::Indeterminate),
+        "H6_N12_CHECKPOINT_INDETERMINATE");
+    u6_observe(json!({"stage":"N12 checkpoint before turn-end progress",
+        "native_unavailable":"Indeterminate","error_code":"native_history_read_refused",
+        "custody_and_resident_keys":keys.clone(),"http_count":fx.server.messages_request_count()}));
+    fx.session.actor.state.lock().await.notifications_suppressed = true;
+    let (processed, acknowledgement) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+        prompt_id: KOXD_U6_PROMPT.into(), epoch: turn.epoch,
+        result: Box::new(Err(error)), elapsed_ms: Some(0), processed,
+    }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, acknowledgement).await
+        .expect("H6_N12_COMPLETION_COMMAND_BOUND").unwrap();
+    tokio::time::timeout(K0_TIMEOUT, idle.notification.notified()).await
+        .expect("H6_N12_SETTLED_OR_REPORTED");
+    let records = u6b_host_records(fx).await;
+    let retained: Vec<_> = records.iter().filter(|record|
+        record["reason"] == "retained_view_unavailable").collect();
+    assert_eq!(retained.len(), 1, "H6_N12_SETTLED_OR_REPORTED");
+    assert_eq!(u6b_band_record_counts(retained[0]), json!([2, 0, 1, 1, 1, 1, 1]),
+        "H6_N12_SETTLED_OR_REPORTED");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.running_task.is_none() && state.pending_inputs.is_empty(),
+            "H6_N12_SETTLED_OR_REPORTED");
+    }
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N12_SETTLED_OR_REPORTED");
+    let mut retained_keys = u6_mixed_keys(fx).await;
+    retained_keys.sort_by_key(|entry| entry["key"].as_u64().unwrap());
+    assert_eq!(retained_keys.iter().map(|entry| &entry["key"]).collect::<Vec<_>>(),
+        keys.iter().map(|entry| &entry["key"]).collect::<Vec<_>>(), "H6_N12_SETTLED_OR_REPORTED");
+    let (mut next, _next_stop) = u6b_u66_next_prompt(fx, PROMPT, "H6_N12_ORDER").await;
+    let read = fx.session.actor.chat_state_handle.read_native_history().await;
+    assert_eq!(read.as_ref().err(), Some(&k2_history::NativeUnavailable::Indeterminate),
+        "H6_N12_STILL_UNREADABLE_AT_RELEASE");
+    let bodies = k2lg_n_bodies(&fx.server);
+    let body = bodies.last().expect("H6_N12_NEXT_ACTUAL_REQUEST");
+    let text = body["messages"].as_array().unwrap().iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n");
+    let prompt_at = text.find(PROMPT).expect("H6_N12_NEXT_PROMPT_PRESENT");
+    let mut positions = Vec::new();
+    for entry in &keys {
+        let needle = match entry["source"].as_str().unwrap() {
+            "human_interjection" => HUMAN,
+            "monitor_event" => MONITOR,
+            "deferred_followup" => DEFERRED,
+            "stationarity_reminder" => STATIONARITY,
+            "skill_reminder" => SKILL,
+            "plan_activation" => plan.as_str(),
+            "late_resident" => RESIDENT,
+            _ => panic!("H6_N12_UNEXPECTED_BAND"),
+        };
+        assert_eq!(text.matches(needle).count(), 1, "H6_N12_ORDER");
+        let at = text.find(needle).expect("H6_N12_ORDER");
+        assert!(at > prompt_at, "H6_N12_ORDER");
+        positions.push(at);
+    }
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "H6_N12_ORDER");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert!(ledger.entries.is_empty() && ledger.latch.is_none(), "H6_N12_EMPTY");
+    }
+    assert!(u6_pinned_monitor_keys(fx).await.is_empty(), "H6_N12_EMPTY");
+    assert!(fx.session.actor.pending_interjections.is_empty(), "H6_N12_EMPTY");
+    next.release();
+    tokio::time::timeout(K0_TIMEOUT, next.wait_satisfied()).await.expect("H6_N12_NEXT_SATISFIED");
+    next.assert_satisfied();
+    continuation.assert_satisfied();
+    json!({"kind":"N12_UNAVAILABLE_TURN_END", "constructed":false,
+        "native_unavailable":"Indeterminate", "error_code":"native_history_read_refused",
+        "retained_band_counts":u6b_band_record_counts(retained[0]),
+        "custody_and_resident_keys":keys,"positions_in_next_request":positions,
+        "post_drain_idle_observer":true,"next_prompt_http_count":bodies.len(),"ledger_empty":true})
+}
+
+async fn u6b_n12_u66_scoped_turn_end() -> Value {
+    use super::interjection::HeldSource;
+    const HUMAN: &str = "U6 N12 large held human:";
+    const RESIDENT: &str = "U6 N12 resident after custody";
+    const PROMPT: &str = "U6 N12 next admitted user prompt";
+    const MONITOR: &str = "U6 N12 held monitor";
+    const DEFERRED: &str = "U6 N12 held deferred";
+    const STATIONARITY: &str = "U6 N12 held stationarity";
+    let (fixture, mut turn, stepper, continuation, idle) = u6b_n12_end_fixture().await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let human = format!("{HUMAN}{}", "h".repeat(256 * 1024 - HUMAN.len()));
+    u6_queue_resident(fx, &human, Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N12_HUMAN_CUSTODY");
+    u6_monitor(fx, "u6b-n12-monitor", MONITOR).await;
+    k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+    for (text, source) in [(DEFERRED, HeldSource::DeferredFollowUp),
+        (STATIONARITY, HeldSource::StationarityReminder)]
+    {
+        k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+            ConversationItem::system_reminder(text), source,
+        )).await.expect("H6_N12_MACHINE_CUSTODY");
+    }
+    let mut keys = u6_mixed_keys(fx).await;
+    assert_eq!(keys.len(), 4, "H6_N12_EVERY_PRESENT_BAND_ADMITTED");
+    assert!(keys.iter().all(|entry| entry["source"] != "parent_steer"), "H6_N12_S4_EXCLUDED");
+    u6_queue_resident(fx, RESIDENT, Vec::new()).await;
+    let residents = u6_resident_keys(&fx.session.actor);
+    assert_eq!(residents.len(), 1, "H6_N12_ONE_LATE_RESIDENT");
+    let resident_key = residents[0]["key"].as_u64().unwrap();
+    keys.push(json!({"key":resident_key,"source":"late_resident"}));
+    keys.sort_by_key(|entry| entry["key"].as_u64().unwrap());
+    fixture.persistence_control.n12_drop_next_native_ack.store(true, std::sync::atomic::Ordering::SeqCst);
+    continuation.release();
+    stepper.resume();
+    let ended = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N12_OWNED_ERROR_OUTCOME").expect("H6_N12_OWNED_ERROR_JOIN");
+    let error = ended.err().expect("H6_N12_OWNED_ERROR_REQUIRED");
+    assert_eq!(error.data.as_ref().and_then(|data| data.get("code")),
+        Some(&json!("native_history_read_refused")), "H6_N12_QUALIFIED_OWNED_REFUSAL");
+    let read = fx.session.actor.chat_state_handle.read_native_history().await;
+    assert_eq!(read.as_ref().err(), Some(&k2_history::NativeUnavailable::Indeterminate),
+        "H6_N12_CHECKPOINT_INDETERMINATE");
+    u6_observe(json!({"stage":"N12 checkpoint before turn-end progress",
+        "native_unavailable":"Indeterminate","error_code":"native_history_read_refused",
+        "custody_and_resident_keys":keys.clone(),"http_count":fx.server.messages_request_count()}));
+    fx.session.actor.state.lock().await.notifications_suppressed = true;
+    let (processed, acknowledgement) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+        prompt_id: KOXD_U6_PROMPT.into(), epoch: turn.epoch,
+        result: Box::new(Err(error)), elapsed_ms: Some(0), processed,
+    }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, acknowledgement).await
+        .expect("H6_N12_COMPLETION_COMMAND_BOUND").unwrap();
+    tokio::time::timeout(K0_TIMEOUT, idle.notification.notified()).await
+        .expect("H6_N12_SETTLED_OR_REPORTED");
+    let records = u6b_host_records(fx).await;
+    let retained: Vec<_> = records.iter().filter(|record|
+        record["reason"] == "retained_view_unavailable").collect();
+    assert_eq!(retained.len(), 1, "H6_N12_SETTLED_OR_REPORTED");
+    assert_eq!(u6b_band_record_counts(retained[0]), json!([2, 0, 1, 1, 1, 0, 0]),
+        "H6_N12_SETTLED_OR_REPORTED");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.running_task.is_none() && state.pending_inputs.is_empty(),
+            "H6_N12_SETTLED_OR_REPORTED");
+    }
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N12_SETTLED_OR_REPORTED");
+    let mut retained_keys = u6_mixed_keys(fx).await;
+    retained_keys.sort_by_key(|entry| entry["key"].as_u64().unwrap());
+    assert_eq!(retained_keys.iter().map(|entry| &entry["key"]).collect::<Vec<_>>(),
+        keys.iter().map(|entry| &entry["key"]).collect::<Vec<_>>(), "H6_N12_SETTLED_OR_REPORTED");
+    let (mut next, _next_stop) = u6b_u66_next_prompt(fx, PROMPT, "H6_N12_ORDER").await;
+    let read = fx.session.actor.chat_state_handle.read_native_history().await;
+    assert_eq!(read.as_ref().err(), Some(&k2_history::NativeUnavailable::Indeterminate),
+        "H6_N12_STILL_UNREADABLE_AT_RELEASE");
+    let bodies = k2lg_n_bodies(&fx.server);
+    let body = bodies.last().expect("H6_N12_NEXT_ACTUAL_REQUEST");
+    let text = body["messages"].as_array().unwrap().iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n");
+    let prompt_at = text.find(PROMPT).expect("H6_N12_NEXT_PROMPT_PRESENT");
+    let mut positions = Vec::new();
+    for entry in &keys {
+        let needle = match entry["source"].as_str().unwrap() {
+            "human_interjection" => HUMAN,
+            "monitor_event" => MONITOR,
+            "deferred_followup" => DEFERRED,
+            "stationarity_reminder" => STATIONARITY,
+            "late_resident" => RESIDENT,
+            _ => panic!("H6_N12_UNEXPECTED_BAND"),
+        };
+        assert_eq!(text.matches(needle).count(), 1, "H6_N12_ORDER");
+        let at = text.find(needle).expect("H6_N12_ORDER");
+        assert!(at > prompt_at, "H6_N12_ORDER");
+        positions.push(at);
+    }
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "H6_N12_ORDER");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert!(ledger.entries.is_empty() && ledger.latch.is_none(), "H6_N12_EMPTY");
+    }
+    assert!(u6_pinned_monitor_keys(fx).await.is_empty(), "H6_N12_EMPTY");
+    assert!(fx.session.actor.pending_interjections.is_empty(), "H6_N12_EMPTY");
+    next.release();
+    tokio::time::timeout(K0_TIMEOUT, next.wait_satisfied()).await.expect("H6_N12_NEXT_SATISFIED");
+    next.assert_satisfied();
+    continuation.assert_satisfied();
+    json!({"kind":"N12_U66_SCOPED_UNAVAILABLE_TURN_END", "constructed":false,
+        "native_unavailable":"Indeterminate", "error_code":"native_history_read_refused",
+        "retained_band_counts":u6b_band_record_counts(retained[0]),
+        "custody_and_resident_keys":keys,"positions_in_next_request":positions,
+        "post_drain_idle_observer":true,"next_prompt_http_count":bodies.len(),"ledger_empty":true})
+}
+
+#[derive(Clone, Copy)]
+enum U6bCloseCause {
+    ChatClose,
+    ActorDrop,
+    HardTeardown,
+}
+
+async fn u6b_n12c(cause: U6bCloseCause) -> Value {
+    use super::interjection::HeldSource;
+    use xai_message_delivery_core::TerminalCause;
+    const FIRST: &str = "U6 N12c first held human";
+    const SECOND: &str = "U6 N12c second held human";
+    const RESIDENT: &str = "U6 N12c later resident";
+    let (fixture, mut turn, stepper, continuation, idle) = u6b_n12_end_fixture().await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let actor = &fx.session.actor;
+    u6_queue_resident(fx, FIRST, vec![u6_image(1)]).await;
+    let first_key = u6_resident_keys(actor)[0]["key"].clone();
+    u6_queue_resident(fx, SECOND, Vec::new()).await;
+    let second_key = u6_resident_keys(actor)[1]["key"].clone();
+    assert!(!k2lg_n_selected(fx, actor.drain_interjections_at_safe_point()).await,
+        "H6_N12C_HUMAN_CUSTODY");
+    u6_monitor(fx, "u6b-n12c-monitor", "U6 N12c held monitor").await;
+    k2lg_n_selected(fx, actor.inject_pending_monitor_events()).await;
+    for (text, source) in [("U6 N12c deferred", HeldSource::DeferredFollowUp),
+        ("U6 N12c stationarity", HeldSource::StationarityReminder)]
+    {
+        k2lg_n_selected(fx, actor.hold_or_push_user_item(
+            ConversationItem::system_reminder(text), source,
+        )).await.expect("H6_N12C_MACHINE_CUSTODY");
+    }
+    u6_queue_resident(fx, RESIDENT, Vec::new()).await;
+    let resident_key = u6_resident_keys(actor)[0]["key"].clone();
+    fixture.persistence_control.n12_drop_next_native_ack.store(true, std::sync::atomic::Ordering::SeqCst);
+    continuation.release();
+    stepper.resume();
+    let error = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N12C_OWNED_ERROR_OUTCOME").expect("H6_N12C_OWNED_ERROR_JOIN")
+        .err().expect("H6_N12C_OWNED_ERROR_REQUIRED");
+    assert_eq!(error.data.as_ref().and_then(|data| data.get("code")),
+        Some(&json!("native_history_read_refused")), "H6_N12C_QUALIFIED_REFUSAL");
+    actor.state.lock().await.notifications_suppressed = true;
+    let (processed, acknowledgement) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+        prompt_id: KOXD_U6_PROMPT.into(), epoch: turn.epoch,
+        result: Box::new(Err(error)), elapsed_ms: Some(0), processed,
+    }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, acknowledgement).await
+        .expect("H6_N12C_COMPLETION_COMMAND_BOUND").unwrap();
+    tokio::time::timeout(K0_TIMEOUT, idle.notification.notified()).await
+        .expect("H6_N12C_RETAINED_END_BOUND");
+    assert_eq!(u6_mixed_keys(fx).await.len(), 6, "H6_N12C_RETAINED_BEFORE_CLOSE");
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N12C_NO_RESTART");
+    match cause {
+        U6bCloseCause::ChatClose => {
+            fx.chat_token.cancel();
+            assert!(tokio::time::timeout(K0_TIMEOUT, actor.chat_state_handle.get_sampling_config())
+                .await.expect("H6_N12C_CHAT_CLOSE_BOUND").is_none(), "H6_N12C_CHAT_CLOSED");
+            assert_eq!(actor.flush_stranded_interjections().await, 0, "H6_N12C_NO_FALLBACK");
+        }
+        U6bCloseCause::ActorDrop => actor.settle_all_parent_messages(TerminalCause::ActorDrop).await,
+        U6bCloseCause::HardTeardown => actor.settle_all_parent_messages(TerminalCause::HardTeardown).await,
+    }
+    let records = u6b_host_records(fx).await;
+    let closed: Vec<_> = records.iter().filter(|record|
+        record["reason"] == "settled_at_chat_close").collect();
+    assert_eq!(closed.len(), 1, "H6_N12C_RECORD");
+    assert_eq!(u6b_band_record_counts(closed[0]), json!([3, 0, 1, 1, 1, 0, 0]),
+        "H6_N12C_RECORD");
+    assert_eq!(closed[0]["held_human"], json!([
+        {"key": first_key, "text": FIRST, "attachment_count": 1},
+        {"key": second_key, "text": SECOND, "attachment_count": 0},
+        {"key": resident_key, "text": RESIDENT, "attachment_count": 0},
+    ]), "H6_N12C_HUMAN_TEXT_IN_RECORD");
+    assert!(!fixture.persistence_control.user_chunks.lock().unwrap().iter().any(|chunk|
+        chunk.to_string().contains("U6 N12c")), "H6_N12C_NO_USER_CHUNK");
+    {
+        let state = actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert!(ledger.entries.is_empty() && ledger.latch.is_none(), "H6_N12C_EMPTY");
+        assert!(ledger.parent_stamps.is_empty() && ledger.pin_owner.is_none(), "H6_N12C_EMPTY");
+    }
+    assert!(u6_pinned_monitor_keys(fx).await.is_empty(), "H6_N12C_EMPTY");
+    assert!(actor.pending_interjections.is_empty(), "H6_N12C_EMPTY");
+    continuation.assert_satisfied();
+    json!({"kind": "N12C_LOGICAL_CLOSE", "constructed": false,
+        "cause": match cause { U6bCloseCause::ChatClose => "ChatClose",
+            U6bCloseCause::ActorDrop => "ActorDrop", U6bCloseCause::HardTeardown => "HardTeardown" },
+        "band_counts": u6b_band_record_counts(closed[0]), "saved_human_count": 3,
+        "saved_attachment_counts": [1, 0, 0], "no_user_chunk": true, "ledger_empty": true})
+}
+
+async fn u6b_n14_u66_scoped() -> Value {
+    use super::interjection::HeldSource;
+    const CUSTODY: &str = "U6 N14 held custody";
+    const RESIDENT: &str = "U6 N14 later resident";
+    const PROMPT: &str = "U6 N14 next admitted prompt";
+    const MONITOR: &str = "U6 N14 held monitor";
+    const DEFERRED: &str = "U6 N14 held deferred";
+    const STATIONARITY: &str = "U6 N14 held stationarity";
+    let idle = std::rc::Rc::new(K0IdleObserver::default());
+    let mut fixture = u6_fixture_controlled(None, K2lgNOptions::default(), U6PersistenceControl {
+        idle_observer: Some(idle.clone()), ..Default::default()
+    }).await;
+    let stepper = U6TurnStepper::default();
+    let mut turn = u6_handoff_with_salvage(
+        &mut fixture.fx, None, None, None, Some(stepper.clone()),
+    ).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    u6_queue_resident(fx, CUSTODY, Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N14_HUMAN_CUSTODY");
+    u6_monitor(fx, "u6b-n14-monitor", MONITOR).await;
+    k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+    for (text, source) in [(DEFERRED, HeldSource::DeferredFollowUp),
+        (STATIONARITY, HeldSource::StationarityReminder)]
+    {
+        k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+            ConversationItem::system_reminder(text), source,
+        )).await.expect("H6_N14_MACHINE_CUSTODY");
+    }
+    let mut keys = u6_mixed_keys(fx).await;
+    stepper.pause();
+    let mut continuation = fx.server.expect_response_blocked(
+        "U6 N14 readable closure",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ), k2_script(k2lg_n_closure_frames()),
+    );
+    fx.session.releases[1].add_permits(1);
+    u6_step_to_http(&stepper, &mut continuation).await;
+    u6_queue_resident(fx, RESIDENT, vec![u6_image(64)]).await;
+    let resident_key = u6_resident_keys(&fx.session.actor)[0]["key"].clone();
+    keys.push(json!({"key": resident_key, "source": "late_resident"}));
+    keys.sort_by_key(|entry| entry["key"].as_u64().unwrap());
+    let barriers = fixture.persistence_control.barriers.load(std::sync::atomic::Ordering::SeqCst);
+    continuation.release();
+    u6_u63_step_to_preparation(&fixture, &stepper, barriers).await;
+    turn.running.abort();
+    let ended = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N14_PREPARATION_ABORT_BOUND");
+    assert!(matches!(ended, Err(error) if error.is_cancelled()), "H6_N14_REAL_PREPARATION_ABORT");
+    let read = tokio::time::timeout(K0_TIMEOUT, fx.session.actor.chat_state_handle.read_native_history())
+        .await.expect("H6_N14_READABLE_VIEW_BOUND");
+    assert!(read.is_ok_and(|read| read.checkpoint.is_some()), "H6_N14_READABLE_VIEW");
+    fx.session.actor.state.lock().await.notifications_suppressed = true;
+    let (processed, acknowledgement) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+        prompt_id: KOXD_U6_PROMPT.into(), epoch: turn.epoch,
+        result: Box::new(Err(acp::Error::internal_error().data("U6 N14 constructed owned error"))),
+        elapsed_ms: Some(0), processed,
+    }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, acknowledgement).await
+        .expect("H6_N14_COMPLETION_COMMAND_BOUND").unwrap();
+    tokio::time::timeout(K0_TIMEOUT, idle.notification.notified()).await
+        .expect("H6_N14_NO_RESTART");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.running_task.is_none() && state.pending_inputs.is_empty(), "H6_N14_NO_RESTART");
+    }
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N14_NO_RESTART");
+    let mut retained = u6_mixed_keys(fx).await;
+    retained.sort_by_key(|entry| entry["key"].as_u64().unwrap());
+    assert_eq!(retained.iter().map(|entry| &entry["key"]).collect::<Vec<_>>(),
+        keys.iter().map(|entry| &entry["key"]).collect::<Vec<_>>(), "H6_N14_NO_RESTART");
+    assert!(!fixture.persistence_control.user_chunks.lock().unwrap().iter().any(|chunk|
+        chunk.to_string().contains("U6 N14")), "H6_N14_NO_RESTART");
+    let (mut next, _next_stop) = u6b_u66_next_prompt(fx, PROMPT, "H6_N14_ORDER").await;
+    let bodies = k2lg_n_bodies(&fx.server);
+    let body = bodies.last().expect("H6_N14_NEXT_ACTUAL_REQUEST");
+    let text = body["messages"].as_array().unwrap().iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n");
+    let prompt_at = text.find(PROMPT).expect("H6_N14_ORDER");
+    let mut positions = Vec::new();
+    for entry in &keys {
+        let needle = match entry["source"].as_str().unwrap() {
+            "human_interjection" => CUSTODY,
+            "monitor_event" => MONITOR,
+            "deferred_followup" => DEFERRED,
+            "stationarity_reminder" => STATIONARITY,
+            "late_resident" => RESIDENT,
+            _ => panic!("H6_N14_UNEXPECTED_BAND"),
+        };
+        assert_eq!(text.matches(needle).count(), 1, "H6_N14_ORDER");
+        let at = text.find(needle).expect("H6_N14_ORDER");
+        assert!(at > prompt_at, "H6_N14_ORDER");
+        positions.push(at);
+    }
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "H6_N14_ORDER");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.message_delivery.held_input.entries.is_empty()
+            && state.message_delivery.held_input.latch.is_none(), "H6_N14_EMPTY");
+    }
+    assert!(u6_pinned_monitor_keys(fx).await.is_empty(), "H6_N14_EMPTY");
+    assert!(fx.session.actor.pending_interjections.is_empty(), "H6_N14_EMPTY");
+    next.release();
+    tokio::time::timeout(K0_TIMEOUT, next.wait_satisfied()).await.expect("H6_N14_NEXT_SATISFIED");
+    next.assert_satisfied();
+    continuation.assert_satisfied();
+    json!({"kind": "N14_U66_READABLE_ERROR_END_RETAIN", "constructed": true,
+        "construction": "owned error completion injected after a real preparation abort and committed readable closure",
+        "native_view_readable": true, "custody_and_resident_keys": keys,
+        "positions_in_next_request": positions, "no_restart": true, "ledger_empty": true,
+        "skill_and_plan_legs": "owed at U6.7 under R13-4"})
+}
+
+#[derive(Clone, Copy)]
+enum U6bTerminalAwait {
+    Preparation,
+    PersistenceBarrier,
+}
+
+async fn u6b_l13b(site: U6bTerminalAwait, cause: xai_message_delivery_core::TerminalCause) -> Value {
+    use xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventNotification;
+    const CUSTODY: &str = "U6 L13b held human custody";
+    const RESIDENT: &str = "U6 L13b guarded later resident";
+    const A_MONITOR: &str = "U6 L13b owner A monitor";
+    const B_MONITOR: &str = "U6 L13b owner B monitor";
+    const LEGACY: &str = "U6 L13b ownerless legacy monitor";
+    let (fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(Some(CUSTODY)).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let extra_actor = fx.session.actor.clone();
+    let buffer = extra_actor.tool_context.monitor_event_buffer.as_ref().unwrap().clone();
+    let mut b = K0Shell::new(&fx.server, false).await;
+    let sampling = b.tasks.pop().expect("H6_L13B_B_SAMPLER_TASK");
+    sampling.abort();
+    let stopped = tokio::time::timeout(K0_TIMEOUT, sampling).await
+        .expect("H6_L13B_B_SAMPLER_STOP_BOUND");
+    assert!(stopped.is_err_and(|error| error.is_cancelled()), "H6_L13B_B_SAMPLER_STOPPED");
+    Arc::get_mut(&mut b.actor).expect("H6_L13B_B_SETUP_EXCLUSIVE")
+        .tool_context.monitor_event_buffer = Some(buffer.clone());
+    assert_ne!(extra_actor.session_id_string(), b.actor.session_id_string(), "H6_L13B_DISTINCT_OWNERS");
+    u6_monitor(fx, "u6b-l13b-A", A_MONITOR).await;
+    b.buffer("u6b-l13b-B", B_MONITOR);
+    buffer.push_capped(MonitorEventNotification {
+        task_id: "u6b-l13b-legacy".into(),
+        event_text: format!("<monitor-event description=\"legacy\" task_id=\"u6b-l13b-legacy\">\n{LEGACY}\n</monitor-event>"),
+        owner_session_id: None,
+    }, 128);
+    k2lg_n_selected(fx, extra_actor.inject_pending_monitor_events()).await;
+    let owner = extra_actor.state.lock().await.message_delivery.held_input.pin_owner
+        .expect("H6_L13B_REAL_PIN_OWNER");
+    assert_eq!(buffer.release_view(owner, |_| false).iter().count(), 2,
+        "H6_L13B_REAL_OWNER_AND_LEGACY_PINS");
+    u6_queue_resident(fx, RESIDENT, Vec::new()).await;
+    let barriers = fixture.persistence_control.barriers.load(std::sync::atomic::Ordering::SeqCst);
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_L13B_CLOSED_CHECKPOINT").await;
+    u6_u63_step_to_preparation(&fixture, &stepper, barriers).await;
+    if matches!(site, U6bTerminalAwait::PersistenceBarrier) {
+        fixture.persistence_control.hold_barriers.store(true, std::sync::atomic::Ordering::SeqCst);
+        u6_step_to_persistence_barrier(&stepper, &fixture.persistence_control).await;
+    }
+    assert!(!turn.running.is_finished(), "H6_L13B_SUSPENDED_REAL_RELEASE");
+    let before_http = fx.server.messages_request_count();
+    let strong_count = Arc::strong_count(&extra_actor);
+    assert!(strong_count > 1, "H6_L13B_EXTRA_ARC_BEFORE_TERMINAL");
+    tokio::time::timeout(K0_TIMEOUT, extra_actor.settle_all_parent_messages(cause)).await
+        .expect("H6_L13B_LOGICAL_SETTLEMENT_BOUND");
+    {
+        let state = extra_actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert!(ledger.terminal && ledger.entries.is_empty() && ledger.latch.is_none(),
+            "H6_L13B_LOGICAL_SETTLEMENT_BEFORE_DROP");
+        assert!(ledger.pin_owner.is_none() && ledger.parent_stamps.is_empty(),
+            "H6_L13B_NO_PINS_BEFORE_FINAL_ARC_DROP");
+    }
+    assert_eq!(buffer.release_view(owner, |_| false).iter().count(), 0,
+        "H6_L13B_NO_PINS_BEFORE_FINAL_ARC_DROP");
+    assert!(Arc::strong_count(&extra_actor) > 1, "H6_L13B_EXTRA_ARC_STILL_ALIVE");
+    let before_b = tokio::time::timeout(K0_TIMEOUT, b.actor.chat_state_handle.get_conversation())
+        .await.expect("H6_L13B_B_BEFORE_READ_BOUND").len();
+    b.actor.inject_pending_monitor_events().await;
+    let b_before = tokio::time::timeout(K0_TIMEOUT, b.actor.chat_state_handle.get_conversation())
+        .await.expect("H6_L13B_B_AFTER_READ_BOUND");
+    assert!(b_before.len() > before_b, "H6_L13B_REAL_B_DRAIN");
+    let b_text = b_before.iter().map(ConversationItem::text_content).collect::<Vec<_>>().join("\n");
+    assert_eq!(b_text.matches(B_MONITOR).count(), 1, "H6_L13B_B_OWN_EVENT_ONCE");
+    assert_eq!(b_text.matches(LEGACY).count(), 1, "H6_L13B_B_LEGACY_ONCE");
+    assert!(!b_text.contains(A_MONITOR), "H6_L13B_NO_FOREIGN_TAKE");
+    let b_digest = native_content_digest(&serde_json::to_vec(&b_before).unwrap());
+    fixture.persistence_control.hold_barriers.store(false, std::sync::atomic::Ordering::SeqCst);
+    while !fixture.persistence_control.held_barriers.lock().unwrap().is_empty() {
+        u6_forward_held_barrier(&fixture);
+    }
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_l13b_forbidden")));
+    stepper.resume();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_L13B_RESUMED_OUTCOME_BOUND").expect("H6_L13B_RESUMED_TURN_JOIN");
+    assert_eq!(fx.server.messages_request_count(), before_http, "H6_L13B_NO_TERMINAL_RELEASE");
+    assert_eq!(u6_user_persists(&fixture.persistence_control, CUSTODY), 0,
+        "H6_L13B_NO_TERMINAL_RELEASE");
+    assert_eq!(u6_user_persists(&fixture.persistence_control, RESIDENT), 0,
+        "H6_L13B_NO_TERMINAL_RELEASE");
+    let a_after = extra_actor.chat_state_handle.get_conversation().await;
+    assert!(!a_after.iter().any(|item| [CUSTODY, RESIDENT, A_MONITOR, LEGACY].iter()
+        .any(|text| item.text_content().contains(text))), "H6_L13B_NO_TERMINAL_RELEASE");
+    assert_eq!(buffer.release_view(owner, |_| false).iter().count(), 0,
+        "H6_L13B_NO_TERMINAL_RELEASE");
+    let b_after = b.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(native_content_digest(&serde_json::to_vec(&b_after).unwrap()), b_digest,
+        "H6_L13B_NO_TERMINAL_RELEASE");
+    {
+        let state = extra_actor.state.lock().await;
+        assert!(state.message_delivery.held_input.terminal
+            && state.message_delivery.held_input.entries.is_empty()
+            && state.message_delivery.held_input.latch.is_none(), "H6_L13B_NO_TERMINAL_RELEASE");
+    }
+    assert!(Arc::strong_count(&extra_actor) > 1, "H6_L13B_EXTRA_ARC_AT_FINAL_ASSERTION");
+    continuation.assert_satisfied();
+    json!({"kind": "L13B_LOGICAL_TERMINAL", "constructed": false,
+        "phase": match site { U6bTerminalAwait::Preparation => "preparation",
+            U6bTerminalAwait::PersistenceBarrier => "persistence-barrier" },
+        "cause": format!("{cause:?}"), "extra_arc_alive": true,
+        "shared_real_actor_buffer": true, "b_sampler_drainer_stopped_in_setup": true,
+        "b_sampling_not_claimed": true, "pins_released_before_last_arc": true,
+        "b_drained_before_a_resumed": true, "b_own_and_legacy_once": true,
+        "resumed_release_had_no_effect": true, "resumed_turn_error": outcome.is_err(),
+        "http_before": before_http, "http_after": fx.server.messages_request_count(),
+        "native_handoff_observation_credited": false})
+}
+
+async fn u6b_u66_progress<T>(
+    running: &mut U6Running,
+    progress: impl std::future::Future<Output = T>,
+    tag: &'static str,
+) -> T {
+    tokio::select! {
+        biased;
+        value = tokio::time::timeout(K0_TIMEOUT, progress) => value.expect(tag),
+        outcome = running => {
+            let kind = match outcome {
+                Ok(Ok(_)) => "Completed",
+                Ok(Err(error)) => {
+                    let code = error.data.as_ref().and_then(|data| data.get("code"))
+                        .and_then(Value::as_str).filter(|code| *code == "native_history_read_refused");
+                    let indeterminate = error.data.as_ref().is_some_and(|data| data.to_string().contains("Indeterminate"));
+                    u6_observe(json!({"stage":"U66 owned turn error", "tag":tag,
+                        "native_error_code":code,
+                        "native_unavailable_reason":indeterminate.then_some("Indeterminate")}));
+                    "TurnError"
+                }
+                Err(error) if error.is_cancelled() => "JoinCancelled",
+                Err(_) => "JoinError",
+            };
+            u6_observe(json!({"stage":"U66 owned wait", "tag":tag, "turn_outcome_kind":kind}));
+            panic!("{tag}");
+        }
+    }
+}
+
+struct U6bIdAdmission {
+    admission: k0_coordinator::ActiveMessageAdmission,
+    receipt: Option<crate::agent::subagent::PromptTurnReceipt>,
+}
+
+async fn u6b_admit_steer_id(
+    fx: &K2lgN,
+    running: &mut U6Running,
+    id: &str,
+    text: &str,
+    tag: &'static str,
+) -> U6bIdAdmission {
+    let (receipt_sink, mut receipt_rx) = tokio::sync::mpsc::channel(1);
+    let (respond_to, response_rx) = tokio::sync::oneshot::channel();
+    let (completion_tx, _completion_rx) = tokio::sync::mpsc::unbounded_channel();
+    let actor = &fx.session.actor;
+    assert!(actor.state.lock().await.running_task.is_some(), "H6_U66_STEER_RUNNING_OWNER");
+    u6b_u66_progress(running, k2lg_n_selected(fx, actor.admit_parent_agent_message_for_test(
+        k0_task::ActiveAgentMessage {
+            message_id: id.into(),
+            sender_session_id: "u6b-test-parent".into(),
+            text: Arc::from(text),
+        },
+        k0_task::ActiveAgentMessageSource::Agent,
+        k0_task::ActiveAgentMessageOperation::Steer,
+        receipt_sink,
+        respond_to,
+        completion_tx,
+    )), tag).await;
+    let admission = u6b_u66_progress(running, response_rx, tag).await.expect(tag);
+    let receipt = if admission == k0_coordinator::ActiveMessageAdmission::Admitted {
+        Some(u6b_u66_progress(running, receipt_rx.recv(), tag).await.expect(tag))
+    } else {
+        None
+    };
+    U6bIdAdmission { admission, receipt }
+}
+
+async fn u6b_n6_long_id_steer() -> Value {
+    const STEER: &str = "U6 N6 long id Steer";
+    const HUMAN: &str = "U6 N6 later human";
+    let (fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let id = "s".repeat(127);
+    let admitted = u6b_admit_steer_id(fx, &mut turn.running, &id, STEER,
+        "H6_N6_REAL_ADMISSION").await;
+    assert_eq!(admitted.admission, k0_coordinator::ActiveMessageAdmission::Admitted,
+        "H6_N6_REAL_ADMISSION");
+    let mut receipt = admitted.receipt.expect("H6_N6_REAL_ADMISSION");
+    assert!(matches!(receipt.result.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)), "H6_N6_NO_UNSUBMITTED_SETTLEMENT");
+    let stamp = fx.session.actor.state.lock().await.message_delivery.held_input
+        .parent_key(&id).map(|key| key.as_u64());
+    u6_queue_resident(fx, HUMAN, Vec::new()).await;
+    let human_key = u6_resident_keys(&fx.session.actor)[0]["key"].as_u64()
+        .expect("H6_N6_HUMAN_ARRIVAL_KEY");
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N6_PENDING_NATIVE_HOLD");
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_n6_after")));
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_N6_CLOSED_CHECKPOINT").await;
+    stepper.resume();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N6_FIRST_RELEASE_PROGRESS").expect("H6_N6_FIRST_RELEASE_JOIN");
+    assert!(outcome.is_ok(), "H6_N6_FIRST_RELEASE_PROGRESS");
+    let bodies = k2lg_n_bodies(&fx.server);
+    let body = bodies.last().expect("H6_N6_ACTUAL_REQUEST");
+    let text = body["messages"].as_array().unwrap().iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n");
+    let steer_at = text.find(STEER).expect("H6_N6_LONG_ID_STEER_ORDER");
+    let human_at = text.find(HUMAN).expect("H6_N6_LONG_ID_STEER_ORDER");
+    assert_eq!(text.matches(STEER).count(), 1, "H6_N6_LONG_ID_STEER_ORDER");
+    assert_eq!(text.matches(HUMAN).count(), 1, "H6_N6_LONG_ID_STEER_ORDER");
+    assert!(steer_at < human_at, "H6_N6_LONG_ID_STEER_ORDER");
+    assert!(stamp.is_some_and(|key| key < human_key), "H6_N6_STAMPED_AT_ADMISSION");
+    let state = fx.session.actor.state.lock().await;
+    let ledger = &state.message_delivery.held_input;
+    assert!(ledger.parent_stamps.len() <= fx.session.actor.live_parent_steer_slots(&state),
+        "H6_N6_STAMPS_BOUNDED_BY_LIVE_IDENTITIES");
+    assert!(ledger.entries.is_empty() && ledger.latch.is_none(), "H6_N6_EMPTY_AFTER_RELEASE");
+    drop(state);
+    continuation.assert_satisfied();
+    json!({"kind":"N6_LONG_ID_STEER", "constructed":false, "id_bytes":id.len(),
+        "stamp_at_admission":stamp, "human_arrival_key":human_key,
+        "steer_position":steer_at, "human_position":human_at,
+        "actual_request_count":bodies.len(), "once_only":true})
+}
+
+async fn u6b_n11_steer_receipt() -> Value {
+    use super::interjection::{HeldSource, HoldRefusalReason};
+    let (fixture, mut turn, _stepper, _continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let mut receipts = Vec::new();
+    for index in 0..32 {
+        let id = format!("u6b-steer-{index}");
+        let admitted = u6b_admit_steer_id(fx, &mut turn.running, &id,
+            "U6 N11 held Steer", "H6_N11_STEER_ADMISSION_BOUND").await;
+        assert_eq!(admitted.admission, k0_coordinator::ActiveMessageAdmission::Admitted,
+            "H6_N11_STEER_ADMISSION");
+        receipts.push(admitted.receipt.expect("H6_N11_STEER_ADMISSION"));
+    }
+    let overflow = u6b_admit_steer_id(fx, &mut turn.running, "u6b-steer-overflow",
+        "U6 N11 refused Steer", "H6_N11_STEER_RECEIPT_BOUND").await;
+    u6_observe(json!({"stage":"N11 full-slot host outcome", "admission":format!("{:?}", overflow.admission)}));
+    assert_ne!(overflow.admission, k0_coordinator::ActiveMessageAdmission::Rejected,
+        "H6_N11_STEER_RECEIPT");
+    assert!(overflow.receipt.is_none(), "H6_N11_STEER_RECEIPT");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert_eq!(fx.session.actor.live_parent_steer_slots(&state), 32,
+            "H6_N11_STEER_RECEIPT");
+        let refusal = state.message_delivery.held_input.refusal.as_ref()
+            .expect("H6_N11_STEER_REFUSAL_RECORD");
+        assert_eq!(refusal.source, HeldSource::ParentSteer, "H6_N11_STEER_REFUSAL_RECORD");
+        assert_eq!(refusal.reason, HoldRefusalReason::SteerSlotsFull,
+            "H6_N11_STEER_REFUSAL_RECORD");
+        assert_eq!(refusal.observed_len, 32, "H6_N11_STEER_REFUSAL_RECORD");
+        u6_observe(json!({"stage":"N11 named refusal", "reason":"steer_slots_full",
+            "observed_slots":refusal.observed_len, "key":refusal.key}));
+    }
+    let duplicate = u6b_admit_steer_id(fx, &mut turn.running, "u6b-steer-0",
+        "U6 N11 duplicate Steer", "H6_N11_DUPLICATE_BOUND").await;
+    assert_eq!(duplicate.admission, k0_coordinator::ActiveMessageAdmission::Rejected,
+        "H6_N11_OTHER_REJECTION_PRESERVED");
+    assert!(receipts.iter_mut().all(|receipt| matches!(receipt.result.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty))), "H6_N11_NO_UNSUBMITTED_SETTLEMENT");
+    json!({"kind":"N11_STEER_RECEIPT", "constructed":false, "admitted":receipts.len(),
+        "overflow_admission":format!("{:?}", overflow.admission), "refusal_reason":"steer_slots_full",
+        "duplicate_kept_rejected":duplicate.admission == k0_coordinator::ActiveMessageAdmission::Rejected,
+        "max_slots":32})
+}
+
+async fn u6b_n5_start_turn(
+    fx: &mut K2lgN,
+    user: &'static str,
+    stepper: U6TurnStepper,
+) -> K2lgNTurn {
+    U6_ARM_STEPPERS.with(|steppers| steppers.borrow_mut().push(stepper.clone()));
+    fx.session.actor.chat_state_handle.begin_turn_capture();
+    tokio::time::timeout(K0_TIMEOUT, fx.session.actor.chat_state_handle.get_conversation())
+        .await.expect("H6_N5_START_INBOX_FENCE");
+    let turn_start_ops = fx.log.lock().unwrap().len();
+    tokio::time::timeout(K0_TIMEOUT, fx.session.actor.chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user(user)))
+        .await.expect("H6_N5_START_USER_ACK");
+    let submits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let record = submits.clone();
+    let actor = fx.session.actor.clone();
+    let domain = fx.session.domain(&fx.server);
+    let observations = U6_ARM_OBSERVATIONS.with(Clone::clone);
+    let guard = super::turn_task::TurnActiveGuard::activate(Some(&actor.session_turn_active));
+    let running = tokio::task::spawn_local(async move {
+        let _guard = guard;
+        let mut prepare = move |request: &mut ConversationRequest,
+            binding: &xai_chat_state::RequestTransportBinding| {
+            assert!(record.borrow().len() < 16, "H6_N5_REQUEST_BUDGET");
+            record.borrow_mut().push(json!({
+                "items":serde_json::to_value(&request.items).unwrap(),
+                "tools":serde_json::to_value(&request.tools).unwrap(),
+                "model":request.model, "bound_model":binding.config.model,
+                "body_digest":request.encoded.as_ref().map(|body| native_content_digest(body.as_bytes())),
+            }));
+            Ok(())
+        };
+        let mut salvage = super::length_salvage::LengthSalvage::new(None);
+        let mut sampling = Default::default();
+        let future = super::switch_projection::HISTORY_S3_TEST_DOMAIN.scope(
+            domain,
+            super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                k2_history::NativeHistoryRequirement::Selected,
+                actor.process_conversation_turn_for_native_history_test(
+                    KOXD_U6_PROMPT, None, None, None,
+                    &mut salvage, &mut sampling, &mut prepare,
+                ),
+            ),
+        );
+        U6_ARM_OBSERVATIONS.scope(observations, U6SteppedTurn {
+            future: Box::pin(future), stepper: Some(stepper),
+        }).await
+    });
+    let (epoch, identity) = u6_install_running(fx, running.abort_handle()).await;
+    K2lgNTurn { running, epoch, identity, submits, turn_start_ops }
+}
+
+async fn u6b_n5_native_handoff(fx: &mut K2lgN, stepper: U6TurnStepper) -> K2lgNTurn {
+    let before = fx.server.messages_request_count();
+    let permit = tokio::time::timeout(K0_TIMEOUT,
+        fx.session.releases[1].clone().acquire_many_owned(16))
+        .await.expect("H6_N5_CLIENT_GATE_BOUND").expect("H6_N5_CLIENT_GATE_OPEN");
+    permit.forget();
+    fx.server.enqueue_response("/v1/messages", k2_script(k2_u5_frames()));
+    let mut turn = u6b_n5_start_turn(fx, "U6 N5 later native turn", stepper).await;
+    let captured = u6b_u66_progress(&mut turn.running, fx.session.source_acks.recv(),
+        "H6_N5_NATIVE_CAPTURE_BOUND").await;
+    assert_eq!(captured, Some(k2_history::NativeResponseStatus::Accepted), "H6_N5_NATIVE_CAPTURE");
+    let mut entered = u6_client_dispatch(
+        &mut fx.session.entered, &mut turn.running, json!("Accepted"),
+        "N5 real native handoff", "H6_N5_NATIVE_DISPATCH_BOUND", "H6_N5_NATIVE_DISPATCH_ENDED",
+    ).await;
+    entered.sort();
+    assert_eq!(entered, vec!["alpha__lookup", "zeta__fetch"], "H6_N5_REAL_CLIENT_EXECUTION");
+    let conversation = &fx.session.actor.chat_state_handle;
+    u6_await_turn_progress(
+        &mut turn.running, "N5 first actual client result", "H6_N5_FIRST_ACTUAL_RESULT",
+        "H6_N5_FIRST_ACTUAL_RESULT_ENDED", || async move {
+            conversation.get_conversation().await.iter().any(|item| {
+                matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c1")
+            })
+        },
+    ).await;
+    let (checkpoint, _) = u6_quiescent_reload(fx, "H6_N5_HANDOFF_RELOAD").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_N5_REAL_LIVE_PENDING");
+    assert_eq!(fx.server.messages_request_count(), before + 1, "H6_N5_ZERO_EARLY_CONTINUATION");
+    u6_observe(json!({"stage":"N5 native handoff", "before_requests":before,
+        "after_requests":fx.server.messages_request_count()}));
+    turn
+}
+
+async fn u6b_n5_33rd_steer() -> Value {
+    const EARLY: &str = "U6 N5 prepared early human";
+    const LATE: &str = "U6 N5 later unprepared human";
+    const STEER: &str = "U6 N5 33rd Steer";
+    let idle = std::rc::Rc::new(K0IdleObserver::default());
+    let mut fixture = u6_fixture_controlled(None, K2lgNOptions::default(), U6PersistenceControl {
+        idle_observer: Some(idle.clone()), ..Default::default()
+    }).await;
+    k2_seed(&mut fixture.fx.session, &fixture.fx.server).await;
+    let mut first = fixture.fx.server.expect_response_blocked(
+        "N5 earlier ordinary turn", xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ), k2_script(k2_frames("msg_u6b_n5_prior_first", vec![
+            (json!({"type":"text","text":"N5 earlier first sample"}), Vec::new()),
+        ], "end_turn")),
+    );
+    let prior_stepper = U6TurnStepper::default();
+    let mut prior = u6b_n5_start_turn(&mut fixture.fx, "U6 N5 earlier ordinary prompt", prior_stepper).await;
+    let _prior_stop = K0Abort(prior.running.abort_handle());
+    u6b_u66_progress(&mut prior.running, first.wait_blocked(), "H6_N5_PRIOR_FIRST_HTTP").await;
+    let mut receipts = Vec::new();
+    let mut prior_texts = Vec::new();
+    for index in 0..32 {
+        let id = format!("u6b-n5-prior-{index}");
+        let text = format!("U6 N5 prior Steer {index:02}");
+        let admitted = u6b_admit_steer_id(&fixture.fx, &mut prior.running, &id, &text,
+            "H6_N5_PRIOR_ADMISSION_BOUND").await;
+        assert_eq!(admitted.admission, k0_coordinator::ActiveMessageAdmission::Admitted,
+            "H6_N5_PRIOR_REAL_ADMISSION");
+        receipts.push(admitted.receipt.expect("H6_N5_PRIOR_REAL_ADMISSION"));
+        prior_texts.push(text);
+    }
+    let mut second = fixture.fx.server.expect_response_blocked(
+        "N5 actual prior Steer submission", xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ), k2_script(k2_frames("msg_u6b_n5_prior_complete", vec![
+            (json!({"type":"text","text":"N5 prior turn complete"}), Vec::new()),
+        ], "end_turn")),
+    );
+    first.release();
+    u6b_u66_progress(&mut prior.running, second.wait_blocked(), "H6_N5_PRIOR_STEERS_SUBMITTED").await;
+    let bodies = k2lg_n_bodies(&fixture.fx.server);
+    let prior_body = bodies.last().expect("H6_N5_PRIOR_ACTUAL_REQUEST");
+    let text = prior_body["messages"].as_array().unwrap().iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n");
+    assert!(prior_texts.iter().all(|needle| text.matches(needle.as_str()).count() == 1),
+        "H6_N5_PRIOR_32_SUBMITTED_ONCE");
+    second.release();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut prior.running).await
+        .expect("H6_N5_PRIOR_TURN_BOUND").expect("H6_N5_PRIOR_TURN_JOIN")
+        .expect("H6_N5_PRIOR_TURN_SUCCESS");
+    {
+        let state = fixture.fx.session.actor.state.lock().await;
+        assert_eq!(fixture.fx.session.actor.live_parent_steer_slots(&state), 32,
+            "H6_N5_PRIOR_DELIVERED_LIVE_SLOTS");
+    }
+    let structured_output = match outcome {
+        TurnOutcome::Completed { stop: CompletedStop::EndTurn, structured_output, .. } => structured_output,
+        _ => panic!("H6_N5_PRIOR_EXPECTED_END_TURN"),
+    };
+    let total_tokens = tokio::time::timeout(K0_TIMEOUT,
+        fixture.fx.session.actor.chat_state_handle.get_total_tokens()).await
+        .expect("H6_N5_PRIOR_TOKEN_READ_BOUND");
+    let prompt_outcome = crate::session::commands::PromptTurnOk {
+        stop_reason: acp::StopReason::EndTurn,
+        total_tokens,
+        turn_snapshot: None,
+        completion_kind: crate::session::commands::PromptCompletionKind::Completed,
+        structured_output,
+        usage: None,
+        tool_overrides: None,
+    };
+    fixture.fx.session.actor.state.lock().await.notifications_suppressed = true;
+    let (processed, completed) = tokio::sync::oneshot::channel();
+    fixture.fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+        prompt_id: KOXD_U6_PROMPT.into(), epoch: prior.epoch,
+        result: Box::new(Ok(prompt_outcome)), elapsed_ms: Some(0), processed,
+    }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, completed).await.expect("H6_N5_PRIOR_COMPLETION_BOUND").unwrap();
+    tokio::time::timeout(K0_TIMEOUT, idle.notification.notified()).await.expect("H6_N5_PRIOR_POST_DRAIN_IDLE");
+    let settled_count = receipts.len();
+    for receipt in receipts {
+        let delivered = tokio::time::timeout(K0_TIMEOUT, receipt.result).await
+            .expect("H6_N5_PRIOR_RECEIPT_BOUND").expect("H6_N5_PRIOR_RECEIPT_OPEN");
+        assert!(delivered.is_ok(), "H6_N5_PRIOR_SETTLED_DELIVERED");
+    }
+    let (previous_stamps, previous_live_slots) = {
+        let state = fixture.fx.session.actor.state.lock().await;
+        assert!(state.running_task.is_none() && state.pending_inputs.is_empty(), "H6_N5_PRIOR_IDLE_NO_RESTART");
+        assert_eq!(fixture.fx.session.actor.live_parent_steer_slots(&state), 0,
+            "H6_N5_PRIOR_IDENTITIES_SETTLED");
+        (state.message_delivery.held_input.parent_stamps.len(),
+            fixture.fx.session.actor.live_parent_steer_slots(&state))
+    };
+    u6_observe(json!({"stage":"R19 real Completion pruning", "constructed":false,
+        "stamp_count":previous_stamps, "live_parent_slots":previous_live_slots}));
+    let mut prior_acks = 0;
+    while let Ok(status) = fixture.fx.session.source_acks.try_recv() {
+        assert_eq!(status, k2_history::NativeResponseStatus::Accepted, "H6_N5_PRIOR_NATIVE_ACK");
+        prior_acks += 1;
+    }
+    first.assert_satisfied();
+    second.assert_satisfied();
+    let history_before = tokio::time::timeout(K0_TIMEOUT,
+        fixture.fx.session.actor.chat_state_handle.get_conversation()).await.expect("H6_N5_PRIOR_HISTORY_BOUND");
+    let native_stepper = U6TurnStepper::default();
+    let mut turn = u6b_n5_native_handoff(&mut fixture.fx, native_stepper.clone()).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let history_after = u6b_u66_progress(&mut turn.running,
+        fx.session.actor.chat_state_handle.get_conversation(), "H6_N5_HISTORY_PRESERVED_BOUND").await;
+    assert!(history_after.len() >= history_before.len(), "H6_N5_PRIOR_HISTORY_PRESERVED");
+    assert_eq!(native_content_digest(&serde_json::to_vec(&history_before).unwrap()),
+        native_content_digest(&serde_json::to_vec(&history_after[..history_before.len()]).unwrap()),
+        "H6_N5_PRIOR_HISTORY_PRESERVED");
+    native_stepper.pause();
+    let mut continuation = fx.server.expect_response_blocked(
+        "N5 matching native closure", xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ), k2_script(k2lg_n_closure_frames()),
+    );
+    fx.session.releases[1].add_permits(1);
+    u6b_u66_progress(&mut turn.running, u6_step_to_http(&native_stepper, &mut continuation),
+        "H6_N5_NATIVE_CONTINUATION_BOUND").await;
+    u6_queue_resident(fx, EARLY, Vec::new()).await;
+    let barriers = fixture.persistence_control.barriers.load(std::sync::atomic::Ordering::SeqCst);
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_N5_NATIVE_CLOSED_CHECKPOINT").await;
+    u6b_u66_progress(&mut turn.running, u6_u63_step_to_preparation(&fixture, &native_stepper, barriers),
+        "H6_N5_REAL_PREPARATION_BOUND").await;
+    u6_queue_resident(fx, LATE, Vec::new()).await;
+    let admitted = u6b_admit_steer_id(fx, &mut turn.running, "u6b-n5-33rd", STEER,
+        "H6_N5_LATE_STEER_ADMISSION_BOUND").await;
+    assert_eq!(admitted.admission, k0_coordinator::ActiveMessageAdmission::Admitted,
+        "H6_N5_LATE_STEER_ADMITTED");
+    let mut receipt = admitted.receipt.expect("H6_N5_LATE_STEER_ADMITTED");
+    let late_stamp = fx.session.actor.state.lock().await.message_delivery.held_input
+        .parent_key("u6b-n5-33rd").map(|key| key.as_u64());
+    u6_observe(json!({"stage":"N5 33rd admission", "earlier_settled":settled_count,
+        "previous_stamps":previous_stamps, "late_stamp":late_stamp,
+        "prior_requests":bodies.len(), "prior_native_acks":prior_acks}));
+    let mut first_prefix = Vec::new();
+    for _ in 0..256 {
+        assert!(u6b_u66_progress(&mut turn.running, native_stepper.step(),
+            "H6_N5_FIRST_PREFIX_PROGRESS").await, "H6_N5_FIRST_PREFIX_PROGRESS");
+        first_prefix = u6b_u66_progress(&mut turn.running,
+            fx.session.actor.chat_state_handle.get_conversation(), "H6_N5_FIRST_PREFIX_READ").await;
+        if first_prefix.iter().any(|item| item.text_content().contains(EARLY)) { break; }
+    }
+    let first_labels: Vec<_> = first_prefix.iter().flat_map(|item| [EARLY, LATE, STEER]
+        .into_iter().filter(move |label| item.text_content().contains(label))).collect();
+    assert_eq!(first_labels, vec![EARLY], "H6_N5_FIRST_PREFIX_CUTOFF");
+    assert!(!fixture.persistence_control.hold_barriers.load(std::sync::atomic::Ordering::SeqCst),
+        "H6_N5_PERSISTENCE_FENCE_NOT_HELD");
+    u6b_u66_progress(&mut turn.running, u6b_host_records(fx),
+        "H6_N5_FIRST_PREFIX_PERSISTENCE_FENCE").await;
+    let unsubmitted_persists = u6_user_persists(&fixture.persistence_control, STEER);
+    u6_observe(json!({"stage":"N5 unsubmitted Steer", "first_prefix":first_labels,
+        "parent_user_chunks":unsubmitted_persists}));
+    assert_eq!(unsubmitted_persists, 0, "H6_N5_NO_UNSUBMITTED_PARENT_PERSIST");
+    assert!(matches!(receipt.result.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)), "H6_N5_NO_UNSUBMITTED_SETTLEMENT");
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_n5_after")));
+    native_stepper.resume();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N5_FINAL_RELEASE_BOUND").expect("H6_N5_FINAL_RELEASE_JOIN");
+    assert!(outcome.is_ok(), "H6_N5_FINAL_RELEASE_PROGRESS");
+    let all_bodies = k2lg_n_bodies(&fx.server);
+    let body = all_bodies.last().expect("H6_N5_FINAL_ACTUAL_REQUEST");
+    let final_text = body["messages"].as_array().unwrap().iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n");
+    let positions: Vec<_> = [EARLY, LATE, STEER].iter().map(|needle| {
+        assert_eq!(final_text.matches(*needle).count(), 1, "H6_N5_GLOBAL_STEER_ORDER");
+        final_text.find(*needle).expect("H6_N5_GLOBAL_STEER_ORDER")
+    }).collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "H6_N5_GLOBAL_STEER_ORDER");
+    assert!(late_stamp.is_some(), "H6_N5_STAMPED_AT_ADMISSION");
+    assert!(previous_stamps <= previous_live_slots, "H6_R19_COMPLETION_STAMP_PRUNE");
+    let state = fx.session.actor.state.lock().await;
+    assert!(state.message_delivery.held_input.parent_stamps.len()
+        <= fx.session.actor.live_parent_steer_slots(&state), "H6_N5_STAMPS_BOUNDED_BY_LIVE_IDENTITIES");
+    drop(state);
+    continuation.assert_satisfied();
+    json!({"kind":"N5_33RD_STEER", "constructed":false, "prior_settled":settled_count,
+        "previous_stamp_count":previous_stamps, "stamp_at_33rd_admission":late_stamp,
+        "first_prefix":first_labels, "final_positions":positions,
+        "unsubmitted_parent_persists":unsubmitted_persists,
+        "history_prefix_preserved":native_content_digest(&serde_json::to_vec(&history_before).unwrap())
+            == native_content_digest(&serde_json::to_vec(&history_after[..history_before.len()]).unwrap()),
+        "actual_request_count":all_bodies.len()})
+}
+
+async fn u6b_r19_constructed_orphan_release() -> Value {
+    use super::interjection::{HeldBody, HeldEntry, HeldSource};
+    const ID: &str = "u6-r19-never-admitted-parent";
+    let (fixture, mut turn, _stepper, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_R19_ORPHAN_CLOSED_CHECKPOINT").await;
+    let history_before = u6b_u66_progress(&mut turn.running,
+        fx.session.actor.chat_state_handle.get_conversation(), "H6_R19_ORPHAN_HISTORY_BOUND").await;
+    let key = xai_interjection_core::events::next_occurrence();
+    let parent_entries_before = {
+        let mut state = fx.session.actor.state.lock().await;
+        state.message_delivery.held_input.entries.push_back(HeldEntry {
+            key, source: HeldSource::ParentSteer, body: HeldBody::Parent(ID.to_owned()),
+            meta: json!({"constructed":true}), preparing: None,
+        });
+        state.message_delivery.held_input.entries.iter()
+            .filter(|entry| matches!(&entry.body, HeldBody::Parent(_))).count()
+    };
+    let observation_start = U6_ARM_OBSERVATIONS.with(|rows| rows.borrow().len());
+    let delivered = u6b_u66_progress(&mut turn.running,
+        k2lg_n_selected(fx, fx.session.actor.drain_admitted_messages_at_safe_point()),
+        "H6_R19_ORPHAN_RELEASE_BOUND").await;
+    let committed = U6_ARM_OBSERVATIONS.with(|rows| rows.borrow().iter().skip(observation_start)
+        .any(|row| row["stage"] == "merged release outcome" && row["release_path"] == "submitted"));
+    let (entry_remains, parent_entries_after) = {
+        let state = fx.session.actor.state.lock().await;
+        (state.message_delivery.held_input.entries.iter().any(|entry| entry.key == key),
+            state.message_delivery.held_input.entries.iter()
+                .filter(|entry| matches!(&entry.body, HeldBody::Parent(_))).count())
+    };
+    u6_observe(json!({"stage":"R19 constructed orphan release", "constructed":true,
+        "release_committed":committed, "parent_entries_before":parent_entries_before,
+        "parent_entries_after":parent_entries_after, "entry_remains":entry_remains,
+        "delivered":delivered}));
+    assert!(committed, "H6_R19_ORPHAN_COMMITTED");
+    assert!(!entry_remains, "H6_R19_ORPHAN_EXPIRED");
+    assert!(!delivered, "H6_R19_ORPHAN_NO_RELEASE");
+    let history_after = u6b_u66_progress(&mut turn.running,
+        fx.session.actor.chat_state_handle.get_conversation(), "H6_R19_ORPHAN_HISTORY_BOUND").await;
+    assert_eq!(native_content_digest(&serde_json::to_vec(&history_before).unwrap()),
+        native_content_digest(&serde_json::to_vec(&history_after).unwrap()), "H6_R19_ORPHAN_NO_RELEASE");
+    continuation.assert_satisfied();
+    json!({"constructed":true, "committed":committed, "expired":!entry_remains,
+        "nothing_released":!delivered})
+}
+
+async fn u6b_u66_constructed_missing_stamp() -> Value {
+    const ID: &str = "u6-u66-constructed-missing-stamp";
+    const STEER: &str = "U6 U66 unstamped Steer";
+    let (fixture, mut turn, _stepper, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let admitted = u6b_admit_steer_id(fx, &mut turn.running, ID, STEER,
+        "H6_U66_MISSING_STAMP_ADMISSION").await;
+    assert_eq!(admitted.admission, k0_coordinator::ActiveMessageAdmission::Admitted,
+        "H6_U66_MISSING_STAMP_ADMISSION");
+    let mut receipt = admitted.receipt.expect("H6_U66_MISSING_STAMP_ADMISSION");
+    {
+        let mut state = fx.session.actor.state.lock().await;
+        assert!(state.message_delivery.held_input.parent_key(ID).is_some(),
+            "H6_U66_MISSING_STAMP_REAL_STAMP");
+        state.message_delivery.held_input.parent_stamps.retain(|(id, _)| id != ID);
+    }
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_U66_MISSING_STAMP_CLOSED_CHECKPOINT").await;
+    let history_before = u6b_u66_progress(&mut turn.running,
+        fx.session.actor.chat_state_handle.get_conversation(),
+        "H6_U66_MISSING_STAMP_HISTORY_BOUND").await;
+    let delivered = u6b_u66_progress(&mut turn.running,
+        k2lg_n_selected(fx, fx.session.actor.drain_admitted_messages_at_safe_point()),
+        "H6_U66_MISSING_STAMP_RELEASE_BOUND").await;
+    let records = u6b_u66_progress(&mut turn.running, async {
+        let (respond_to, persisted) = tokio::sync::oneshot::channel();
+        fx.session.actor.notifications.persistence_tx.send(PersistenceMsg::FlushAndAck { respond_to }).unwrap();
+        tokio::time::timeout(K0_TIMEOUT, persisted).await
+            .expect("H6_U66_HOST_RECORD_PERSISTENCE_BARRIER").unwrap().unwrap();
+        let raw = match tokio::fs::read_to_string(fx.session.directory.path().join("updates.jsonl")).await {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => panic!("H6_U66_HOST_RECORD_STREAM: {error}"),
+        };
+        let mut records = Vec::new();
+        for line in raw.lines() {
+            let value: Value = serde_json::from_str(line).expect("H6_U66_HOST_RECORD_JSONL");
+            u6b_collect_host_records(&value, &mut records);
+        }
+        records
+    }, "H6_U66_MISSING_STAMP_RECORD_BOUND").await;
+    let missing: Vec<_> = records.iter().filter(|record|
+        record["reason"] == "missing_parent_stamp").collect();
+    assert_eq!(missing.len(), 1, "H6_U66_MISSING_STAMP_RECORDED");
+    assert_eq!(missing[0]["missing_parent_stamps"], 1,
+        "H6_U66_MISSING_STAMP_RECORDED");
+    assert!(!delivered, "H6_U66_MISSING_STAMP_WITHHELD");
+    assert!(matches!(receipt.result.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)),
+        "H6_U66_MISSING_STAMP_UNSETTLED");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert_eq!(fx.session.actor.live_parent_steer_slots(&state), 1,
+            "H6_U66_MISSING_STAMP_LIVE_SLOT");
+        assert!(state.message_delivery.held_input.parent_key(ID).is_none(),
+            "H6_U66_MISSING_STAMP_NO_FRESH_KEY");
+        assert!(state.message_delivery.held_input.retaining(),
+            "H6_U66_MISSING_STAMP_RETAINED");
+        assert_eq!(state.message_delivery.held_input.parent_persisted, 0,
+            "H6_U66_MISSING_STAMP_NOT_PERSISTED");
+    }
+    let history_after = u6b_u66_progress(&mut turn.running,
+        fx.session.actor.chat_state_handle.get_conversation(),
+        "H6_U66_MISSING_STAMP_HISTORY_BOUND").await;
+    assert_eq!(native_content_digest(&serde_json::to_vec(&history_after).unwrap()),
+        native_content_digest(&serde_json::to_vec(&history_before).unwrap()),
+        "H6_U66_MISSING_STAMP_NOT_PERSISTED");
+    json!({"kind":"U66_MISSING_PARENT_STAMP", "constructed":true,
+        "construction":"remove one admitted Steer's stamp while retaining its live slot",
+        "withheld":!delivered, "recorded":missing.len(), "fresh_key_drawn":false,
+        "persisted":false, "settled":false})
+}
+
+async fn u6b_n9_projecting_straddle() -> Value {
+    use super::interjection::{HeldBindingMeta, HeldCommitError, HeldParentSelection};
+    const SA: &str = "U6 N9 earlier Projecting Steer";
+    const EARLY: &str = "U6 N9 early prepared human";
+    const LATE: &str = "U6 N9 later unprepared human";
+    const SB: &str = "U6 N9 later Pending Steer";
+    let (fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let sa = u6b_admit_steer_id(fx, &mut turn.running, "u6b-n9-Sa", SA,
+        "H6_N9_SA_ADMISSION_BOUND").await;
+    assert_eq!(sa.admission, k0_coordinator::ActiveMessageAdmission::Admitted, "H6_N9_SA_ADMITTED");
+    let _sa_receipt = sa.receipt.expect("H6_N9_SA_ADMITTED");
+    {
+        let actor = &fx.session.actor;
+        let mut state = actor.state.lock().await;
+        let task = state.running_task.as_ref().expect("H6_N9_RUNNING_BINDING");
+        let binding = xai_message_delivery_core::TurnBinding::new(task.prompt_id.clone(), task.epoch);
+        let meta = HeldBindingMeta { prompt_id: task.prompt_id.clone(), epoch: format!("{:?}", task.epoch) };
+        let result = actor.commit_held_parent_batch(&mut state, &binding, &meta,
+            HeldParentSelection::All, |parents, _| {
+                assert_eq!(parents.len(), 1, "H6_N9_REAL_PROJECTING_MEMBERSHIP");
+                Err(HeldCommitError::ChatStateUnavailable)
+            });
+        assert!(matches!(result, Err(HeldCommitError::ChatStateUnavailable)), "H6_N9_CONSTRUCTED_FAILURE");
+        assert!(actor.held_parent_views(&state, &binding, &meta).is_empty(), "H6_N9_PROJECTING_NOT_PENDING");
+        assert_eq!(actor.live_parent_steer_slots(&state), 1, "H6_N9_PROJECTING_STILL_LIVE");
+        let view_rows = |views: Vec<super::interjection::HeldParentView>| {
+            views.into_iter().map(|parent| {
+                (parent.key, parent.message_id, parent.text, parent.payload)
+            }).collect::<Vec<_>>()
+        };
+        let pending_before = view_rows(actor.held_parent_views(&state, &binding, &meta));
+        let live_before = actor.live_parent_steer_slots(&state);
+        let projecting_before = view_rows(actor.held_projecting_parent_views(&mut state, &binding, &meta));
+        assert_eq!(view_rows(actor.held_parent_views(&state, &binding, &meta)), pending_before,
+            "H6_N9_PROJECTING_READ_PRESERVES_PENDING");
+        assert_eq!(view_rows(actor.held_projecting_parent_views(&mut state, &binding, &meta)), projecting_before,
+            "H6_N9_PROJECTING_READ_PRESERVES_PROJECTING");
+        assert_eq!(actor.live_parent_steer_slots(&state), live_before,
+            "H6_N9_PROJECTING_READ_PRESERVES_LIVE_SLOTS");
+    }
+    u6_queue_resident(fx, EARLY, Vec::new()).await;
+    let barriers = fixture.persistence_control.barriers.load(std::sync::atomic::Ordering::SeqCst);
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_N9_CLOSED_CHECKPOINT").await;
+    u6b_u66_progress(&mut turn.running, u6_u63_step_to_preparation(&fixture, &stepper, barriers),
+        "H6_N9_REAL_PREPARATION_BOUND").await;
+    u6_queue_resident(fx, LATE, Vec::new()).await;
+    let sb = u6b_admit_steer_id(fx, &mut turn.running, "u6b-n9-Sb", SB,
+        "H6_N9_SB_ADMISSION_BOUND").await;
+    assert_eq!(sb.admission, k0_coordinator::ActiveMessageAdmission::Admitted, "H6_N9_SB_ADMITTED");
+    let _sb_receipt = sb.receipt.expect("H6_N9_SB_ADMITTED");
+    let commits_before = U6_ARM_OBSERVATIONS.with(|rows| rows.borrow().iter()
+        .filter(|row| row["stage"] == "merged release outcome").count());
+    let mut reached = false;
+    for _ in 0..256 {
+        assert!(u6b_u66_progress(&mut turn.running, stepper.step(), "H6_N9_FIRST_COMMIT_BOUND").await,
+            "H6_N9_FIRST_COMMIT_BOUND");
+        reached = U6_ARM_OBSERVATIONS.with(|rows| rows.borrow().iter()
+            .filter(|row| row["stage"] == "merged release outcome").count() > commits_before);
+        if reached { break; }
+    }
+    assert!(reached, "H6_N9_FIRST_COMMIT_BOUND");
+    let first = u6b_u66_progress(&mut turn.running, fx.session.actor.chat_state_handle.get_conversation(),
+        "H6_N9_FIRST_PREFIX_READ_BOUND").await;
+    let first_labels: Vec<_> = first.iter().flat_map(|item| [SA, EARLY, LATE, SB]
+        .into_iter().filter(move |label| item.text_content().contains(label))).collect();
+    u6_observe(json!({"stage":"N9 first release prefix", "constructed":true, "labels":first_labels}));
+    assert!(first_labels.is_empty(), "H6_N9_PENDING_PROJECTING_STRADDLE");
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_n9_after")));
+    stepper.resume();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N9_FINAL_RELEASE_BOUND").expect("H6_N9_FINAL_RELEASE_JOIN");
+    assert!(outcome.is_ok(), "H6_N9_FINAL_RELEASE_PROGRESS");
+    let bodies = k2lg_n_bodies(&fx.server);
+    let body = bodies.last().expect("H6_N9_FINAL_ACTUAL_REQUEST");
+    let text = body["messages"].as_array().unwrap().iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n");
+    let positions: Vec<_> = [SA, EARLY, LATE, SB].iter().map(|needle| {
+        assert_eq!(text.matches(*needle).count(), 1, "H6_N9_GLOBAL_ORDER");
+        text.find(*needle).expect("H6_N9_GLOBAL_ORDER")
+    }).collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "H6_N9_GLOBAL_ORDER");
+    continuation.assert_satisfied();
+    json!({"kind":"N9_PROJECTING_STRADDLE", "constructed":true,
+        "construction":"real admitted Sa moved to Projecting by a deliberately rejected owned commit",
+        "first_prefix":first_labels, "final_positions":positions,
+        "actual_request_count":bodies.len()})
+}
+
+async fn u6b_l9_cancel_rebuild() -> Value {
+    const CUSTODY: &str = "U6 L9 custody across real rebuild";
+    const MONITOR: &str = "U6 L9 monitor across real rebuild";
+    const NEXT: &str = "U6 L9 next admitted user turn";
+    let (fixture, mut turn, _stepper, mut continuation) = u6_u63_prepare_fixture(Some(CUSTODY)).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let definition = fx.session.actor.agent.borrow().definition().clone();
+    let old_bridge = fx.session.actor.agent.borrow().tool_bridge().clone();
+    u6_monitor(fx, "u6b-l9-monitor", MONITOR).await;
+    k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+    let before = u6_mixed_keys(fx).await;
+    assert!(before.iter().any(|entry| entry["source"] == "monitor_event"), "H6_L9_MONITOR_HELD");
+    assert!(before.iter().any(|entry| entry["source"] == "human_interjection")
+        && before.iter().any(|entry| entry["source"] == "monitor_event"), "H6_L9_REAL_CUSTODY");
+    let old_epoch = turn.epoch;
+    let requests_before_cancel = fx.server.messages_request_count();
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_L9_CLOSED_CHECKPOINT_BEFORE_CANCEL").await;
+    fx.loop_tx.send(SessionCommand::Cancel(crate::session::CancelOptions {
+        user_initiated: true,
+        trigger: Some(crate::session::CancelTrigger::CtrlC),
+        ..Default::default()
+    })).unwrap();
+    let joined = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_L9_IMMEDIATE_CANCEL");
+    assert!(joined.is_err_and(|error| error.is_cancelled()), "H6_L9_IMMEDIATE_CANCEL");
+    tokio::time::timeout(K0_TIMEOUT, async {
+        while fx.session.actor.state.lock().await.running_task.is_some() {
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("H6_L9_OLD_OWNER_SETTLED");
+    assert_eq!(u6_mixed_keys(fx).await, before, "H6_L9_CANCEL_RETAINS_CUSTODY");
+    assert_eq!(fx.server.messages_request_count(), requests_before_cancel, "H6_L9_NO_SELF_START");
+    tokio::time::timeout(K0_TIMEOUT, continuation.wait_satisfied()).await
+        .expect("H6_L9_OLD_REQUEST_SATISFIED");
+    continuation.assert_satisfied();
+    let (responds_to, rebuilt) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::RebuildAgentForDefinition { definition, responds_to }).unwrap();
+    tokio::time::timeout(K0_TIMEOUT, rebuilt).await
+        .expect("H6_L9_REBUILD_BOUND").expect("H6_L9_REBUILD_REPLY").expect("H6_L9_REAL_REBUILD");
+    assert!(!Arc::ptr_eq(&old_bridge, fx.session.actor.agent.borrow().tool_bridge()),
+        "H6_L9_AGENT_ACTUALLY_REBUILT");
+    assert_eq!(u6_mixed_keys(fx).await, before, "H6_L9_REBUILD_RETAINS_IDENTITIES");
+    assert!(fx.session.actor.state.lock().await.running_task.is_none(), "H6_L9_NO_SELF_START");
+    assert_eq!(fx.server.messages_request_count(), requests_before_cancel, "H6_L9_NO_SELF_START");
+    let (mut next, next_stop) = u6b_u66_next_prompt(fx, NEXT, "H6_L9_NEXT_PROMPT_BOUND").await;
+    let new_epoch = fx.session.actor.state.lock().await.running_task.as_ref()
+        .expect("H6_L9_NEW_ADMITTED_OWNER").epoch;
+    assert_ne!(new_epoch, old_epoch, "H6_L9_NEW_ADMITTED_OWNER");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), requests_before_cancel + 1, "H6_L9_RELEASE_ONCE");
+    let text = bodies.last().expect("H6_L9_ACTUAL_NEXT_REQUEST")["messages"].as_array().unwrap().iter()
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n");
+    assert_eq!(text.matches(CUSTODY).count(), 1, "H6_L9_REBUILT_AGENT_RELEASE");
+    assert_eq!(text.matches(MONITOR).count(), 1, "H6_L9_REBUILT_AGENT_RELEASE");
+    assert_eq!(text.matches(NEXT).count(), 1, "H6_L9_REBUILT_AGENT_RELEASE");
+    assert!(u6_mixed_keys(fx).await.is_empty(), "H6_L9_RELEASE_EMPTIES_CUSTODY");
+    next.release();
+    tokio::time::timeout(K0_TIMEOUT, next.wait_satisfied()).await
+        .expect("H6_L9_NEXT_REQUEST_SATISFIED");
+    next.assert_satisfied();
+    tokio::time::timeout(K0_TIMEOUT, async {
+        while !next_stop.0.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("H6_L9_NEXT_TURN_FINISHED");
+    assert_eq!(fx.server.messages_request_count(), requests_before_cancel + 1, "H6_L9_RELEASE_ONCE");
+    assert!(u6_mixed_keys(fx).await.is_empty(), "H6_L9_RELEASE_EMPTIES_CUSTODY");
+    json!({"kind":"L9_CANCEL_REBUILD_NEXT_ADMISSION", "constructed":false,
+        "cancel":"SessionCommand::Cancel CtrlC", "rebuild":"SessionCommand::RebuildAgentForDefinition",
+        "actual_agent_bridge_replaced":true, "custody_identities_preserved":before,
+        "requests_before_cancel":requests_before_cancel, "requests_after_next_turn":fx.server.messages_request_count(),
+        "released_once_on_rebuilt_agent":true, "self_start":false,
+        "next_task_finished":next_stop.0.is_finished(),
+        "completion_observation":"production AbortHandle; run-loop finalization not claimed"})
+}
+
+#[derive(Clone, Copy)]
+enum U6bL13Operation {
+    Release,
+    LogicalEnd,
+    KillBackground,
+}
+
+async fn u6b_l13_shared_leaders(operation: U6bL13Operation) -> Value {
+    use xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventNotification;
+    const HUMAN_A: &str = "U6 L13 leader A held human";
+    const MONITOR_A: &str = "U6 L13 leader A owned monitor";
+    const MONITOR_B: &str = "U6 L13 leader B owned monitor";
+    const LEGACY_B: &str = "U6 L13 legacy event pinned by B";
+    const NATIVE_B: &str = "U6 L13 real parent to shell child B";
+    let (fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(Some(HUMAN_A)).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &fixture.fx;
+    let extra_actor = fx.session.actor.clone();
+    let buffer = extra_actor.tool_context.monitor_event_buffer.as_ref().unwrap().clone();
+    u6b_u66_progress(&mut turn.running, u6_monitor(fx, "u6b-l13-A", MONITOR_A),
+        "H6_L13_A_MONITOR_INGRESS").await;
+    k2lg_n_selected(fx, extra_actor.inject_pending_monitor_events()).await;
+    let owner_a = extra_actor.state.lock().await.message_delivery.held_input.pin_owner
+        .expect("H6_L13_A_REAL_PIN_OWNER");
+    assert_eq!(buffer.release_view(owner_a, |_| false).iter().count(), 1,
+        "H6_L13_A_REAL_PIN");
+    let barriers = fixture.persistence_control.barriers.load(std::sync::atomic::Ordering::SeqCst);
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_L13_A_CLOSED_CHECKPOINT").await;
+    u6b_u66_progress(&mut turn.running, u6_u63_step_to_preparation(&fixture, &stepper, barriers),
+        "H6_L13_A_PREPARATION").await;
+
+    let mut b = u6_fixture(None, K2lgNOptions::default()).await;
+    let sampler = b.fx.session.tasks.remove(2);
+    sampler.abort();
+    let stopped = tokio::time::timeout(K0_TIMEOUT, sampler).await
+        .expect("H6_L13_B_OLD_DRAINER_STOP_BOUND");
+    assert!(stopped.is_err_and(|error| error.is_cancelled()), "H6_L13_B_OLD_DRAINER_STOPPED");
+    let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+    {
+        let actor = Arc::get_mut(&mut b.fx.session.actor).expect("H6_L13_B_EXCLUSIVE_SETUP");
+        actor.tool_context.monitor_event_buffer = Some(buffer.clone());
+        actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+            xai_grok_sampler::SamplerConfig {
+                base_url: b.fx.server.url(),
+                model: "k2-replay".into(),
+                api_key: Some("nonsecret-k2-key".into()),
+                api_backend: xai_grok_sampler::ApiBackend::Messages,
+                max_completion_tokens: Some(4096),
+                max_retries: Some(0),
+                ..Default::default()
+            },
+            xai_grok_sampler::RetryPolicy { max_retries: 0, ..Default::default() },
+            sampler_tx,
+        );
+    }
+    let drainer = b.fx.session.actor.clone();
+    let (source_tx, source_acks) = tokio::sync::mpsc::unbounded_channel();
+    b.fx.session.source_acks = source_acks;
+    b.fx.session.tasks.push(tokio::task::spawn_local(async move {
+        while let Some(event) = sampler_rx.recv().await {
+            let status = match &event {
+                xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                    evidence: k2_history::NativeEvidenceEvent::Attempt(attempt), ..
+                } => Some(attempt.status),
+                _ => None,
+            };
+            drainer.handle_sampling_event(event).await;
+            if let Some(status) = status {
+                let _ = source_tx.send(status);
+            }
+        }
+    }));
+    let mut b_turn = u6_handoff_with_salvage(&mut b.fx, None, None, None, None).await;
+    let _b_stop = K0Abort(b_turn.running.abort_handle());
+    assert_ne!(extra_actor.session_id_string(), b.fx.session.actor.session_id_string(),
+        "H6_L13_DISTINCT_REAL_LEADERS");
+    u6b_u66_progress(&mut b_turn.running, u6_monitor(&b.fx, "u6b-l13-B", MONITOR_B),
+        "H6_L13_B_MONITOR_INGRESS").await;
+    buffer.push_capped(MonitorEventNotification {
+        task_id: "u6b-l13-legacy-B".into(),
+        event_text: format!("<monitor-event description=\"legacy\" task_id=\"u6b-l13-legacy-B\">\n{LEGACY_B}\n</monitor-event>"),
+        owner_session_id: None,
+    }, 128);
+    k2lg_n_selected(&b.fx, b.fx.session.actor.inject_pending_monitor_events()).await;
+    let owner_b = b.fx.session.actor.state.lock().await.message_delivery.held_input.pin_owner
+        .expect("H6_L13_B_REAL_PIN_OWNER");
+    assert_ne!(owner_a, owner_b, "H6_L13_OWNER_IDENTITIES_DISTINCT");
+    assert_eq!(buffer.release_view(owner_b, |_| false).iter().count(), 2,
+        "H6_L13_B_REAL_OWN_AND_LEGACY_PINS");
+    let b_keys = u6_mixed_keys(&b.fx).await;
+    assert!(b_keys.iter().any(|entry| entry["source"] == "monitor_event"), "H6_L13_B_REAL_HOLD");
+    u6b_u66_progress(&mut b_turn.running, k2lg_n_send(&mut b.fx, NATIVE_B),
+        "H6_L13_REAL_PARENT_MAILBOX").await;
+    assert_eq!(k2lg_n_resident(&b.fx.session).len(), 1, "H6_L13_PARENT_NATIVE_RETAINED");
+    let b_requests = b.fx.server.messages_request_count();
+    assert!(Arc::strong_count(&extra_actor) > 1, "H6_L13_EXTRA_ARC");
+    match operation {
+        U6bL13Operation::Release => {
+            let mut after = fx.server.expect_response_blocked(
+                "U6 L13 leader A post-release request",
+                xai_grok_test_support::InferenceRequestMatcher::foreground(
+                    xai_grok_test_support::InferenceEndpoint::Messages,
+                ),
+                k2_script(k2lg_n_after_frames("msg_u6b_l13_A_after")),
+            );
+            stepper.resume();
+            u6b_u66_progress(&mut turn.running, after.wait_blocked(), "H6_L13_A_RELEASE_HTTP").await;
+            let bodies = k2lg_n_bodies(&fx.server);
+            let text = u6_body_text(bodies.last().expect("H6_L13_A_RELEASE_HTTP"));
+            assert_eq!(text.matches(HUMAN_A).count(), 1, "H6_L13_A_OWN_HUMAN_ONCE");
+            assert_eq!(text.matches(MONITOR_A).count(), 1, "H6_L13_A_OWN_MONITOR_ONCE");
+            assert!(![MONITOR_B, LEGACY_B, NATIVE_B].iter().any(|needle| text.contains(needle)),
+                "H6_L13_NO_FOREIGN_TAKE");
+            after.release();
+            let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                .expect("H6_L13_A_OUTCOME_BOUND").expect("H6_L13_A_TURN_JOIN");
+            assert!(outcome.is_ok(), "H6_L13_A_RELEASE_SUCCEEDED");
+            tokio::time::timeout(K0_TIMEOUT, after.wait_satisfied()).await
+                .expect("H6_L13_A_REQUEST_SATISFIED");
+            after.assert_satisfied();
+        }
+        U6bL13Operation::LogicalEnd => {
+            u6b_u66_progress(&mut turn.running,
+                extra_actor.settle_all_parent_messages(xai_message_delivery_core::TerminalCause::ActorDrop),
+                "H6_L13_LOGICAL_UNPIN_BOUND").await;
+            let state = extra_actor.state.lock().await;
+            assert!(state.message_delivery.held_input.terminal
+                && state.message_delivery.held_input.pin_owner.is_none(), "H6_L13_A_LOGICALLY_ENDED");
+            assert_eq!(buffer.release_view(owner_b, |_| false).iter().count(), 2,
+                "H6_L13_NO_FOREIGN_UNPIN");
+        }
+        U6bL13Operation::KillBackground => {
+            let outcome = extra_actor.cancel_running_task(crate::session::CancelOptions {
+                cancel_subagents: false,
+                kill_background_tasks: true,
+                user_initiated: true,
+                trigger: Some(crate::session::CancelTrigger::CtrlC),
+                history: crate::session::CancelHistoryDisposition::Keep,
+            }).await;
+            assert!(outcome.turn_stopped, "H6_L13_A_REAL_KILL_CANCEL");
+            let stopped = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                .expect("H6_L13_A_KILL_OUTCOME_BOUND");
+            assert!(stopped.is_err_and(|error| error.is_cancelled()), "H6_L13_A_KILL_OWNS_ABORT");
+            assert_eq!(buffer.release_view(owner_b, |_| false).iter().count(), 2,
+                "H6_L13_NO_FOREIGN_DISCARD");
+        }
+    }
+    assert_eq!(buffer.release_view(owner_b, |_| false).iter().count(), 2,
+        "H6_L13_FOREIGN_PINS_STILL_OWNED");
+    assert_eq!(u6_mixed_keys(&b.fx).await, b_keys, "H6_L13_FOREIGN_LEDGER_UNCHANGED");
+    assert_eq!(k2lg_n_resident(&b.fx.session).len(), 1, "H6_L13_PARENT_NATIVE_RETAINED");
+    assert_eq!(b.fx.server.messages_request_count(), b_requests, "H6_L13_NO_FOREIGN_RESTART");
+    assert!(!b_turn.running.is_finished(), "H6_L13_OTHER_LEADER_STILL_RUNNING");
+    continuation.assert_satisfied();
+    json!({"kind": "L13_REAL_SHARED_LEADERS", "constructed": false,
+        "operation": match operation { U6bL13Operation::Release => "take",
+            U6bL13Operation::LogicalEnd => "unpin", U6bL13Operation::KillBackground => "discard" },
+        "two_real_held_leaders": true, "same_actor_monitor_buffer": true,
+        "ownerless_legacy_pinned_by_other_actor": true, "real_parent_shell_child_mailbox": true,
+        "foreign_pin_count": 2, "foreign_ledger_unchanged": true,
+        "other_leader_still_running": true, "b_sampler_recreated_before_its_first_turn": true})
+}
+
+#[derive(Clone, Copy)]
+enum U6bL18Resume {
+    NextAdmittedTurn,
+    SendNow,
+}
+
+async fn u6b_l18_wait_cancel(resume: U6bL18Resume) -> Value {
+    const CUSTODY: &str = "U6 L18 custody before client wait";
+    const RESIDENT: &str = "U6 L18 arrival after last held safe point";
+    const PROMPT: &str = "U6 L18 next admitted or send-now prompt";
+    let mut fixture = u6_wait_fixture().await;
+    let fx = &mut fixture.fx;
+    let mut turn = u6_handoff_with_salvage(fx, None, None, None, None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let initial_bodies = k2lg_n_bodies(&fx.server);
+    assert!(u6_body_text(initial_bodies.last().expect("H6_L18_USER_PROMPT_ALREADY_SENT"))
+        .contains("U6 real mixed handoff"), "H6_L18_USER_PROMPT_ALREADY_SENT");
+    let front_before = fx.session.actor.state.lock().await.front_message_committed;
+    u6_observe(json!({"stage":"L18 direct-turn intake commit", "front_before":front_before,
+        "prompt_already_in_actual_http":true}));
+    assert!(!front_before, "H6_L18_DIRECT_FIXTURE_COMMIT_PRECONDITION");
+    fx.session.actor.mark_front_message_committed().await;
+    assert!(fx.session.actor.state.lock().await.front_message_committed,
+        "H6_L18_RUNNING_PROMPT_COMMITTED");
+    let definition = fx.session.actor.agent.borrow().definition().clone();
+    let old_bridge = fx.session.actor.agent.borrow().tool_bridge().clone();
+    u6b_u66_progress(&mut turn.running, u6_interject(fx, CUSTODY, Vec::new()),
+        "H6_L18_CUSTODY_INGRESS").await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_L18_CUSTODY_HELD");
+    let custody_keys = u6_mixed_keys(fx).await;
+    assert_eq!(custody_keys.len(), 1, "H6_L18_ONE_HELD_HUMAN");
+    let mut continuation = fx.server.expect_response_blocked(
+        "U6 L18 real interruptible client wait",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ),
+        k2_script(u6_wait_frames(u6_next_pending(true), "client_u6_l18_wait", 60_000)),
+    );
+    fx.session.releases[1].add_permits(1);
+    u6b_u66_progress(&mut turn.running, continuation.wait_blocked(),
+        "H6_L18_REAL_WAIT_REQUEST").await;
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, true,
+        "H6_L18_READABLE_PENDING_CHECKPOINT").await;
+    u6_wait_started(fx, &mut turn.running).await;
+    let stepper = u6_current_stepper();
+    stepper.pause();
+    assert!(fx.session.actor.tool_context.blocking_wait_depth.depth() != 0,
+        "H6_L18_REAL_WAIT_IN_FLIGHT");
+    u6b_u66_progress(&mut turn.running, u6_interject(fx, RESIDENT, Vec::new()),
+        "H6_L18_AFTER_LAST_SAFE_POINT_INGRESS").await;
+    assert_eq!(u6_mixed_keys(fx).await, custody_keys, "H6_L18_LATE_IS_UNADMITTED");
+    assert_eq!(fx.session.actor.pending_interjections.len(), 1, "H6_L18_LATE_RESIDENT");
+    let before_requests = fx.server.messages_request_count();
+    let (mut next, next_stop) = match resume {
+        U6bL18Resume::NextAdmittedTurn => {
+            fx.loop_tx.send(SessionCommand::Cancel(crate::session::CancelOptions {
+                user_initiated: true,
+                trigger: Some(crate::session::CancelTrigger::CtrlC),
+                ..Default::default()
+            })).unwrap();
+            let stopped = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                .expect("H6_L18_IMMEDIATE_CANCEL");
+            assert!(stopped.is_err_and(|error| error.is_cancelled()), "H6_L18_IMMEDIATE_CANCEL");
+            tokio::time::timeout(K0_TIMEOUT, async {
+                while fx.session.actor.state.lock().await.running_task.is_some() {
+                    tokio::task::yield_now().await;
+                }
+            }).await.expect("H6_L18_OLD_OWNER_SETTLED");
+            assert!(fx.session.actor.pending_interjections.is_empty(), "H6_L18_CANCEL_CLEARS_UNADMITTED");
+            assert_eq!(u6_mixed_keys(fx).await, custody_keys, "H6_L18_CANCEL_RETAINS_CUSTODY");
+            assert_eq!(fx.server.messages_request_count(), before_requests, "H6_L18_NO_SELF_START");
+            let (responds_to, rebuilt) = tokio::sync::oneshot::channel();
+            fx.loop_tx.send(SessionCommand::RebuildAgentForDefinition { definition, responds_to }).unwrap();
+            tokio::time::timeout(K0_TIMEOUT, rebuilt).await.expect("H6_L18_REBUILD_BOUND")
+                .expect("H6_L18_REBUILD_REPLY").expect("H6_L18_REAL_REBUILD");
+            assert!(!Arc::ptr_eq(&old_bridge, fx.session.actor.agent.borrow().tool_bridge()),
+                "H6_L18_AGENT_ACTUALLY_REBUILT");
+            assert_eq!(u6_mixed_keys(fx).await, custody_keys, "H6_L18_REBUILD_RETAINS_CUSTODY");
+            assert_eq!(fx.server.messages_request_count(), before_requests, "H6_L18_NO_SELF_START");
+            u6b_u66_next_prompt(fx, PROMPT, "H6_L18_NEXT_ADMITTED_PROMPT").await
+        }
+        U6bL18Resume::SendNow => {
+            let mut next = fx.server.expect_response_blocked(
+                "U6 L18 real send-now prompt",
+                xai_grok_test_support::InferenceRequestMatcher::foreground(
+                    xai_grok_test_support::InferenceEndpoint::Messages,
+                ),
+                k2_script(k2lg_n_after_frames("msg_u6b_l18_send_now")),
+            );
+            let (respond_to, mut response) = tokio::sync::oneshot::channel();
+            let (ready, mut ready_rx) = tokio::sync::oneshot::channel();
+            fx.loop_tx.send(SessionCommand::Prompt {
+                prompt_id: "u6b-l18-send-now".into(),
+                prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(PROMPT))],
+                prompt_mode: PromptMode::Agent,
+                artifact_upload_ctx: None,
+                client_identifier: Some("U6".into()),
+                screen_mode: None,
+                verbatim: false,
+                traceparent: None,
+                json_schema: None,
+                send_now: true,
+                admission: None,
+                tool_overrides_update: None,
+                respond_to,
+                prompt_admitted: Some(ready),
+                persist_ack: None,
+                parsed_prompt_tx: None,
+            }).unwrap();
+            let stopped = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                .expect("H6_L18_SEND_NOW_IMMEDIATE_CANCEL");
+            assert!(stopped.is_err_and(|error| error.is_cancelled()), "H6_L18_SEND_NOW_IMMEDIATE_CANCEL");
+            tokio::time::timeout(K0_TIMEOUT, async {
+                tokio::select! {
+                    result = &mut ready_rx => {
+                        result.expect("H6_L18_SEND_NOW_READINESS").send(())
+                            .expect("H6_L18_SEND_NOW_PUBLICATION_RELEASE");
+                    }
+                    _ = &mut response => panic!("H6_L18_SEND_NOW_ENDED_BEFORE_READY"),
+                }
+            }).await.expect("H6_L18_SEND_NOW_READY_BOUND");
+            let handle = fx.session.actor.state.lock().await.running_task.as_ref()
+                .expect("H6_L18_SEND_NOW_NEW_OWNER").handle.clone();
+            let stop = K0Abort(handle);
+            tokio::time::timeout(K0_TIMEOUT, async {
+                tokio::select! {
+                    _ = next.wait_blocked() => {},
+                    _ = &mut response => panic!("H6_L18_SEND_NOW_ENDED_BEFORE_HTTP"),
+                }
+            }).await.expect("H6_L18_SEND_NOW_HTTP_BOUND");
+            (next, stop)
+        }
+    };
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), before_requests + 1, "H6_L18_RELEASE_ONCE");
+    let text = u6_body_text(bodies.last().expect("H6_L18_ACTUAL_NEXT_REQUEST"));
+    assert_eq!(text.matches(PROMPT).count(), 1, "H6_L18_PROMPT_ONCE");
+    assert_eq!(text.matches(CUSTODY).count(), 1, "H6_L18_CUSTODY_RELEASE_ONCE");
+    let prompt_at = text.find(PROMPT).expect("H6_L18_PROMPT_BEFORE_CUSTODY");
+    let custody_at = text.find(CUSTODY).expect("H6_L18_PROMPT_BEFORE_CUSTODY");
+    assert!(prompt_at < custody_at, "H6_L18_PROMPT_BEFORE_CUSTODY");
+    match resume {
+        U6bL18Resume::NextAdmittedTurn => {
+            assert!(!text.contains(RESIDENT), "H6_L18_CANCEL_CLEARS_UNADMITTED");
+        }
+        U6bL18Resume::SendNow => {
+            assert_eq!(text.matches(RESIDENT).count(), 1, "H6_L18_SEND_NOW_RESIDENT_ONCE");
+            assert!(text.find(RESIDENT).expect("H6_L18_SEND_NOW_ORDER") > custody_at,
+                "H6_L18_SEND_NOW_ORDER");
+        }
+    }
+    assert!(u6_mixed_keys(fx).await.is_empty(), "H6_L18_CUSTODY_EMPTY_AFTER_RELEASE");
+    next.release();
+    tokio::time::timeout(K0_TIMEOUT, next.wait_satisfied()).await
+        .expect("H6_L18_NEXT_REQUEST_SATISFIED");
+    next.assert_satisfied();
+    continuation.assert_satisfied();
+    tokio::time::timeout(K0_TIMEOUT, async {
+        while !next_stop.0.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("H6_L18_NEXT_TURN_FINISHED");
+    assert_eq!(fx.server.messages_request_count(), before_requests + 1, "H6_L18_RELEASE_ONCE");
+    assert!(u6_mixed_keys(fx).await.is_empty(), "H6_L18_CUSTODY_EMPTY_AFTER_RELEASE");
+    json!({"kind": "L18_REAL_WAIT_CANCEL", "constructed": false,
+        "resume": match resume { U6bL18Resume::NextAdmittedTurn => "Cancel-rebuild-next-admitted-turn",
+            U6bL18Resume::SendNow => "Prompt send_now through real run loop" },
+        "real_interruptible_wait": true, "later_arrival_after_last_held_safe_point": true,
+        "custody_before_cancel": custody_keys, "requests_before_cancel": before_requests,
+        "requests_after_next_turn": fx.server.messages_request_count(), "prompt_before_custody": prompt_at < custody_at,
+        "once_only_release": bodies.len() == before_requests + 1 && text.matches(CUSTODY).count() == 1, "next_task_finished": next_stop.0.is_finished(),
+        "budget_refused_resident": "NOT_REPRESENTABLE / NOT_RUN / NOT_CREDITED under signed OI-15"})
+}
+
+const U6B_L18_READY_OUTPUT: &str = "U6 L18 completed task wins ready-result race";
+
+struct U6bL18ReadyRunner {
+    inner: K2lgNRunner,
+    finish: std::rc::Rc<tokio::sync::Notify>,
+    published: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl k0_coordinator::ChildRunner for U6bL18ReadyRunner {
+    type Control = crate::agent::subagent::ShellChildRuntime;
+    type CompletionData = ();
+    type RunFuture = k0_coordinator::LocalBoxFuture<k0_coordinator::ChildRunOutput<()>>;
+    type ValidateFuture = std::future::Pending<k0_task::SubagentValidateTypeOutcome>;
+    type DescribeFuture = std::future::Pending<k0_task::SubagentDescribeOutcome>;
+
+    fn run(&self, request: k0_coordinator::ChildRunRequest<Self::Control>) -> Self::RunFuture {
+        let id = request.request.id.clone();
+        let running = <K2lgNRunner as k0_coordinator::ChildRunner>::run(&self.inner, request);
+        let finish = self.finish.clone();
+        Box::pin(async move {
+            tokio::select! {
+                output = running => output,
+                _ = finish.notified() => k0_coordinator::ChildRunOutput {
+                    result: k0_task::SubagentResult {
+                        success: true, output: Arc::from(U6B_L18_READY_OUTPUT),
+                        subagent_id: id.clone(), child_session_id: id,
+                        turns: 1, ..Default::default()
+                    },
+                    completion_data: (), snapshot_ref: None,
+                },
+            }
+        })
+    }
+    fn validate_type(&self, _: String, _: String) -> Self::ValidateFuture {
+        std::future::pending()
+    }
+    fn describe_type(&self, _: String, _: Option<String>, _: String) -> Self::DescribeFuture {
+        std::future::pending()
+    }
+    fn supports_wake(&self) -> bool { false }
+    fn on_completed(&self, completed: k0_coordinator::ChildCompletion<()>, published: Box<dyn FnOnce() + Send>) {
+        <K2lgNRunner as k0_coordinator::ChildRunner>::on_completed(&self.inner, completed, published);
+        self.published.set(true);
+    }
+}
+
+async fn u6b_l18_ready_result_priority() -> Value {
+    use std::task::{Context, Poll};
+    use xai_grok_tools::implementations::grok_build::task::backend::SubagentBackendResource;
+    const HUMAN: &str = "U6 L18 resident at completed-result rendezvous";
+    let mut fixture = u6_wait_fixture().await;
+    let started = std::rc::Rc::new(tokio::sync::Notify::new());
+    let finish = std::rc::Rc::new(tokio::sync::Notify::new());
+    let published = std::rc::Rc::new(std::cell::Cell::new(false));
+    let (sender, receiver) = k0_coordinator::SubagentCoordinator::<U6bL18ReadyRunner>::channel();
+    let runner = U6bL18ReadyRunner {
+        inner: K2lgNRunner { commands: fixture.fx.loop_tx.clone(), started: started.clone() },
+        finish: finish.clone(), published: published.clone(),
+    };
+    let coordinator: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> = Box::pin(
+        k0_coordinator::SubagentCoordinator::from_channel(receiver, runner, Default::default()).run(),
+    );
+    let shared = std::rc::Rc::new(std::cell::RefCell::new(coordinator));
+    let manual = std::rc::Rc::new(std::cell::Cell::new(false));
+    let saved_waker = std::rc::Rc::new(std::cell::RefCell::new(None::<std::task::Waker>));
+    let background_shared = shared.clone();
+    let background_manual = manual.clone();
+    let background_waker = saved_waker.clone();
+    let pump = tokio::task::spawn_local(futures_util::future::poll_fn(move |context| {
+        *background_waker.borrow_mut() = Some(context.waker().clone());
+        if background_manual.get() {
+            Poll::Pending
+        } else {
+            std::future::Future::poll(background_shared.borrow_mut().as_mut(), context)
+        }
+    }));
+    let _pump_stop = K0Abort(pump.abort_handle());
+    let root = k2lg_n_root(&fixture.fx.server, sender).await;
+    tokio::time::timeout(K0_TIMEOUT, k2lg_n_register_worker(&root, &started)).await
+        .expect("H6_L18_READY_REAL_WORKER_REGISTERED");
+    let bridge = fixture.fx.session.actor.agent.borrow().tool_bridge().clone();
+    let backend = root.tool_bridge().read_resource::<SubagentBackendResource>().await
+        .expect("H6_L18_READY_REAL_BACKEND");
+    bridge.shared_resources().await.lock().await.insert(backend);
+    let fx = &mut fixture.fx;
+    let mut turn = u6_handoff_with_salvage(fx, None, None, Some(60_000), None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    u6_wait_started(fx, &mut turn.running).await;
+    let stepper = u6_current_stepper();
+    stepper.pause();
+    manual.set(true);
+    finish.notify_one();
+    let waker = futures_util::task::noop_waker();
+    let mut context = Context::from_waker(&waker);
+    let mut polls = 0;
+    while !published.get() && polls < 128 {
+        assert!(!turn.running.is_finished(), "H6_L18_READY_TURN_STILL_RUNNING");
+        assert!(std::future::Future::poll(shared.borrow_mut().as_mut(), &mut context).is_pending(),
+            "H6_L18_READY_COORDINATOR_STILL_RUNNING");
+        polls += 1;
+    }
+    assert!(published.get(), "H6_L18_READY_SOURCE_SETTLED_UNDER_OWNED_BARRIER");
+    assert!(fx.session.actor.tool_context.blocking_wait_depth.depth() != 0,
+        "H6_L18_READY_RESULT_NOT_YET_CONSUMED");
+    // The current-thread runtime cannot poll the dispatch drainer during this rendezvous.
+    fx.session.actor.pending_interjections.push(xai_interjection_core::PendingInterjection {
+        text: HUMAN.into(), attachments: Vec::new(),
+    });
+    assert_eq!(fx.session.actor.pending_interjections.len(), 1, "H6_L18_READY_COMPETING_RESIDENT");
+    assert!(fx.session.actor.tool_context.blocking_wait_depth.depth() != 0,
+        "H6_L18_READY_BOTH_INPUTS_BEFORE_CONSUMPTION");
+    manual.set(false);
+    saved_waker.borrow_mut().take().expect("H6_L18_READY_COORDINATOR_WAKER").wake();
+    stepper.resume();
+    u6_wait_result(fx, &mut turn.running, "client_u6_wait").await;
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    let result = history.iter().find(|item| matches!(item,
+        ConversationItem::ToolResult(result) if result.tool_call_id == "client_u6_wait"))
+        .expect("H6_L18_READY_ACTUAL_TOOL_RESULT");
+    let output_present = result.text_content().contains(U6B_L18_READY_OUTPUT);
+    assert!(output_present, "H6_L18_READY_RESULT_PRIORITY");
+    let interrupted = fx.session.actor.tool_context.blocking_wait_depth.interrupted_wait_ids();
+    assert!(interrupted.is_none(), "H6_L18_READY_RESULT_PRIORITY");
+    let mut continuation = fx.server.expect_response_blocked(
+        "U6 L18 ready-result results-only continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages,
+        ),
+        k2_script(k2lg_n_closure_frames()),
+    );
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_l18_ready_after")));
+    fx.session.releases[1].add_permits(1);
+    u6b_u66_progress(&mut turn.running, continuation.wait_blocked(),
+        "H6_L18_READY_CONTINUATION").await;
+    assert!(!fx.session.actor.chat_state_handle.get_conversation().await.iter()
+        .any(|item| item.text_content().contains(HUMAN)), "H6_L18_READY_HUMAN_STILL_HELD");
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_L18_READY_CLOSED_CHECKPOINT").await;
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_L18_READY_OUTCOME_BOUND").expect("H6_L18_READY_TURN_JOIN");
+    assert!(outcome.is_ok(), "H6_L18_READY_RELEASE_PROGRESS");
+    let bodies = k2lg_n_bodies(&fx.server);
+    let released_count = u6_body_text(bodies.last().expect("H6_L18_READY_RELEASE_REQUEST"))
+        .matches(HUMAN).count();
+    assert_eq!(released_count, 1, "H6_L18_READY_RELEASE_ONCE");
+    continuation.assert_satisfied();
+    json!({"kind": "L18_READY_RESULT_REAL_DISPATCH", "constructed": true,
+        "construction": "resident input at a controlled current-thread rendezvous; no public arrival-producer claim",
+        "real_task_output_backend": true, "real_dispatch_select": true,
+        "coordinator_completion_published": published.get(), "manual_coordinator_polls": polls,
+        "ready_output_present": output_present, "interrupted_wait_ids": interrupted,
+        "resident_count_in_final_request": released_count})
+}
+
+async fn u6b_db11_native_handoff_after_terminal() -> Value {
+    const HUMAN: &str = "U6 DB11 held human before logical end";
+    const NATIVE: &str = "U6 DB11 native prefix must remain excluded";
+    const STEER: &str = "U6 DB11 held parent before logical end";
+    const DEFERRED: &str = "U6 DB11 follow-up after logical end";
+    let (mut fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(Some(HUMAN)).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let extra_actor = fixture.fx.session.actor.clone();
+    let steer = u6b_admit_steer_id(&fixture.fx, &mut turn.running, "u6b-db11-parent", STEER,
+        "H6_DB11_REAL_PARENT_ADMISSION").await;
+    assert_eq!(steer.admission, k0_coordinator::ActiveMessageAdmission::Admitted,
+        "H6_DB11_REAL_PARENT_ADMISSION");
+    let _receipt = steer.receipt.expect("H6_DB11_REAL_PARENT_ADMISSION");
+    k2lg_n_selected(&fixture.fx, extra_actor.drain_admitted_messages_at_safe_point()).await;
+    assert!(extra_actor.state.lock().await.message_delivery.held_input.parent_key("u6b-db11-parent").is_some(),
+        "H6_DB11_REAL_ADMISSION_STAMP");
+    let barriers = fixture.persistence_control.barriers.load(std::sync::atomic::Ordering::SeqCst);
+    u6_release_after_checkpoint(&fixture.fx, &mut turn.running, &continuation, false,
+        "H6_DB11_READABLE_CLOSED_CHECKPOINT").await;
+    u6b_u66_progress(&mut turn.running, u6_u63_step_to_preparation(&fixture, &stepper, barriers),
+        "H6_DB11_PREPARATION_SUSPENDED").await;
+    u6b_u66_progress(&mut turn.running, k2lg_n_send(&mut fixture.fx, NATIVE),
+        "H6_DB11_REAL_NATIVE_MAILBOX").await;
+    assert_eq!(k2lg_n_resident(&fixture.fx.session).len(), 1, "H6_DB11_REAL_NATIVE_RESIDENT");
+    let before_requests = fixture.fx.server.messages_request_count();
+    u6b_u66_progress(&mut turn.running,
+        extra_actor.settle_all_parent_messages(xai_message_delivery_core::TerminalCause::ActorDrop),
+        "H6_DB11_LOGICAL_SETTLEMENT").await;
+    {
+        let state = extra_actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert!(ledger.terminal && ledger.entries.is_empty() && ledger.latch.is_none()
+            && ledger.parent_stamps.is_empty() && ledger.pin_owner.is_none(),
+            "H6_DB11_TERMINAL_STATE");
+    }
+    let error = k2lg_n_selected(&fixture.fx, extra_actor.hold_or_push_user_item(
+        ConversationItem::system_reminder(DEFERRED), super::interjection::HeldSource::DeferredFollowUp,
+    )).await.expect_err("H6_DB11_TERMINAL_ADMISSION");
+    assert_eq!(error.data.as_ref().and_then(|data| data.get("code")).and_then(Value::as_str),
+        Some("native_held_input_incomplete"), "H6_DB11_TERMINAL_ADMISSION");
+    let reason = error.data.as_ref().and_then(|data| data.get("message"))
+        .and_then(Value::as_str).unwrap_or(&error.message);
+    assert!(reason.contains("terminal"), "H6_DB11_TERMINAL_ADMISSION_REASON");
+    assert!(!k2lg_n_selected(&fixture.fx, extra_actor.drain_admitted_messages_at_safe_point()).await,
+        "H6_DB11_TERMINAL_LATCH_EXCLUSION");
+    assert_eq!(k2lg_n_resident(&fixture.fx.session).len(), 1, "H6_DB11_NATIVE_HANDOFF_EXCLUDED");
+    fixture.fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_db11_forbidden")));
+    stepper.resume();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_DB11_RESUMED_OUTCOME").expect("H6_DB11_RESUMED_JOIN");
+    assert_eq!(fixture.fx.server.messages_request_count(), before_requests, "H6_DB11_NATIVE_HANDOFF_EXCLUDED");
+    assert_eq!(k2lg_n_resident(&fixture.fx.session).len(), 1, "H6_DB11_NATIVE_HANDOFF_EXCLUDED");
+    let conversation = extra_actor.chat_state_handle.get_conversation().await;
+    assert!(!conversation.iter().any(|item| [HUMAN, NATIVE, STEER, DEFERRED].iter()
+        .any(|text| item.text_content().contains(text))), "H6_DB11_NATIVE_HANDOFF_EXCLUDED");
+    assert!(Arc::strong_count(&extra_actor) > 1, "H6_DB11_EXTRA_ARC_STILL_ALIVE");
+    continuation.assert_satisfied();
+    json!({"kind": "DB11_NATIVE_HANDOFF_AFTER_TERMINAL", "constructed": false,
+        "real_native_resident_count": k2lg_n_resident(&fixture.fx.session).len(),
+        "requests_before": before_requests, "requests_after": fixture.fx.server.messages_request_count(),
+        "resumed_turn_error": outcome.is_err(), "terminal_admission_code": "native_held_input_incomplete",
+        "extra_actor_arc_count": Arc::strong_count(&extra_actor),
+        "no_new_mutant": true})
+}
+
+async fn u6b_db11_constructed_terminal_stamp() -> Value {
+    let fixture = u6_fixture(None, K2lgNOptions::default()).await;
+    let actor = &fixture.fx.session.actor;
+    actor.settle_all_parent_messages(xai_message_delivery_core::TerminalCause::ActorDrop).await;
+    let mut state = actor.state.lock().await;
+    assert!(state.message_delivery.held_input.terminal, "H6_DB11_STAMP_TERMINAL_PRECONDITION");
+    state.message_delivery.held_input.stamp_parent("u6b-db11-post-terminal-stamp");
+    assert!(state.message_delivery.held_input.parent_stamps.is_empty(), "H6_DB11_TERMINAL_STAMP_GUARD");
+    json!({"kind": "DB11_TERMINAL_STAMP_GUARD", "constructed": true,
+        "construction": "direct admission-side stamp call after logical settlement, not a post-end parent producer",
+        "stamp_count": state.message_delivery.held_input.parent_stamps.len(), "no_new_mutant": true})
+}
+
+async fn u6b_u67_send_peer(fx: &mut K2lgN, index: usize, native: bool) {
+    let body = format!("U6b peer {} {index:03}", if native { "native" } else { "text" });
+    if native {
+        fx.calls += 1;
+        let result = fx.root.tool_bridge().call("send_message",
+            json!({"target":K2LG_N_TARGET,"message":body}),
+            &format!("u6b_peer_{}", fx.calls)).await.expect("H6_N11_PEER_NATIVE_REAL_TOOL");
+        let xai_grok_tools::types::output::ToolOutput::Dynamic(output) = result.output else {
+            panic!("H6_N11_PEER_NATIVE_REAL_RECEIPT");
+        };
+        assert_eq!(output.value["status"].as_str().map(str::to_ascii_lowercase).as_deref(),
+            Some("delivered"), "H6_N11_PEER_NATIVE_MAILBOX_DELIVERED");
+    } else {
+        use xai_grok_tools::implementations::grok_build::task::types::{AgentMailboxMessage, AgentMailboxMessageKind};
+        fx.loop_tx.send(SessionCommand::AgentMessage { message: AgentMailboxMessage {
+            message_id: format!("u6b-peer-text-{index}"), team_scope_id: "u6b-peer-team".into(),
+            from_agent_id: "u6b-peer-source".into(), to_agent_id: K2LG_N_TARGET.into(),
+            kind: AgentMailboxMessageKind::Message, body, created_at_ms: 0, native: None,
+        }}).expect("H6_N11_PEER_REAL_MAILBOX_SEND");
+    }
+}
+
+async fn u6b_u67_mailbox_barrier(fx: &K2lgN, turn: &mut K2lgNTurn) {
+    let (responds_to, mut reply) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::GetCurrentModel { responds_to })
+        .expect("H6_U67_REAL_MAILBOX_BARRIER_SEND");
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            result = &mut reply => { result.expect("H6_U67_REAL_MAILBOX_BARRIER_REPLY"); },
+            _ = &mut turn.running => panic!("H6_U67_REAL_MAILBOX_BARRIER_TURN_ENDED"),
+        }
+    }).await.expect("H6_U67_REAL_MAILBOX_BARRIER_BOUND");
+}
+
+async fn u6b_n11_peer(native_crossing: bool) -> Value {
+    const HUMAN: &str = "U6b peer-band independent human";
+    let mut fixture = u6_fixture(None, K2lgNOptions::default()).await;
+    let fx = &mut fixture.fx;
+    let mut turn = u6_handoff(fx).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let (checkpoint, _) = u6_quiescent_reload(fx, "H6_N11_PEER_LIVE_RELOAD").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_N11_PEER_REAL_HOLD");
+    for index in 0..50 {
+        u6b_u67_send_peer(fx, index, index >= 25).await;
+    }
+    u6b_u67_mailbox_barrier(fx, &mut turn).await;
+    assert_eq!(fx.session.actor.pending_interjections.snapshot().len(), 25,
+        "H6_N11_PEER_TEXT_PREFIX_ADMITTED");
+    assert_eq!(k2lg_n_resident(&fx.session).len(), 25,
+        "H6_N11_PEER_NATIVE_PREFIX_ADMITTED");
+    u6b_u67_send_peer(fx, 50, native_crossing).await;
+    u6b_u67_mailbox_barrier(fx, &mut turn).await;
+    {
+        let state = fx.session.actor.state.lock().await;
+        let refusal = state.message_delivery.held_input.refusal.as_ref()
+            .expect("H6_N11_PEER_CROSSING");
+        assert_eq!(format!("{:?}", refusal.reason), "PeerBandFull", "H6_N11_PEER_REFUSAL_VISIBLE");
+        assert_eq!(u6_source_name(refusal.source), "peer_agent", "H6_N11_PEER_REFUSAL_VISIBLE");
+    }
+    assert_eq!(fx.session.actor.pending_interjections.snapshot().len(), 25,
+        "H6_N11_PEER_TEXT_REFUSED_AT_PRODUCER");
+    assert_eq!(k2lg_n_resident(&fx.session).len(), 25,
+        "H6_N11_PEER_NATIVE_REFUSED_AT_PRODUCER");
+    u6_interject(fx, HUMAN, Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N11_PEER_NO_EARLY_ADMISSION");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert_eq!(ledger.entries.iter().filter(|entry| u6_source_name(entry.source) == "peer_agent").count(),
+            25, "H6_N11_PEER_ISOLATED_FROM_HUMAN");
+        assert_eq!(ledger.entries.iter().filter(|entry| u6_source_name(entry.source) == "human_interjection").count(),
+            1, "H6_N11_PEER_FULL_NEVER_REFUSES_HUMAN");
+    }
+    let mut continuation = fx.server.expect_response_blocked("U6b peer results-only continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2lg_n_closure_frames()));
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_peer_after")));
+    fx.session.releases[1].add_permits(1);
+    let continued = tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = continuation.wait_blocked() => true,
+            _ = &mut turn.running => false,
+        }
+    }).await.expect("H6_N11_PEER_CONTINUATION_BOUND");
+    assert!(continued, "H6_N11_PEER_RESULTS_ONLY_CONTINUATION");
+    let bodies = k2lg_n_bodies(&fx.server);
+    u6_assert_results_only(&checkpoint, &bodies[1], &bodies[2]);
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false, "H6_N11_PEER_CLOSURE").await;
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N11_PEER_RELEASE_BOUND").expect("H6_N11_PEER_RELEASE_JOIN");
+    assert!(outcome.is_ok(), "H6_N11_PEER_RELEASE_OUTCOME");
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    for index in 0..50 {
+        let needle = format!("U6b peer {} {index:03}", if index >= 25 { "native" } else { "text" });
+        assert_eq!(history.iter().filter(|item| item.text_content().contains(&needle)).count(), 1,
+            "H6_N11_PEER_RELEASE_ONCE");
+    }
+    let rejected = format!("U6b peer {} 050", if native_crossing { "native" } else { "text" });
+    assert!(!history.iter().any(|item| item.text_content().contains(&rejected)), "H6_N11_PEER_REJECTED_NEVER_DELIVERED");
+    assert_eq!(history.iter().filter(|item| item.text_content().contains(HUMAN)).count(), 1,
+        "H6_N11_PEER_HUMAN_RELEASE_ONCE");
+    assert!(k2lg_n_resident(&fx.session).is_empty(), "H6_N11_PEER_NATIVE_PREFIX_REMOVED");
+    json!({"constructed":false,"native_crossing":native_crossing,"peer_prefix":50,"refused":1,
+        "human_delivered":1,"http":fx.server.messages_request_count()})
+}
+
+async fn u6b_l15_session(
+    server: &MockInferenceServer,
+    options: K2lgNOptions,
+    agent_wide: &Arc<std::sync::atomic::AtomicBool>,
+    chat_token: &tokio_util::sync::CancellationToken,
+    log: &K2lgNLog,
+    control: &U6PersistenceControl,
+    image: Option<Arc<str>>,
+) -> (K2ReplaySession, tokio::sync::mpsc::UnboundedReceiver<xai_chat_state::ChatStateEvent>) {
+    let idle_observer = control.idle_observer.clone();
+    let title_home = crate::util::grok_home::grok_home();
+    assert!(title_home.starts_with(std::env::temp_dir()), "H6_R7_PRIVATE_TITLE_HOME");
+    let title_cwd = title_home.to_string_lossy().into_owned();
+    let session_parent = crate::util::grok_home::ensure_sessions_cwd_dir_in(&title_home, &title_cwd).unwrap();
+    let directory = tempfile::Builder::new().prefix("k2lg-n-").tempdir_in(session_parent).unwrap();
+    let config = xai_grok_sampler::SamplerConfig {
+        base_url: server.url(),
+        model: "k2-replay".into(),
+        api_key: Some("nonsecret-k2-key".into()),
+        api_backend: xai_grok_sampler::ApiBackend::Messages,
+        max_completion_tokens: Some(4096),
+        max_retries: Some(options.retries),
+        ..Default::default()
+    };
+    let info = crate::session::info::Info {
+        id: acp::SessionId::new(directory.path().file_name().unwrap().to_string_lossy().into_owned()),
+        cwd: title_cwd,
+    };
+    let persistence = {
+        let initial = crate::session::persistence::new_with_explicit_dir(
+            &info, directory.path().to_path_buf(), acp::ModelId::new("k2-replay"),
+            xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(), "k2-replay".into(),
+            crate::session::persistence::ExplicitSessionOpen::New { identity: None, next_trace_turn: None },
+        ).await.unwrap();
+        const TITLE: &str = "U6b already generated fixture session title";
+        initial.tx.send(PersistenceMsg::GeneratedTitle(TITLE.into())).unwrap();
+        let (respond_to, persisted) = tokio::sync::oneshot::channel();
+        initial.tx.send(PersistenceMsg::FlushAndAck { respond_to }).unwrap();
+        tokio::time::timeout(K0_TIMEOUT, persisted).await.unwrap().unwrap().unwrap();
+        drop(initial);
+        let (loaded, handle) = crate::session::persistence::load_light(
+            &info, None, false, crate::session::persistence::SessionDeps {
+                sampling_client: xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(),
+                storage_mode: crate::config::StorageMode::Local, auth_manager: None, relay_sync: None, gateway: None,
+                session_summary_model: "k2-replay".into(), registry_title_sync: None,
+                search_index: crate::session::storage::search::SharedSearchIndex::never_indexed(), session_kind: None,
+            },
+        ).await.unwrap();
+        assert_eq!(loaded.summary.generated_title.as_deref(), Some(TITLE), "H6_R7_REAL_TITLED_RESUME");
+        u6_observe(json!({"stage":"R7 title fixture state","loaded_title":true,"real_load_surface":"persistence::load_light"}));
+        handle
+    };
+    let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+    let cleanup_control = control.clone();
+    let gateway = tokio::task::spawn_local(async move {
+        while let Some(message) = gateway_rx.recv().await {
+            if let xai_acp_lib::AcpClientMessage::SessionNotification(arguments) = message {
+                if matches!(&arguments.request.update, acp::SessionUpdate::Plan(plan)
+                    if plan.entries.iter().any(|entry| entry.content == "U6 bookkeeping observer")
+                        && plan.entries.iter().all(|entry| entry.status == acp::PlanEntryStatus::Completed))
+                {
+                    cleanup_control
+                        .cleanup_count
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    cleanup_control.cleanup.notify_one();
+                }
+                let _ = arguments.response_tx.send(Ok(()));
+            }
+        }
+    });
+    let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+    let real_persistence = persistence.tx.clone();
+    let updates = control.updates.clone();
+    let barriers = control.barriers.clone();
+    let observation_control = control.clone();
+    let persistence_proxy = tokio::task::spawn_local(async move {
+        while let Some(message) = persistence_rx.recv().await {
+            if matches!(&message, PersistenceMsg::FlushAndAck { .. }) {
+                barriers.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if observation_control
+                    .hold_barriers
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    observation_control
+                        .held_barriers
+                        .lock()
+                        .unwrap()
+                        .push(message);
+                    observation_control.barrier_held.notify_one();
+                    continue;
+                }
+            }
+            if matches!(&message, PersistenceMsg::AnnouncementState(_)) {
+                observation_control
+                    .announcement_updates
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            if matches!(&message, PersistenceMsg::PlanModeState(_)) {
+                observation_control
+                    .plan_updates
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            if let PersistenceMsg::Update(SessionUpdate::Acp(notification)) = &message {
+                if matches!(
+                    &notification.update,
+                    acp::SessionUpdate::UserMessageChunk(_)
+                ) {
+                    observation_control
+                        .user_chunks
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::to_value(notification).unwrap());
+                }
+                updates
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::to_value(notification).unwrap());
+            }
+            if real_persistence.send(message).is_err() {
+                break;
+            }
+        }
+    });
+    let (mut actor, _) = create_test_actor_with_chat_persistence(
+        0,
+        256_000,
+        85,
+        gateway_tx,
+        persistence_tx.clone(),
+        Box::new(xai_chat_state::NullChatPersistence),
+    )
+    .await;
+    let sampling = actor
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .expect("K2LG setup chat-state sampling config");
+    let (chat_event_tx, chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
+    actor.chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+        vec![],
+        sampling,
+        Box::new(K2lgNPersistence {
+            inner: crate::session::chat_persistence::ChannelChatPersistence::new(
+                persistence_tx.clone(),
+            ),
+            log: log.clone(),
+            n12_drop_next_native_ack: control.n12_drop_next_native_ack.clone(),
+        }),
+        chat_event_tx,
+        chat_token.clone(),
+    );
+    actor.tool_context.is_turn_active = Some(agent_wide.clone());
+    actor.tool_context.monitor_event_buffer = Some(MonitorEventBuffer::new());
+    actor.max_turns = options.max_turns;
+    actor.session_info = info;
+    actor.attach_non_interactive.set(true);
+    if control.media_resample {
+        *actor.agent.borrow_mut() = super::support::test_agent_with_tools(vec![
+            xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                xai_grok_tools::implementations::grok_build::image_gen::ImageGenTool,
+            >(),
+        ])
+        .await;
+    }
+    if control.plan_tools {
+        *actor.agent.borrow_mut() = super::support::test_agent_with_plan_tools().await;
+        *actor.plan_mode.lock() =
+            crate::session::plan_mode::PlanModeTracker::new(directory.path().to_path_buf());
+    }
+    if control.bookkeeping_feedback {
+        actor.feedback_manager = Arc::new(crate::session::feedback_manager::FeedbackManager::new(
+            "u6-bookkeeping",
+            None,
+            crate::session::feedback_manager::FeedbackManagerConfig {
+                feedback_enabled: true,
+                ..Default::default()
+            },
+        ));
+        actor
+            .notifications
+            .gateway_enabled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    actor.max_retries = 0;
+    actor.compaction.compaction_mode = xai_chat_state::CompactionMode::Summary;
+    {
+        let mut slot = actor.agent.borrow_mut();
+        let mut policy = slot.compaction_policy().clone();
+        policy.two_pass_enabled = false;
+        policy.remote_compaction_v2 = false;
+        policy.memory_flush_enabled = false;
+        *slot = xai_grok_agent::Agent::new(
+            slot.definition().clone(),
+            slot.prompt_context().clone(),
+            slot.system_prompt().to_string(),
+            slot.tool_bridge().clone(),
+            slot.reminder_policy().clone(),
+            policy,
+            Vec::new(),
+            true,
+        );
+    }
+    actor.memory.flush_config.enabled = false;
+    actor.memory.dream_config.enabled = false;
+    actor.memory.save_on_end = false;
+    let (manager, models) = manager_with_entries();
+    let mut entry = entry_with_search_flag("k2-replay", true);
+    entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    entry.api_base_url = Some(server.url());
+    entry.api_key = Some("nonsecret-k2-key".into());
+    manager.insert_test_entry("k2-replay", entry);
+    manager.set_current_model_id(acp::ModelId::new("k2-replay"));
+    actor.models_manager = manager;
+    let mut binding = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    binding.config.base_url = server.url();
+    binding.config.model = "k2-replay".into();
+    binding.config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    binding.config.supports_search_tool = true;
+    binding.config.max_completion_tokens = Some(4096);
+    binding.config.max_retries = Some(options.retries);
+    binding.credentials.api_key = Some("nonsecret-k2-key".into());
+    binding.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+    actor
+        .chat_state_handle
+        .install_transport_binding(binding)
+        .await
+        .unwrap();
+    let executions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (entered_tx, entered) = tokio::sync::mpsc::unbounded_channel();
+    let releases = [
+        Arc::new(tokio::sync::Semaphore::new(16)),
+        Arc::new(tokio::sync::Semaphore::new(16)),
+    ];
+    for (index, name) in ["alpha__lookup", "zeta__fetch"].into_iter().enumerate() {
+        actor
+        .agent
+        .borrow()
+        .tool_bridge()
+        .register_mcp_tools(
+            name.into(),
+            U6ClientTool {
+                name,
+                executions: executions.clone(),
+                entered: entered_tx.clone(),
+                release: releases[index].clone(),
+                image: if index == 1 { image.clone() } else { None },
+            },
+            Some(json!({"type":"object","description":"Exact K2 original schema","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false})),
+        )
+        .unwrap();
+    }
+    {
+        let mut mcp = actor.mcp_state.lock().await;
+        mcp.finish_init();
+        mcp.complete_init();
+    }
+    actor
+        .workspace_ops
+        .bind_local_session(
+            &actor.session_id_string(),
+            actor.tool_context.cwd.as_path().to_path_buf(),
+            actor.tool_context.hunk_tracker_handle.clone(),
+            actor.agent.borrow().tool_bridge().toolset(),
+            None,
+        )
+        .unwrap();
+    let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+    actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+        config,
+        xai_grok_sampler::RetryPolicy {
+            max_retries: options.retries,
+            ..Default::default()
+        },
+        sampler_tx,
+    );
+    actor.turn_summary_enabled = false;
+    actor.title_refresh_enabled = false;
+    if let Some(idle) = idle_observer.as_ref() {
+        let mut extensions = xai_agent_lifecycle::LocalExtensionRegistryBuilder::default();
+        extensions.session_lifecycle_contributor(idle.clone());
+        actor.extension_registry = extensions.build();
+    }
+    let actor = Arc::new(actor);
+    let drainer = actor.clone();
+    let (source_tx, source_acks) = tokio::sync::mpsc::unbounded_channel();
+    let sampler = tokio::task::spawn_local(async move {
+        while let Some(event) = sampler_rx.recv().await {
+            let status = match &event {
+                xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                    evidence: k2_history::NativeEvidenceEvent::Attempt(attempt),
+                    ..
+                } => Some(attempt.status),
+                _ => None,
+            };
+            drainer.handle_sampling_event(event).await;
+            if let Some(status) = status {
+                let _ = source_tx.send(status);
+            }
+        }
+    });
+    (K2ReplaySession {
+        actor,
+        persistence,
+        directory,
+        _models: models,
+        tasks: vec![gateway, persistence_proxy, sampler],
+        executions,
+        entered,
+        releases,
+        source_acks,
+    }, chat_event_rx)
+}
+
+async fn u6b_l15_fixture(
+    image: Option<Arc<str>>,
+    options: K2lgNOptions,
+    persistence_control: U6PersistenceControl,
+) -> (U6Fixture, tokio::sync::mpsc::UnboundedReceiver<xai_chat_state::ChatStateEvent>) {
+    let server = MockInferenceServer::start().await.unwrap();
+    let agent_wide = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let chat_token = tokio_util::sync::CancellationToken::new();
+    let log = K2lgNLog::default();
+    let (mut session, chat_rx) = u6b_l15_session(
+        &server,
+        options,
+        &agent_wide,
+        &chat_token,
+        &log,
+        &persistence_control,
+        image,
+    )
+    .await;
+    let (loop_tx, loop_rx) = tokio::sync::mpsc::unbounded_channel();
+    let started = std::rc::Rc::new(tokio::sync::Notify::new());
+    let (sender, receiver) = k0_coordinator::SubagentCoordinator::<K2lgNRunner>::channel();
+    session.tasks.push(tokio::task::spawn_local(
+        k0_coordinator::SubagentCoordinator::from_channel(
+            receiver,
+            K2lgNRunner {
+                commands: loop_tx.clone(),
+                started: started.clone(),
+            },
+            Default::default(),
+        )
+        .run(),
+    ));
+    let root = k2lg_n_root(&server, sender).await;
+    k2lg_n_register_worker(&root, &started).await;
+    (U6Fixture {
+        fx: K2lgN {
+            session,
+            server,
+            root,
+            loop_tx,
+            loop_rx: Some(loop_rx),
+            log,
+            chat_token,
+            agent_wide,
+            calls: 0,
+        },
+        persistence_control,
+    }, chat_rx)
+}
+
+async fn u6b_l15_install_running(
+    fx: &mut K2lgN,
+    handle: tokio::task::AbortHandle,
+    chat_rx: tokio::sync::mpsc::UnboundedReceiver<xai_chat_state::ChatStateEvent>,
+) -> (TurnEpoch, std::rc::Rc<()>) {
+    let epoch = fx.session.actor.turn_report.start_next_turn();
+    let identity = {
+        let mut state = fx.session.actor.state.lock().await;
+        state.running_task = Some(AgentTask::new_at_epoch(KOXD_U6_PROMPT, epoch, handle));
+        state
+            .pending_inputs
+            .push_front(user_item(KOXD_U6_PROMPT, "U6"));
+        state.running_task.as_ref().unwrap().identity.clone()
+    };
+    *fx.session.actor.current_prompt_id.lock().unwrap() = Some(KOXD_U6_PROMPT.into());
+    if !fx.session.actor.session_turn_active.load(std::sync::atomic::Ordering::SeqCst) {
+        let guard = super::turn_task::TurnActiveGuard::activate(Some(&fx.session.actor.session_turn_active));
+        fx.session.tasks.push(tokio::task::spawn_local(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        }));
+        u6_observe(json!({"stage":"R7 fixture-owned manual turn guard","active":true}));
+    }
+    if let Some(command_rx) = fx.loop_rx.take() {
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let actor = fx.session.actor.clone();
+        fx.session.tasks.push(tokio::task::spawn_local(async move {
+            let _keep = event_tx;
+            super::run_session(
+                actor,
+                command_rx,
+                chat_rx,
+                event_rx,
+                None,
+                Arc::new(parking_lot::Mutex::new(
+                    xai_grok_workspace::file_system::CodebaseIndexManager::new(),
+                )),
+                std::env::temp_dir(),
+                crate::session::fs_watch::FsWatchCapabilities::none(),
+            )
+            .await;
+        }));
+    }
+    (epoch, identity)
+}
+
+async fn u6b_l15_handoff(
+    fx: &mut K2lgN,
+    budget: Option<u32>,
+    schema: Option<Value>,
+    wait_timeout: Option<u64>,
+    stepper: Option<U6TurnStepper>,
+    chat_rx: tokio::sync::mpsc::UnboundedReceiver<xai_chat_state::ChatStateEvent>,
+) -> K2lgNTurn {
+    let stepper = Some(stepper.unwrap_or_default());
+    U6_ARM_STEPPERS.with(|steppers| {
+        steppers
+            .borrow_mut()
+            .push(stepper.as_ref().unwrap().clone())
+    });
+    k2_seed(&mut fx.session, &fx.server).await;
+    fx.session.releases[1]
+        .clone()
+        .acquire_many_owned(16)
+        .await
+        .unwrap()
+        .forget();
+    let frames = wait_timeout.map_or_else(k2_u5_frames, |timeout| {
+        u6_wait_frames(k2_u5_frames(), "client_u6_wait", timeout)
+    });
+    fx.server
+        .enqueue_response("/v1/messages", k2_script(frames));
+    fx.session.actor.chat_state_handle.begin_turn_capture();
+    let _ = fx.session.actor.chat_state_handle.get_conversation().await;
+    let turn_start_ops = fx.log.lock().unwrap().len();
+    fx.session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user("U6 real mixed handoff"))
+        .await;
+    let submits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let record = submits.clone();
+    let actor = fx.session.actor.clone();
+    let domain = fx.session.domain(&fx.server);
+    let observations = U6_ARM_OBSERVATIONS.with(Clone::clone);
+    let session_turn_active_guard =
+        super::turn_task::TurnActiveGuard::activate(Some(&actor.session_turn_active));
+    let mut running = tokio::task::spawn_local(async move {
+        let _session_turn_active_guard = session_turn_active_guard;
+        let mut prepare =
+            move |request: &mut ConversationRequest,
+                  binding: &xai_chat_state::RequestTransportBinding| {
+                assert!(record.borrow().len() < 16, "H6_REQUEST_BUDGET");
+                record.borrow_mut().push(json!({
+            "items": serde_json::to_value(&request.items).unwrap(),
+            "tools": serde_json::to_value(&request.tools).unwrap(),
+            "model": request.model,
+            "bound_model": binding.config.model,
+            "body_digest": request.encoded.as_ref().map(|body| native_content_digest(body.as_bytes())),
+        }));
+                Ok(())
+            };
+        let mut salvage = super::length_salvage::LengthSalvage::new(budget);
+        let mut sampling = Default::default();
+        let future = super::switch_projection::HISTORY_S3_TEST_DOMAIN.scope(
+            domain,
+            super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+                k2_history::NativeHistoryRequirement::Selected,
+                actor.process_conversation_turn_for_native_history_test(
+                    KOXD_U6_PROMPT,
+                    None,
+                    None,
+                    schema,
+                    &mut salvage,
+                    &mut sampling,
+                    &mut prepare,
+                ),
+            ),
+        );
+        U6_ARM_OBSERVATIONS.scope(observations, async {
+            let outcome = U6SteppedTurn {
+                future: Box::pin(future),
+                stepper,
+            }.await;
+            if let Err(error) = &outcome {
+                u6_observe(json!({
+                    "stage": "direct turn error outcome",
+                    "error_code": error.data.as_ref().and_then(|data| data.get("code")).and_then(Value::as_str),
+                    "data_keys": error.data.as_ref().and_then(Value::as_object).map(|data| data.keys().cloned().collect::<Vec<_>>()),
+                    "message_digest": native_content_digest(error.message.as_bytes()),
+                    "local_message_digest": error.data.as_ref().and_then(|data| data.get("message")).and_then(Value::as_str).map(|message| native_content_digest(message.as_bytes())),
+                }));
+            }
+            outcome
+        }).await
+    });
+    let (epoch, identity) = u6b_l15_install_running(fx, running.abort_handle(), chat_rx).await;
+    let captured = tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            result = &mut running => {
+                let outcome = result.unwrap();
+                u6_observe(json!({"stage":"real handoff setup rejected before native capture",
+                    "error_code":outcome.as_ref().err().and_then(|error| error.data.as_ref())
+                        .and_then(|data| data.get("code")).and_then(Value::as_str),
+                    "local_message":outcome.as_ref().err().and_then(|error| error.data.as_ref())
+                        .and_then(|data| data.get("message")).and_then(Value::as_str)
+                        .map(|message| message.chars().take(256).collect::<String>()),
+                    "error_message_digest":outcome.as_ref().err().map(|error| native_content_digest(error.message.as_bytes())),
+                    "http_count":fx.server.messages_request_count()}));
+                false
+            },
+            status = fx.session.source_acks.recv() => status == Some(k2_history::NativeResponseStatus::Accepted),
+        }
+    }).await.expect("H6_HANDOFF_CAPTURE_OUTCOME_RACE");
+    assert!(captured, "H6_DECODED_NATIVE_HANDOFF");
+    let mut entered = u6_client_dispatch(
+        &mut fx.session.entered,
+        &mut running,
+        json!("Accepted"),
+        "real handoff client dispatch",
+        "H6_HANDOFF_DISPATCH_OUTCOME_RACE",
+        "H6_HANDOFF_TURN_ENDED_BEFORE_DISPATCH",
+    )
+    .await;
+    entered.sort();
+    assert!(
+        entered == vec!["alpha__lookup", "zeta__fetch"],
+        "H6_REAL_CLIENT_EXECUTION"
+    );
+    let conversation = &fx.session.actor.chat_state_handle;
+    u6_await_turn_progress(
+        &mut running,
+        "real handoff first actual client result",
+        "H6_FIRST_ACTUAL_RESULT",
+        "H6_FIRST_ACTUAL_RESULT_TURN_ENDED",
+        || async move {
+            conversation.get_conversation().await.iter().any(|item| {
+                matches!(item, ConversationItem::ToolResult(result) if result.tool_call_id == "client_k2_c1")
+            })
+        },
+    )
+    .await;
+    let (checkpoint, _) = u6_quiescent_reload(fx, "H6_R20_HANDOFF_RELOAD").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_REAL_LIVE_PENDING");
+    assert_eq!(
+        fx.server.messages_request_count(),
+        2,
+        "H6_ZERO_EARLY_CONTINUATION"
+    );
+    K2lgNTurn {
+        running,
+        epoch,
+        identity,
+        submits,
+        turn_start_ops,
+    }
+}
+
+
+#[derive(Clone, Copy, Debug)]
+enum U6bL15Source { Memory, Mcp }
+
+async fn u6b_l15(source: U6bL15Source) -> Value {
+    const HUMAN: &str = "U6b L15 retained human forces the first closed-exchange build";
+    let (mut fixture, chat_rx) = u6b_l15_fixture(None, K2lgNOptions::default(), U6PersistenceControl::default()).await;
+    let fx = &mut fixture.fx;
+    let mut turn = u6b_l15_handoff(fx, None, None, None, None, chat_rx).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let initial_counter = fx.session.actor.memory.injection_count.load(std::sync::atomic::Ordering::Relaxed);
+    match source {
+        U6bL15Source::Memory => {
+            let root = fx.session.directory.path().join("l15-memory-v2");
+            let storage = crate::session::memory::MemoryStorage::new_for_mode(
+                fx.session.actor.tool_context.cwd.as_path(), Some(&root), crate::config::MemoryMode::V2);
+            storage.ensure_initialized().expect("H6_L15_MEMORY_STORAGE_INITIALIZED");
+            fx.session.actor.memory.storage.replace(Some(storage));
+            assert_eq!(fx.session.actor.memory.mode(), Some(crate::config::MemoryMode::V2),
+                "H6_L15_MEMORY_REAL_STORAGE_MODE");
+        }
+        U6bL15Source::Mcp => {
+            fx.session.actor.mcp_announcements.lock().fingerprints
+                .insert("departed-u6b-l15".into(), (1, 2, 3));
+            fx.session.actor.mcp_reminder_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let retained_history = fx.session.actor.chat_state_handle.get_conversation().await;
+    let retained_digest = native_content_digest(&serde_json::to_vec(&retained_history).unwrap());
+    fx.session.actor.memory.context_injected.store(false, std::sync::atomic::Ordering::Relaxed);
+    let actor = fx.session.actor.clone();
+    u6_await_turn_progress(&mut turn.running, "L15 actual ConversationReset event",
+        "H6_L15_REAL_RESET_BOUND", "H6_L15_RESET_TURN_ENDED", || {
+            let actor = actor.clone();
+            async move { !actor.memory.context_injected.load(std::sync::atomic::Ordering::Relaxed) }
+        }).await;
+    let current = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(native_content_digest(&serde_json::to_vec(&current).unwrap()), retained_digest,
+        "H6_L15_RESET_KEEPS_IDENTICAL_HISTORY_BYTES");
+    let (checkpoint, _) = u6_quiescent_reload(fx, "H6_L15_REAL_REARM_LIVE_VIEW").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_L15_REARM_STILL_REAL_HOLD");
+    u6_interject(fx, HUMAN, Vec::new()).await;
+    let mut first = fx.server.expect_response_blocked("U6b L15 first results-only continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(u6_next_pending(true)));
+    fx.session.releases[1].add_permits(1);
+    let first_reached = tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = first.wait_blocked() => true,
+            _ = &mut turn.running => false,
+        }
+    }).await.expect("H6_L15_FIRST_CONTINUATION_BOUND");
+    assert!(first_reached, "H6_L15_FIRST_RESULTS_ONLY_CONTINUATION");
+    let bodies = k2lg_n_bodies(&fx.server);
+    u6_assert_results_only(&checkpoint, &bodies[1], &bodies[2]);
+    if matches!(source, U6bL15Source::Memory) {
+        assert!(!fx.session.actor.memory.context_injected.load(std::sync::atomic::Ordering::Relaxed),
+            "H6_L15_MEMORY_GENERATION_WITHHELD");
+        assert_eq!(fx.session.actor.memory.injection_count.load(std::sync::atomic::Ordering::Relaxed),
+            initial_counter, "H6_L15_MEMORY_COUNTER_WITHHELD");
+        assert!(!serde_json::to_string(&bodies[2]).unwrap().contains("## Global memory manifest"),
+            "H6_L15_MEMORY_BUILD_ARGUMENT_WITHHELD");
+    }
+    let mut second = fx.server.expect_response_blocked("U6b L15 ordinary tool-batch while another native call remains pending",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2_frames("msg_u6b_l15_closed", vec![k2_result("srvtoolu_u6_next", "alpha__lookup"), (json!({"type":"text","text":"U6b L15 closing reply"}), Vec::new())], "end_turn")));
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_l15_after")));
+    first.release();
+    let mut entered = u6_client_dispatch(&mut fx.session.entered, &mut turn.running, json!("Accepted"),
+        "L15 second real client batch", "H6_L15_SECOND_BATCH_BOUND", "H6_L15_SECOND_BATCH_TURN_ENDED").await;
+    entered.sort();
+    assert_eq!(entered, vec!["alpha__lookup", "zeta__fetch"], "H6_L15_REAL_SECOND_CLIENT_BATCH");
+    fx.session.releases[1].add_permits(1);
+    let second_reached = tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = second.wait_blocked() => true,
+            _ = &mut turn.running => false,
+        }
+    }).await.expect("H6_L15_SECOND_CONTINUATION_BOUND");
+    assert!(second_reached, "H6_L15_SECOND_RESULTS_ONLY_CONTINUATION");
+    let still_pending = u6_readable_checkpoint(fx, &mut turn.running, true, "H6_L15_ANOTHER_REAL_PENDING_CALL").await;
+    assert!(k2lg_n_live(&still_pending), "H6_L15_STILL_REAL_HOLD");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 4, "H6_L15_HELD_BUILD_COUNT");
+    assert!(!fx.session.actor.chat_state_handle.get_conversation().await.iter()
+        .any(|item| item.text_content().contains(HUMAN)), "H6_L15_HUMAN_STILL_HELD");
+    match source {
+        U6bL15Source::Memory => {
+            assert!(!fx.session.actor.memory.context_injected.load(std::sync::atomic::Ordering::Relaxed),
+                "H6_L15_MEMORY_GENERATION_WITHHELD");
+            assert_eq!(fx.session.actor.memory.injection_count.load(std::sync::atomic::Ordering::Relaxed),
+                initial_counter, "H6_L15_MEMORY_COUNTER_WITHHELD");
+            assert!(!serde_json::to_string(&bodies[3]).unwrap().contains("## Global memory manifest"),
+                "H6_L15_MEMORY_BUILD_ARGUMENT_WITHHELD");
+        }
+        U6bL15Source::Mcp => {
+            assert!(fx.session.actor.mcp_reminder_dirty.load(std::sync::atomic::Ordering::Relaxed),
+                "H6_L15_MCP_DIRTY_UNCONSUMED");
+            assert!(fx.session.actor.mcp_announcements.lock().fingerprints.contains_key("departed-u6b-l15"),
+                "H6_L15_MCP_FACTS_NOT_CONSUMED");
+            assert!(!fx.session.actor.chat_state_handle.get_conversation().await.iter()
+                .any(|item| item.text_content().contains("MCP server disconnected: departed-u6b-l15")),
+                "H6_L15_MCP_REMINDER_WITHHELD");
+        }
+    }
+    u6_release_after_checkpoint(fx, &mut turn.running, &second, false, "H6_L15_MATCHING_CLOSURE").await;
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_L15_CLOSED_EXCHANGE_PROGRESS").expect("H6_L15_CLOSED_EXCHANGE_JOIN");
+    assert!(outcome.is_ok(), "H6_L15_CLOSED_EXCHANGE_OUTCOME");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 5, "H6_L15_FIRST_ELIGIBLE_BUILD");
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(history.iter().filter(|item| item.text_content().contains(HUMAN)).count(), 1,
+        "H6_L15_HUMAN_RELEASE_ONCE");
+    match source {
+        U6bL15Source::Memory => {
+            assert!(fx.session.actor.memory.context_injected.load(std::sync::atomic::Ordering::Relaxed),
+                "H6_L15_MEMORY_INJECTED_AFTER_CLOSURE");
+            assert!(serde_json::to_string(&bodies[4]).unwrap().contains("## Global memory manifest"),
+                "H6_L15_MEMORY_CURRENT_FACTS_IN_FIRST_ELIGIBLE_BUILD");
+            let count = fx.session.actor.memory.injection_count.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(count > initial_counter, "H6_L15_MEMORY_COUNTER_AFTER_CLOSURE");
+            assert!(fx.session.actor.first_turn_memory_reminder().await.is_none(), "H6_L15_MEMORY_GENERATION_ONCE");
+            assert_eq!(fx.session.actor.memory.injection_count.load(std::sync::atomic::Ordering::Relaxed), count,
+                "H6_L15_MEMORY_GENERATION_ONCE");
+        }
+        U6bL15Source::Mcp => {
+            assert!(!fx.session.actor.mcp_reminder_dirty.load(std::sync::atomic::Ordering::Relaxed),
+                "H6_L15_MCP_CONSUMED_AFTER_CLOSURE");
+            let expected = xai_grok_tools::implementations::search_tool::fingerprint_servers(
+                &fx.session.actor.connected_server_summaries());
+            assert_eq!(fx.session.actor.mcp_announcements.lock().fingerprints, expected,
+                "H6_L15_MCP_CURRENT_FACTS_AFTER_CLOSURE");
+            let reminders = history.iter().filter(|item|
+                item.text_content().contains("MCP server disconnected: departed-u6b-l15")).count();
+            assert_eq!(reminders, 1, "H6_L15_MCP_REMINDER_ONCE");
+            fx.session.actor.maybe_inject_mcp_reminder().await;
+            assert_eq!(fx.session.actor.chat_state_handle.get_conversation().await.iter().filter(|item|
+                item.text_content().contains("MCP server disconnected: departed-u6b-l15")).count(), reminders,
+                "H6_L15_MCP_REMINDER_ONCE");
+        }
+    }
+    json!({"constructed":false,"source":format!("{source:?}"),"rearm":"real ConversationReset from byte-identical compaction",
+        "history_digest":retained_digest,"http":bodies.len(),"memory_counter_delta":
+        fx.session.actor.memory.injection_count.load(std::sync::atomic::Ordering::Relaxed) - initial_counter})
+}
+
+#[derive(Clone, Copy, Debug)]
+enum U6bL19Trigger { Cancel, OwnedError }
+
+#[derive(Clone, Copy, Debug)]
+enum U6bL19Skills { Late, RefusedResident }
+
+#[derive(Clone, Copy, Debug)]
+enum U6bL19Native { Absent, RetainedPrefix }
+
+async fn u6b_l19_skill(actor: &SessionActor, text: &str) {
+    actor.apply_skill_update_effects(
+        xai_grok_tools::types::skill_discovery_tracker::SkillUpdateEffects {
+            system_reminder: Some(text.into()),
+            ..Default::default()
+        },
+    ).await;
+}
+
+async fn u6b_l19_running_fence(fx: &K2lgN, turn: &mut K2lgNTurn) {
+    let (respond_to, pending) = tokio::sync::oneshot::channel();
+    fx.session.actor.notifications.persistence_tx
+        .send(PersistenceMsg::FlushAndAck { respond_to }).expect("H6_L19_RUNNING_FENCE_SEND");
+    u6b_u66_progress(&mut turn.running, pending, "H6_L19_RUNNING_FENCE")
+        .await.expect("H6_L19_RUNNING_FENCE_REPLY").expect("H6_L19_RUNNING_FENCE_OK");
+}
+
+async fn u6b_l19_ended_fence(fx: &K2lgN) {
+    let (responds_to, reply) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::GetCurrentModel { responds_to })
+        .expect("H6_L19_ENDED_MAILBOX_FENCE_SEND");
+    tokio::time::timeout(K0_TIMEOUT, reply).await
+        .expect("H6_L19_ENDED_MAILBOX_FENCE_BOUND").expect("H6_L19_ENDED_MAILBOX_FENCE_REPLY");
+    let (respond_to, pending) = tokio::sync::oneshot::channel();
+    fx.session.actor.notifications.persistence_tx
+        .send(PersistenceMsg::FlushAndAck { respond_to }).expect("H6_L19_ENDED_PERSISTENCE_FENCE_SEND");
+    tokio::time::timeout(K0_TIMEOUT, pending).await
+        .expect("H6_L19_ENDED_PERSISTENCE_FENCE_BOUND")
+        .expect("H6_L19_ENDED_PERSISTENCE_FENCE_REPLY").expect("H6_L19_ENDED_PERSISTENCE_FENCE_OK");
+}
+
+fn u6b_l19_enqueue_prompt(
+    fx: &K2lgN,
+    prompt: &str,
+    id: &str,
+    prompt_mode: PromptMode,
+) -> tokio::sync::oneshot::Receiver<crate::session::commands::PromptTurnResult> {
+    let (respond_to, response) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::Prompt {
+        prompt_id: id.into(),
+        prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(prompt))],
+        prompt_mode,
+        artifact_upload_ctx: None,
+        client_identifier: Some("U6".into()),
+        screen_mode: None,
+        verbatim: false,
+        traceparent: None,
+        json_schema: None,
+        send_now: false,
+        admission: None,
+        tool_overrides_update: None,
+        respond_to,
+        prompt_admitted: None,
+        persist_ack: None,
+        parsed_prompt_tx: None,
+    }).expect("H6_L19_REAL_PROMPT_SEND");
+    response
+}
+
+async fn u6b_l19_prompt_fence(
+    fx: &K2lgN,
+    end: &mut tokio::sync::oneshot::Receiver<crate::session::commands::PromptTurnResult>,
+) {
+    let (respond_to, mut pending) = tokio::sync::oneshot::channel();
+    fx.session.actor.notifications.persistence_tx
+        .send(PersistenceMsg::FlushAndAck { respond_to }).expect("H6_L19_PROMPT_FENCE_SEND");
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            result = &mut pending => result.expect("H6_L19_PROMPT_FENCE_REPLY").expect("H6_L19_PROMPT_FENCE_OK"),
+            _ = end => panic!("H6_L19_PROMPT_ENDED_DURING_FENCE"),
+        }
+    }).await.expect("H6_L19_PROMPT_FENCE_BOUND");
+}
+
+async fn u6b_l19_release_next(
+    fx: &K2lgN,
+    late: &str,
+    plan: &str,
+    control: &U6PersistenceControl,
+    native_prefix: Option<&str>,
+) -> Value {
+    let mut next = fx.server.expect_response_blocked("U6b L19 next admitted prompt",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2lg_n_after_frames("msg_u6b_l19_next")));
+    let mut end = u6b_l19_enqueue_prompt(fx, "U6b L19 next admitted prompt", "u6b-l19-next-owner", PromptMode::Plan);
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = next.wait_blocked() => {},
+            _ = &mut end => panic!("H6_L19_NEXT_PROMPT_ENDED_BEFORE_HTTP"),
+        }
+    }).await.expect("H6_L19_NEXT_PROMPT_HTTP_BOUND");
+    let handle = fx.session.actor.state.lock().await.running_task.as_ref()
+        .expect("H6_L19_NEXT_RUNNING_OWNER").handle.clone();
+    let _stop = K0Abort(handle);
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(history.iter().filter(|item| item.text_content().contains(late)).count(),
+        1, "H6_L19_LATE_SKILL_RELEASE_ONCE");
+    assert_eq!(history.iter().filter(|item| item.text_content() == plan).count(),
+        1, "H6_L19_PLAN_RELEASE_ONCE");
+    if let Some(prefix) = native_prefix {
+        assert_eq!(history.iter().filter(|item| item.text_content().contains(prefix)).count(),
+            1, "H6_L17_NATIVE_PREFIX_RELEASE_ONCE");
+        let native_at = history.iter().position(|item| item.text_content().contains(prefix))
+            .expect("H6_L17_NATIVE_PREFIX_RELEASE_ONCE");
+        let late_at = history.iter().position(|item| item.text_content().contains(late))
+            .expect("H6_L19_LATE_SKILL_RELEASE_ONCE");
+        assert!(native_at < late_at, "H6_L17_NATIVE_PREFIX_BEFORE_MERGED_BATCH");
+        assert!(k2lg_n_resident(&fx.session).is_empty(), "H6_L17_NATIVE_PREFIX_RESIDENT_CLEARED");
+    }
+    let bodies = k2lg_n_bodies(&fx.server);
+    let body = u6_body_text(bodies.last().expect("H6_L19_NEXT_ACTUAL_BODY"));
+    assert!(body.contains(late) && body.contains(plan), "H6_L19_NEXT_BODY_CURRENT_FACTS");
+    if let Some(prefix) = native_prefix {
+        assert!(body.contains(prefix), "H6_L17_NATIVE_PREFIX_IN_NEXT_BODY");
+    }
+    assert!(fx.session.actor.pending_skill_reminders.lock().is_empty(), "H6_L19_RESIDENT_SKILLS_RELEASED");
+    assert!(fx.session.actor.plan_mode.lock().pending_activation_text().is_none(), "H6_L19_PLAN_RELEASED");
+    let before = control.announcement_updates.load(std::sync::atomic::Ordering::SeqCst);
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = fx.session.actor.flush_pending_skill_reminders() => {},
+            _ = &mut end => panic!("H6_L19_NEXT_TURN_ENDED_DURING_REPEAT"),
+        }
+    }).await.expect("H6_L19_REPEAT_FLUSH_BOUND");
+    u6b_l19_prompt_fence(fx, &mut end).await;
+    assert_eq!(control.announcement_updates.load(std::sync::atomic::Ordering::SeqCst), before,
+        "H6_L19_REPEAT_NO_DELIVERY_ACK");
+    let after = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(after.iter().filter(|item| item.text_content().contains(late)).count(), 1,
+        "H6_L19_REPEAT_RELEASE_ONCE");
+    if let Some(prefix) = native_prefix {
+        assert_eq!(after.iter().filter(|item| item.text_content().contains(prefix)).count(), 1,
+            "H6_L17_NATIVE_PREFIX_REPEAT_ONCE");
+    }
+    json!({"http":bodies.len(),"late_skill_once":true,"plan_once":true,
+        "native_prefix_once":native_prefix.is_some()})
+}
+
+async fn u6b_l19_hold(trigger: U6bL19Trigger, skills: U6bL19Skills, native: U6bL19Native) -> Value {
+    use super::interjection::HeldSource;
+    const CUSTODY: &str = "U6b L19 human custody";
+    const LATE: &str = "U6b L19 skill after the last held safe point";
+    let mut fixture = u6_fixture_controlled(None, K2lgNOptions::default(), U6PersistenceControl {
+        plan_tools: true, ..Default::default()
+    }).await;
+    let control = fixture.persistence_control.clone();
+    let fx = &mut fixture.fx;
+    let mut turn = u6_handoff(fx).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    assert!(u6_body_text(k2lg_n_bodies(&fx.server).last().expect("H6_L19_INITIAL_REQUEST"))
+        .contains("U6 real mixed handoff"), "H6_L19_PROMPT_WAS_SUBMITTED");
+    fx.session.actor.mark_front_message_committed().await;
+    fx.session.actor.state.lock().await.notifications_suppressed = true;
+    u6b_u66_progress(&mut turn.running, u6_interject(fx, CUSTODY, Vec::new()),
+        "H6_L19_HUMAN_INGRESS").await;
+    if matches!(skills, U6bL19Skills::RefusedResident) {
+        for index in 0..129 {
+            u6b_u66_progress(&mut turn.running,
+                u6b_l19_skill(&fx.session.actor, &format!("U6b L19 resident skill {index:03}")),
+                "H6_L19_SKILL_BAND_PRODUCER").await;
+        }
+    }
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_L19_REAL_HELD_SAFE_POINT");
+    if matches!(skills, U6bL19Skills::RefusedResident) {
+        k2lg_n_selected(fx, fx.session.actor.flush_skills_at_native_safe_point()).await;
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source == HeldSource::SkillReminder).count(),
+            128, "H6_L19_SKILL_BAND_HELD_PREFIX");
+        let refusal = ledger.refusal.as_ref().expect("H6_L19_REFUSED_SKILL_RESIDENT");
+        assert_eq!(format!("{:?}", refusal.reason), "SkillBandFull", "H6_L19_REFUSED_SKILL_REASON");
+    }
+    let frames = match trigger {
+        U6bL19Trigger::Cancel => k2lg_n_closure_frames(),
+        U6bL19Trigger::OwnedError => k2_frames("msg_u6b_l19_unknown_terminal",
+            vec![(json!({"type":"text","text":"U6b L19 decoder error response"}), Vec::new())],
+            "u6b_l19_unknown_terminal"),
+    };
+    let mut continuation = fx.server.expect_response_blocked("U6b L19 last held request before teardown",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages), k2_script(frames));
+    fx.session.releases[1].add_permits(1);
+    u6b_u66_progress(&mut turn.running, continuation.wait_blocked(), "H6_L19_LAST_HELD_HTTP").await;
+    let checkpoint = u6_readable_checkpoint(fx, &mut turn.running, true, "H6_L19_LAST_HELD_CHECKPOINT").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_L19_NATIVE_HOLD_PRECONDITION");
+    u6b_u66_progress(&mut turn.running,
+        fx.session.actor.handle_session_mode(acp::SessionModeId::new("plan")),
+        "H6_L19_REAL_MODE_ON").await;
+    let plan = fx.session.actor.plan_mode.lock().pending_activation_text().map(str::to_owned)
+        .expect("H6_L19_REAL_PENDING_PLAN");
+    u6b_u66_progress(&mut turn.running, u6b_l19_skill(&fx.session.actor, LATE),
+        "H6_L19_LATE_SKILL_PRODUCER").await;
+    if matches!(native, U6bL19Native::RetainedPrefix) {
+        u6b_u66_progress(&mut turn.running, u6b_u67_send_peer(fx, 900, true),
+            "H6_L19_NATIVE_REAL_PRODUCER").await;
+        u6b_u67_mailbox_barrier(fx, &mut turn).await;
+        assert_eq!(k2lg_n_resident(&fx.session).len(), 1, "H6_L19_NATIVE_RESIDENT_PRECONDITION");
+    }
+    assert_eq!(fx.session.actor.pending_skill_reminders.lock().len(),
+        if matches!(skills, U6bL19Skills::RefusedResident) { 2 } else { 1 },
+        "H6_L19_LATE_SKILL_STILL_RESIDENT");
+    assert!(!fx.session.actor.chat_state_handle.get_conversation().await.iter()
+        .any(|item| item.text_content().contains(LATE)), "H6_L19_LATE_SKILL_NOT_YET_MODEL_VISIBLE");
+    u6b_l19_running_fence(fx, &mut turn).await;
+    let requests_before = fx.server.messages_request_count();
+    let announcements_before = control.announcement_updates.load(std::sync::atomic::Ordering::SeqCst);
+    let plan_writes_before = control.plan_updates.load(std::sync::atomic::Ordering::SeqCst);
+    let mut error_code = None;
+    match trigger {
+        U6bL19Trigger::Cancel => {
+            fx.loop_tx.send(SessionCommand::Cancel(crate::session::CancelOptions {
+                user_initiated: true,
+                trigger: Some(crate::session::CancelTrigger::CtrlC),
+                ..Default::default()
+            })).expect("H6_L19_REAL_CANCEL_SEND");
+            let result = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                .expect("H6_L19_REAL_CANCEL_BOUND");
+            assert!(result.is_err_and(|error| error.is_cancelled()), "H6_L19_REAL_CANCEL_OUTCOME");
+        }
+        U6bL19Trigger::OwnedError => {
+            continuation.release();
+            let result = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                .expect("H6_L19_REAL_ERROR_BOUND").expect("H6_L19_REAL_ERROR_JOIN");
+            let error = match result { Err(error) => error, Ok(_) => panic!("H6_L19_REAL_ERROR_OUTCOME") };
+            let encoded = serde_json::to_value(&error).expect("H6_L19_ERROR_ENCODING");
+            error_code = encoded.get("data").and_then(|data| data.get("code"))
+                .and_then(Value::as_str).map(str::to_owned);
+            u6_observe(json!({"stage":"L19 error from actual native turn", "error_code":error_code,
+                "message_digest":native_content_digest(&serde_json::to_vec(&encoded).unwrap())}));
+            let (processed, acknowledgement) = tokio::sync::oneshot::channel();
+            fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+                prompt_id: KOXD_U6_PROMPT.into(),
+                epoch: turn.epoch,
+                result: Box::new(Err(error)),
+                elapsed_ms: Some(0),
+                processed,
+            }).expect("H6_L19_ACTUAL_ERROR_COMPLETION_SEND");
+            tokio::time::timeout(K0_TIMEOUT, acknowledgement).await
+                .expect("H6_L19_ERROR_COMPLETION_BOUND").expect("H6_L19_ERROR_COMPLETION_REPLY");
+        }
+    }
+    u6b_l19_ended_fence(fx).await;
+    assert_eq!(fx.server.messages_request_count(), requests_before, "H6_L19_NO_TEARDOWN_REQUEST");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.running_task.is_none() && state.pending_inputs.is_empty(), "H6_L19_NO_TEARDOWN_RESTART");
+        assert!(state.message_delivery.held_input.retaining(), "H6_L19_CUSTODY_RETAINED");
+    }
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert!(!history.iter().any(|item| item.text_content().contains(LATE)), "H6_L19_LATE_SKILL_WITHHELD");
+    assert!(fx.session.actor.pending_skill_reminders.lock().iter()
+        .any(|item| item.text_content().contains(LATE)), "H6_L19_LATE_SKILL_RETAINED");
+    assert!(fx.session.actor.plan_mode.lock().pending_activation_text().as_deref() == Some(plan.as_str()),
+        "H6_L19_PLAN_NONCONSUMING_TEARDOWN");
+    assert!(!history.iter().any(|item| item.text_content() == plan), "H6_L19_PLAN_WITHHELD");
+    assert_eq!(control.announcement_updates.load(std::sync::atomic::Ordering::SeqCst), announcements_before,
+        "H6_L19_NO_TEARDOWN_ANNOUNCEMENT_ACK");
+    assert_eq!(control.plan_updates.load(std::sync::atomic::Ordering::SeqCst), plan_writes_before,
+        "H6_L19_NO_TEARDOWN_PLAN_WRITE");
+    if matches!(skills, U6bL19Skills::RefusedResident) {
+        assert_eq!(fx.session.actor.pending_skill_reminders.lock().len(), 2,
+            "H6_L19_REFUSED_SKILL_STILL_RESIDENT");
+    }
+    let native_prefix = if matches!(native, U6bL19Native::RetainedPrefix) {
+        assert_eq!(k2lg_n_resident(&fx.session).len(), 1, "H6_L19_NATIVE_PREFIX_WITHHELD");
+        assert!(!history.iter().any(|item| item.text_content().contains("U6b peer native 900")),
+            "H6_L19_NATIVE_PREFIX_NOT_APPENDED");
+        Some("U6b peer native 900")
+    } else {
+        None
+    };
+    let release = u6b_l19_release_next(fx, LATE, &plan, &control, native_prefix).await;
+    json!({"trigger":format!("{trigger:?}"),"skills":format!("{skills:?}"),"actual_error_code":error_code,
+        "error_completion_delivery":"existing fixture mailbox command carrying actual turn error",
+        "ordinary_mode_writes_before_teardown":plan_writes_before,"teardown_announcement_delta":0,
+        "teardown_plan_write_delta":0,"next_release":release,"constructed_native_release":false,
+        "native_release_and_grammar": if native_prefix.is_some() { "RELEASED_ONCE" } else { "ABSENT" },
+        "L16_credit": false,
+        "L16_status": "UNSCHEDULABLE_GAP"})
+}
+
+async fn u6b_l19_unheld(trigger: U6bL19Trigger) -> Value {
+    const LATE: &str = "U6b L19 ordinary unheld skill";
+    let mut fixture = u6_fixture_controlled(None, K2lgNOptions::default(), U6PersistenceControl {
+        plan_tools: true, ..Default::default()
+    }).await;
+    let control = fixture.persistence_control.clone();
+    let fx = &mut fixture.fx;
+    if let Some(command_rx) = fx.loop_rx.take() {
+        let (chat_tx, chat_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let actor = fx.session.actor.clone();
+        fx.session.tasks.push(tokio::task::spawn_local(async move {
+            let _keep = (chat_tx, event_tx);
+            super::run_session(
+                actor,
+                command_rx,
+                chat_rx,
+                event_rx,
+                None,
+                Arc::new(parking_lot::Mutex::new(
+                    xai_grok_workspace::file_system::CodebaseIndexManager::new(),
+                )),
+                std::env::temp_dir(),
+                crate::session::fs_watch::FsWatchCapabilities::none(),
+            )
+            .await;
+        }));
+    }
+    fx.session.actor.state.lock().await.notifications_suppressed = true;
+    let frames = match trigger {
+        U6bL19Trigger::Cancel => k2lg_n_after_frames("msg_u6b_l19_unheld"),
+        U6bL19Trigger::OwnedError => k2_frames("msg_u6b_l19_unheld_error",
+            vec![(json!({"type":"text","text":"U6b L19 ordinary error"}), Vec::new())],
+            "u6b_l19_unknown_terminal"),
+    };
+    let mut response = fx.server.expect_response_blocked("U6b L19 ordinary unheld request",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages), k2_script(frames));
+    let mut end = u6b_l19_enqueue_prompt(fx, "U6b L19 ordinary unheld prompt", "u6b-l19-unheld-owner", PromptMode::Agent);
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = response.wait_blocked() => {},
+            _ = &mut end => panic!("H6_L19_UNHELD_TURN_ENDED_BEFORE_REQUEST"),
+        }
+    }).await.expect("H6_L19_UNHELD_HTTP_BOUND");
+    let handle = fx.session.actor.state.lock().await.running_task.as_ref()
+        .expect("H6_L19_UNHELD_RUNNING_OWNER").handle.clone();
+    let _stop = K0Abort(handle);
+    assert!(!fx.session.actor.state.lock().await.message_delivery.held_input.retaining(),
+        "H6_L19_UNHELD_NO_CUSTODY");
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = fx.session.actor.handle_session_mode(acp::SessionModeId::new("plan")) => {},
+            _ = &mut end => panic!("H6_L19_UNHELD_TURN_ENDED_DURING_MODE"),
+        }
+    }).await.expect("H6_L19_UNHELD_MODE_BOUND");
+    let plan = fx.session.actor.plan_mode.lock().pending_activation_text().map(str::to_owned)
+        .expect("H6_L19_UNHELD_REAL_PENDING_PLAN");
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = u6b_l19_skill(&fx.session.actor, LATE) => {},
+            _ = &mut end => panic!("H6_L19_UNHELD_TURN_ENDED_DURING_SKILL"),
+        }
+    }).await.expect("H6_L19_UNHELD_SKILL_BOUND");
+    u6b_l19_prompt_fence(fx, &mut end).await;
+    let announcements_before = control.announcement_updates.load(std::sync::atomic::Ordering::SeqCst);
+    let plan_before = control.plan_updates.load(std::sync::atomic::Ordering::SeqCst);
+    match trigger {
+        U6bL19Trigger::Cancel => fx.loop_tx.send(SessionCommand::Cancel(crate::session::CancelOptions {
+            user_initiated: true,
+            trigger: Some(crate::session::CancelTrigger::CtrlC),
+            ..Default::default()
+        })).expect("H6_L19_UNHELD_CANCEL_SEND"),
+        U6bL19Trigger::OwnedError => { response.release(); }
+    }
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut end).await
+        .expect("H6_L19_UNHELD_END_BOUND").expect("H6_L19_UNHELD_END_REPLY");
+    if matches!(trigger, U6bL19Trigger::OwnedError) {
+        assert!(outcome.is_err(), "H6_L19_UNHELD_ACTUAL_ERROR");
+    }
+    u6b_l19_ended_fence(fx).await;
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(history.iter().filter(|item| item.text_content().contains(LATE)).count(), 1,
+        "H6_L19_UNHELD_SKILL_FLUSH_UNCHANGED");
+    assert_eq!(history.iter().filter(|item| item.text_content() == plan).count(), 1,
+        "H6_L19_UNHELD_PLAN_FLUSH_UNCHANGED");
+    assert!(fx.session.actor.pending_skill_reminders.lock().is_empty(), "H6_L19_UNHELD_SKILLS_CONSUMED");
+    assert!(fx.session.actor.plan_mode.lock().pending_activation_text().is_none(), "H6_L19_UNHELD_PLAN_CONSUMED");
+    assert!(fx.session.actor.state.lock().await.running_task.is_none(), "H6_L19_UNHELD_OWNER_ENDED");
+    json!({"constructed":false,"trigger":format!("{trigger:?}"),"real_prompt_command":true,
+        "real_turn_completion":true,"response_ok":outcome.is_ok(),
+        "announcement_delta":control.announcement_updates.load(std::sync::atomic::Ordering::SeqCst) - announcements_before,
+        "plan_delta":control.plan_updates.load(std::sync::atomic::Ordering::SeqCst) - plan_before})
+}
+
+#[derive(Clone, Copy, Debug)]
+enum U6bL20Activation { Withdraw, Reenable, ApprovalWithdraw }
+
+#[derive(Clone, Copy, Debug)]
+enum U6bL20Completion { Closure, Cancel, OwnedError }
+
+async fn u6b_l20(activation: U6bL20Activation, completion: U6bL20Completion) -> Value {
+    use super::interjection::HeldSource;
+    use crate::session::plan_mode::PlanModeState;
+    use xai_grok_tools::types::SessionMode;
+    const HUMAN: &str = "U6b L20 human retained through real plan revocation";
+    let mut fixture = u6_fixture_controlled(None, K2lgNOptions::default(), U6PersistenceControl {
+        plan_tools: true, ..Default::default()
+    }).await;
+    let control = fixture.persistence_control.clone();
+    let fx = &mut fixture.fx;
+    let mut turn = u6_handoff(fx).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    fx.session.actor.mark_front_message_committed().await;
+    fx.session.actor.state.lock().await.notifications_suppressed = true;
+    let prior = fx.session.actor.plan_mode.lock().snapshot();
+    assert_eq!(prior.state, PlanModeState::Inactive, "H6_L20_PRIOR_INACTIVE");
+    let checkpoint = u6_readable_checkpoint(fx, &mut turn.running, true,
+        "H6_L20_NATIVE_HOLD_PRECONDITION").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_L20_REAL_LATCH_PRECONDITION");
+    u6b_u66_progress(&mut turn.running, u6_interject(fx, HUMAN, Vec::new()),
+        "H6_L20_REAL_HUMAN_INGRESS").await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_L20_HUMAN_HELD");
+    let before_on = control.plan_updates.load(std::sync::atomic::Ordering::SeqCst);
+    u6b_u66_progress(&mut turn.running,
+        fx.session.actor.handle_session_mode(acp::SessionModeId::new(SessionMode::Plan.as_id())),
+        "H6_L20_REAL_MODE_ON").await;
+    u6b_l19_running_fence(fx, &mut turn).await;
+    let after_on = control.plan_updates.load(std::sync::atomic::Ordering::SeqCst);
+    // Pending and mid-turn activation are two ordinary mode writes.
+    assert_eq!(after_on - before_on, 2, "H6_L20_ORDINARY_ON_WRITES_ATTRIBUTED");
+    let original_plan = fx.session.actor.plan_mode.lock().pending_activation_text()
+        .map(str::to_owned).expect("H6_L20_REAL_BUFFERED_PLAN");
+    u6b_u66_progress(&mut turn.running,
+        k2lg_n_selected(fx, fx.session.actor.flush_skills_at_native_safe_point()),
+        "H6_L20_SELECTED_HELD_PLAN_OBSERVATION").await;
+    u6b_l19_running_fence(fx, &mut turn).await;
+    let after_hold = control.plan_updates.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(after_hold, after_on, "H6_L20_NO_HOLD_PLAN_WRITE");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert_eq!(state.message_delivery.held_input.entries.iter()
+            .filter(|entry| entry.source == HeldSource::PlanActivation).count(), 1,
+            "H6_L20_PLAN_IN_HELD_SOURCE");
+    }
+    let before_off = if matches!(activation, U6bL20Activation::ApprovalWithdraw) {
+        let result = u6b_u66_progress(&mut turn.running,
+            fx.session.actor.request_plan_approval(&acp::ToolCallId::new("u6b-l20-approval"),
+                Some("# U6b L20 approval revocation".into())),
+            "H6_L20_REAL_APPROVAL_REQUEST").await;
+        assert!(result.is_err(), "H6_L20_APPROVAL_DISCONNECT_OUTCOME");
+        assert!(fx.session.actor.plan_mode.lock().is_awaiting_plan_approval(),
+            "H6_L20_REAL_APPROVAL_PARKED");
+        u6b_l19_running_fence(fx, &mut turn).await;
+        let after_approval = control.plan_updates.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after_approval - after_hold, 1,
+            "H6_L20_ORDINARY_APPROVAL_WRITE_ATTRIBUTED");
+        after_approval
+    } else { after_hold };
+    u6b_u66_progress(&mut turn.running,
+        fx.session.actor.handle_session_mode(acp::SessionModeId::new(SessionMode::Default.as_id())),
+        "H6_L20_REAL_MODE_OFF").await;
+    u6b_l19_running_fence(fx, &mut turn).await;
+    let after_off = control.plan_updates.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(after_off - before_off, 1, "H6_L20_ORDINARY_OFF_WRITE_ATTRIBUTED");
+    let revoked = fx.session.actor.plan_mode.lock().snapshot();
+    assert_eq!(serde_json::to_value(&revoked).unwrap(), serde_json::to_value(&prior).unwrap(),
+        "H6_L20_REVOKED_PRIOR_STATE");
+    assert!(fx.session.actor.plan_mode.lock().pending_activation_text().is_none(),
+        "H6_L20_REVOKED_ACTIVATION_ABSENT");
+    let (live_plan, after_modes) = if matches!(activation, U6bL20Activation::Reenable) {
+        u6b_u66_progress(&mut turn.running,
+            fx.session.actor.handle_session_mode(acp::SessionModeId::new(SessionMode::Plan.as_id())),
+            "H6_L20_REAL_MODE_REENABLE").await;
+        u6b_l19_running_fence(fx, &mut turn).await;
+        let after_reenable = control.plan_updates.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after_reenable - after_off, 2, "H6_L20_ORDINARY_REENABLE_WRITES_ATTRIBUTED");
+        let current_plan = fx.session.actor.plan_mode.lock().pending_activation_text()
+            .map(str::to_owned).expect("H6_L20_REENABLED_LIVE_PLAN");
+        u6b_u66_progress(&mut turn.running,
+            k2lg_n_selected(fx, fx.session.actor.flush_skills_at_native_safe_point()),
+            "H6_L20_SELECTED_REENABLED_OBSERVATION").await;
+        u6b_l19_running_fence(fx, &mut turn).await;
+        assert_eq!(control.plan_updates.load(std::sync::atomic::Ordering::SeqCst), after_reenable,
+            "H6_L20_REENABLE_NO_HOLD_PLAN_WRITE");
+        (Some(current_plan), after_reenable)
+    } else { (None, after_off) };
+    let frames = match completion {
+        U6bL20Completion::Closure | U6bL20Completion::Cancel => k2lg_n_closure_frames(),
+        U6bL20Completion::OwnedError => k2_frames("msg_u6b_l20_unknown_terminal",
+            vec![(json!({"type":"text","text":"U6b L20 actual owned error"}), Vec::new())],
+            "u6b_l20_unknown_terminal"),
+    };
+    let mut continuation = fx.server.expect_response_blocked("U6b L20 held request after mode revocation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages), k2_script(frames));
+    fx.session.releases[1].add_permits(1);
+    u6b_u66_progress(&mut turn.running, continuation.wait_blocked(),
+        "H6_L20_HELD_REQUEST_REACHED").await;
+    let pending = u6_readable_checkpoint(fx, &mut turn.running, true,
+        "H6_L20_HELD_REQUEST_READABLE").await;
+    assert!(k2lg_n_live(&pending), "H6_L20_HELD_REQUEST_LIVE");
+    let held_bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(held_bodies.len(), 3, "H6_L20_HELD_REQUEST_COUNT");
+    u6_assert_results_only(&checkpoint, &held_bodies[1], &held_bodies[2]);
+    assert!(!u6_body_text(&held_bodies[2]).contains(&original_plan), "H6_L20_REVOKED_PLAN_WITHHELD");
+    let mut actual_error_code = None;
+    match completion {
+        U6bL20Completion::Closure => {
+            fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_l20_after")));
+            u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+                "H6_L20_MATCHING_CLOSED_CHECKPOINT").await;
+            let result = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                .expect("H6_L20_CLOSED_EXCHANGE_BOUND").expect("H6_L20_CLOSED_EXCHANGE_JOIN");
+            assert!(result.is_ok(), "H6_L20_CLOSED_EXCHANGE_OUTCOME");
+        }
+        U6bL20Completion::Cancel => {
+            fx.loop_tx.send(SessionCommand::Cancel(crate::session::CancelOptions {
+                user_initiated: true,
+                trigger: Some(crate::session::CancelTrigger::CtrlC),
+                ..Default::default()
+            })).expect("H6_L20_REAL_CANCEL_SEND");
+            let result = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                .expect("H6_L20_CANCEL_BOUND");
+            assert!(result.is_err_and(|error| error.is_cancelled()), "H6_L20_REAL_CANCEL_OUTCOME");
+        }
+        U6bL20Completion::OwnedError => {
+            continuation.release();
+            let result = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                .expect("H6_L20_OWNED_ERROR_BOUND").expect("H6_L20_OWNED_ERROR_JOIN");
+            let error = match result { Err(error) => error, Ok(_) => panic!("H6_L20_ACTUAL_OWNED_ERROR") };
+            actual_error_code = error.data.as_ref().and_then(|data| data.get("code"))
+                .and_then(Value::as_str).map(str::to_owned);
+            let (processed, acknowledgement) = tokio::sync::oneshot::channel();
+            fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+                prompt_id: KOXD_U6_PROMPT.into(), epoch: turn.epoch,
+                result: Box::new(Err(error)), elapsed_ms: Some(0), processed,
+            }).expect("H6_L20_ACTUAL_ERROR_COMPLETION_SEND");
+            tokio::time::timeout(K0_TIMEOUT, acknowledgement).await
+                .expect("H6_L20_ERROR_COMPLETION_BOUND").expect("H6_L20_ERROR_COMPLETION_REPLY");
+        }
+    }
+    u6b_l19_ended_fence(fx).await;
+    if !matches!(completion, U6bL20Completion::Closure) {
+        assert_eq!(control.plan_updates.load(std::sync::atomic::Ordering::SeqCst), after_modes,
+            "H6_L20_NO_TEARDOWN_PLAN_WRITE");
+        assert_eq!(fx.server.messages_request_count(), 3, "H6_L20_NO_TEARDOWN_REQUEST");
+        assert!(!fx.session.actor.chat_state_handle.get_conversation().await.iter()
+            .any(|item| item.text_content() == original_plan), "H6_L20_NO_TEARDOWN_REVOKED_TEXT");
+        let mut next = fx.server.expect_response_blocked("U6b L20 next eligible admitted turn",
+            xai_grok_test_support::InferenceRequestMatcher::foreground(
+                xai_grok_test_support::InferenceEndpoint::Messages),
+            k2_script(k2lg_n_after_frames("msg_u6b_l20_next")));
+        let mut end = u6b_l19_enqueue_prompt(fx, "U6b L20 next admitted prompt",
+            "u6b-l20-next-owner", PromptMode::Agent);
+        tokio::time::timeout(K0_TIMEOUT, async {
+            tokio::select! {
+                _ = next.wait_blocked() => {},
+                _ = &mut end => panic!("H6_L20_NEXT_TURN_ENDED_BEFORE_REQUEST"),
+            }
+        }).await.expect("H6_L20_NEXT_REQUEST_BOUND");
+        next.release();
+        let result = tokio::time::timeout(K0_TIMEOUT, &mut end).await
+            .expect("H6_L20_NEXT_TURN_BOUND").expect("H6_L20_NEXT_TURN_REPLY");
+        assert!(result.is_ok(), "H6_L20_NEXT_TURN_OUTCOME");
+        u6b_l19_ended_fence(fx).await;
+    }
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 4, "H6_L20_FIRST_ELIGIBLE_REQUEST_COUNT");
+    let last_text = u6_body_text(bodies.last().expect("H6_L20_FINAL_BODY"));
+    assert_eq!(last_text.matches(HUMAN).count(), 1, "H6_L20_HUMAN_RELEASE_ONCE");
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(history.iter().filter(|item| item.text_content().contains(HUMAN)).count(), 1,
+        "H6_L20_HUMAN_HISTORY_ONCE");
+    let after_release = control.plan_updates.load(std::sync::atomic::Ordering::SeqCst);
+    if let Some(current_plan) = &live_plan {
+        assert_eq!(history.iter().filter(|item| item.text_content() == current_plan.as_str()).count(), 1,
+            "H6_L20_REENABLED_TEXT_RELEASED_ONCE");
+        assert_eq!(last_text.matches(current_plan.as_str()).count(), 1,
+            "H6_L20_REENABLED_BODY_ONCE");
+        assert!(fx.session.actor.plan_mode.lock().pending_activation_text().is_none(),
+            "H6_L20_REENABLED_CONSUMED_AFTER_SUBMIT");
+    } else {
+        assert_eq!(after_release, after_modes, "H6_L20_NO_HOLD_RELEASE_PLAN_WRITE");
+        assert_eq!(history.iter().filter(|item| item.text_content() == original_plan).count(), 0,
+            "H6_L20_REVOKED_TEXT_NOT_DELIVERED");
+        assert_eq!(last_text.matches(original_plan.as_str()).count(), 0,
+            "H6_L20_REVOKED_BODY_ABSENT");
+        let final_snapshot = fx.session.actor.plan_mode.lock().snapshot();
+        assert_eq!(final_snapshot.reminder_count, prior.reminder_count,
+            "H6_L20_REVOKED_REMINDER_COUNT_UNCHANGED");
+        assert_eq!(serde_json::to_value(&final_snapshot).unwrap(), serde_json::to_value(&prior).unwrap(),
+            "H6_L20_REVOKED_STATE_STAYS_PRIOR");
+    }
+    json!({"activation":format!("{activation:?}"),"completion":format!("{completion:?}"),
+        "ordinary_on_writes":after_on-before_on,"hold_writes":after_hold-after_on,
+        "ordinary_approval_writes":before_off-after_hold,"ordinary_off_writes":after_off-before_off,
+        "ordinary_reenable_writes":after_modes-after_off,"release_plan_writes":after_release-after_modes,
+        "raw_no_hold_totals_compared":false,"http":bodies.len(),"actual_error_code":actual_error_code,
+        "reenabled":live_plan.is_some(),"source_attribution":"session_mode.rs:50-52,318,102-103; tool_calls.rs:2143-2144"})
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum U6bL21Writer {
+    MediaResample,
+    ToolCallLength,
+    ToolFreeLength,
+}
+
+impl U6bL21Writer {
+    fn needle(self) -> &'static str {
+        match self {
+            Self::MediaResample => "the max limit for `image_gen` is",
+            Self::ToolCallLength => super::sampler_turn::OUTPUT_TOKEN_LIMIT_REMINDER,
+            Self::ToolFreeLength => super::length_salvage::LENGTH_CONTINUE_REMINDER_BODY,
+        }
+    }
+
+    fn held_source(self) -> &'static str {
+        match self {
+            Self::MediaResample => "MediaResample",
+            Self::ToolCallLength => "LengthReminder",
+            Self::ToolFreeLength => "ToolFreeLength",
+        }
+    }
+
+    fn blocks(self) -> Vec<(Value, Vec<Value>)> {
+        match self {
+            Self::MediaResample => (0..2 * xai_grok_tools::media_gen_limits::DEFAULT_MAX_PARALLEL_IMAGE_GEN)
+                .map(|index| (json!({"type":"tool_use","id":format!("client_u6b_l21_media_{index}"),
+                    "name":"image_gen","input":{"prompt":"L21 real over-cap writer; never executed"}}), Vec::new()))
+                .collect(),
+            Self::ToolCallLength => vec![(json!({"type":"tool_use","id":"client_u6b_l21_length",
+                "name":"alpha__lookup","input":{"value":"L21 real Length tool result"}}), Vec::new())],
+            Self::ToolFreeLength => vec![(json!({"type":"text","text":"L21 real truncated answer"}), Vec::new())],
+        }
+    }
+
+    fn stop(self) -> &'static str {
+        match self {
+            Self::MediaResample => "tool_use",
+            Self::ToolCallLength | Self::ToolFreeLength => "max_tokens",
+        }
+    }
+}
+
+fn u6b_l21_media_guard(actor: &SessionActor) {
+    let count = 2 * xai_grok_tools::media_gen_limits::DEFAULT_MAX_PARALLEL_IMAGE_GEN;
+    let over = xai_grok_tools::media_gen_limits::over_cap_by_name(
+        (0..count).map(|_| ("image_gen", actor.agent.borrow().tool_bridge().tool_kind("image_gen"))),
+        &actor.rebuild_spec.media_gen_batch_limits,
+    );
+    assert!(xai_grok_tools::media_gen_limits::should_resample_egregious(&over, 0, 1),
+        "H6_L21_MEDIA_RESAMPLE_PRECONDITION");
+}
+
+fn u6b_l21_user_texts(body: &Value) -> Vec<&str> {
+    body["messages"].as_array().into_iter().flatten()
+        .filter(|message| message["role"] == "user")
+        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str())
+        .collect()
+}
+
+fn u6b_l21_writer_count(body: &Value, writer: U6bL21Writer) -> usize {
+    u6b_l21_user_texts(body).iter().filter(|text| text.contains(writer.needle())).count()
+}
+
+async fn u6b_l21_held(writer: U6bL21Writer) -> Value {
+    const HUMAN: &str = "U6b L21 human precedes the held real writer";
+    let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false});
+    let mut fixture = u6_fixture_with_bookkeeping(None, K2lgNOptions::default(), false, writer == U6bL21Writer::MediaResample).await;
+    let fx = &mut fixture.fx;
+    let mut turn = u6_handoff_with_salvage(fx, Some(1), Some(schema), None, None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let (checkpoint, _) = u6b_u66_progress(&mut turn.running,
+        u6_quiescent_reload(fx, "H6_L21_INITIAL_CHECKPOINT_READ"), "H6_L21_INITIAL_CHECKPOINT_OUTCOME").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_L21_REAL_PENDING_PRECONDITION");
+    assert!(k2lg_n_selected(fx, fx.session.actor.native_inputs_held()).await, "H6_L21_REAL_LATCH_PRECONDITION");
+    u6_interject(fx, HUMAN, Vec::new()).await;
+    let matcher = xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages);
+    let mut produced = fx.server.expect_response_blocked("L21 actual production writer", matcher,
+        k2_script(k2_frames("msg_u6b_l21_writer", writer.blocks(), writer.stop())));
+    let mut closure = fx.server.expect_response_blocked("L21 pending continuation and later matching closure", matcher,
+        k2_script(k2_frames("msg_u6b_l21_closed", vec![k2_result("srvtoolu_k2_pending", "alpha__lookup"),
+            (json!({"type":"tool_use","id":"client_u6b_l21_invalid","name":"StructuredOutput","input":{"invalid":7}}), Vec::new())], "tool_use")));
+    let mut after = fx.server.expect_response_blocked("L21 first eligible post-release request", matcher,
+        k2_script(k2_frames("msg_u6b_l21_final", vec![(json!({"type":"tool_use","id":"client_u6b_l21_valid",
+            "name":"StructuredOutput","input":{"answer":"L21 complete"}}), Vec::new())], "tool_use")));
+    fx.session.releases[1].add_permits(1);
+    u6b_u66_progress(&mut turn.running, produced.wait_blocked(), "H6_L21_WRITER_REQUEST_REACHED").await;
+    let before = k2lg_n_bodies(&fx.server);
+    assert_eq!(before.len(), 3, "H6_L21_WRITER_REQUEST_COUNT");
+    assert_eq!(u6b_l21_writer_count(&before[2], writer), 0, "H6_L21_WRITER_NOT_PREGENERATED");
+    if writer == U6bL21Writer::MediaResample { u6b_l21_media_guard(&fx.session.actor); }
+    produced.release();
+    if writer == U6bL21Writer::ToolFreeLength {
+        let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+            .expect("H6_L21_TFL_TURN_END_BOUND").expect("H6_L21_TFL_TURN_JOIN");
+        let error = match outcome {
+            Err(error) => error,
+            Ok(_) => panic!("H6_L21_TFL_REFUSED_OUTCOME"),
+        };
+        let code = error.data.as_ref().and_then(|data| data.get("code")).and_then(Value::as_str);
+        assert_eq!(code, Some("native_history_compound_refused"), "H6_L21_TFL_COMPOUND_REFUSED");
+        let bodies = k2lg_n_bodies(&fx.server);
+        assert_eq!(bodies.len(), 3, "H6_L21_TFL_EXACTLY_THREE_REQUESTS");
+        let no_writer_request = bodies.iter().all(|body| !body.to_string().contains(writer.needle()));
+        assert!(no_writer_request, "H6_L21_WRITER_WITHHELD");
+        let no_human_request = bodies.iter().all(|body| !body.to_string().contains(HUMAN));
+        assert!(no_human_request, "H6_L21_HUMAN_WITHHELD");
+        let custody_reminder_sources = {
+            let state = fx.session.actor.state.lock().await;
+            state.message_delivery.held_input.entries.iter().filter_map(|entry| {
+                let body_has_reminder = match &entry.body {
+                    super::interjection::HeldBody::Human(raw) => raw.text.contains(writer.needle()),
+                    super::interjection::HeldBody::Owned(item) => item.text_content().contains(writer.needle()),
+                    super::interjection::HeldBody::Parent(id) => id.contains(writer.needle()),
+                    super::interjection::HeldBody::Monitor | super::interjection::HeldBody::Plan => false,
+                };
+                (body_has_reminder || entry.meta.to_string().contains(writer.needle()))
+                    .then(|| format!("{:?}", entry.source))
+            }).collect::<Vec<_>>()
+        };
+        assert_eq!(custody_reminder_sources.len(), 1, "H6_L21_WRITER_HELD_ONCE");
+        assert_eq!(custody_reminder_sources[0], "ToolFreeLength", "H6_L21_WRITER_OWN_SOURCE");
+        return json!({"custody_arm":"R51 held tool-free Length", "error_code":code,
+            "refusal_reason":error.message.to_string(), "request_count":bodies.len(),
+            "no_writer_request":no_writer_request,"no_human_request":no_human_request,
+            "custody_reminder_count":custody_reminder_sources.len(),"custody_reminder_sources":custody_reminder_sources,
+            "retired_legs":"continuation, closure, release: NOT_REPRESENTABLE_AT_BASE / NOT_RUN / NOT_CREDITED",
+            "counterfactual_kind":"M4-writer-bypasses-hold tool-free Length application"});
+    }
+    u6b_u66_progress(&mut turn.running, closure.wait_blocked(), "H6_L21_WRITER_CONTINUATION_SEND").await;
+    let continuation = k2lg_n_bodies(&fx.server);
+    assert_eq!(continuation.len(), 4, "H6_L21_CONTINUATION_REQUEST_COUNT");
+    assert_eq!(u6b_l21_writer_count(&continuation[3], writer), 0, "H6_L21_WRITER_WITHHELD");
+    assert!(!u6b_l21_user_texts(&continuation[3]).iter().any(|text| text.contains(HUMAN)), "H6_L21_HUMAN_WITHHELD");
+    let held_writer = {
+        let state = fx.session.actor.state.lock().await;
+        let entries: Vec<_> = state.message_delivery.held_input.entries.iter().filter_map(|entry| {
+            match &entry.body {
+                super::interjection::HeldBody::Owned(item) if item.text_content().contains(writer.needle()) =>
+                    Some((entry.key, format!("{:?}", entry.source))),
+                _ => None,
+            }
+        }).collect();
+        assert_eq!(entries.len(), 1, "H6_L21_WRITER_HELD_ONCE");
+        assert_eq!(entries[0].1, writer.held_source(), "H6_L21_WRITER_OWN_SOURCE");
+        entries[0].0
+    };
+    let native_before_close = k2lg_n_selected(fx, fx.session.actor.chat_state_handle.read_native_history()).await
+        .expect("H6_L21_CONTINUATION_NATIVE_READ");
+    assert!(native_before_close.checkpoint.is_some(), "H6_L21_CONTINUATION_CHECKPOINT");
+    closure.release();
+    u6b_u66_progress(&mut turn.running, after.wait_blocked(), "H6_L21_RELEASE_REQUEST_REACHED").await;
+    let released = k2lg_n_bodies(&fx.server);
+    assert_eq!(released.len(), 5, "H6_L21_RELEASE_REQUEST_COUNT");
+    assert_eq!(u6b_l21_writer_count(&released[4], writer), 1, "H6_L21_WRITER_RELEASE_ONCE");
+    let texts = u6b_l21_user_texts(&released[4]);
+    let human_at = texts.iter().position(|text| text.contains(HUMAN)).expect("H6_L21_HUMAN_RELEASE_ONCE");
+    let writer_at = texts.iter().position(|text| text.contains(writer.needle())).expect("H6_L21_WRITER_RELEASE_ONCE");
+    assert!(human_at < writer_at, "H6_L21_RELEASE_KEY_ORDER");
+    assert_eq!(texts.iter().filter(|text| text.contains(HUMAN)).count(), 1, "H6_L21_HUMAN_RELEASE_ONCE");
+    assert!(fx.session.actor.state.lock().await.message_delivery.held_input.entries.is_empty(), "H6_L21_RELEASE_EMPTIES_CUSTODY");
+    if writer == U6bL21Writer::MediaResample {
+        assert!(fx.session.entered.try_recv().is_err(), "H6_L21_MEDIA_NEVER_EXECUTED");
+    }
+    after.release();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await.expect("H6_L21_FINAL_JOIN_BOUND")
+        .expect("H6_L21_FINAL_JOIN");
+    assert!(outcome.is_ok(), "H6_L21_FINAL_OUTCOME");
+    let (closed, _) = u6_quiescent_reload(fx, "H6_L21_CLOSED_CHECKPOINT_READ").await;
+    assert!(!k2lg_n_live(&closed), "H6_L21_CLOSED_EXCHANGE_PRECONDITION");
+    json!({"writer":format!("{writer:?}"),"held":true,"http":released.len(),"writer_key":held_writer.as_u64(),
+        "real_writer_site":match writer { U6bL21Writer::MediaResample => "turn.rs:3526", U6bL21Writer::ToolCallLength => "turn.rs:3686-3694", U6bL21Writer::ToolFreeLength => "turn.rs:3815-3820" },
+        "continuation_writer_count":0,"released_writer_count":u6b_l21_writer_count(&released[4],writer)})
+}
+
+async fn u6b_l21_unheld(writer: U6bL21Writer) -> Value {
+    let mut fixture = u6_fixture_with_bookkeeping(None, K2lgNOptions::default(), false, writer == U6bL21Writer::MediaResample).await;
+    let fx = &mut fixture.fx;
+    let matcher = xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages);
+    let mut produced = fx.server.expect_response_blocked("L21 unheld real writer", matcher,
+        k2_script(k2_frames("msg_u6b_l21_unheld_writer", writer.blocks(), writer.stop())));
+    let mut next = fx.server.expect_response_blocked("L21 unheld writer remains model-visible", matcher,
+        k2_script(k2_frames("msg_u6b_l21_unheld_final", vec![(json!({"type":"text","text":"L21 unheld complete"}), Vec::new())], "end_turn")));
+    let actor = fx.session.actor.clone();
+    actor.chat_state_handle.begin_turn_capture();
+    actor.chat_state_handle.get_conversation().await;
+    actor.chat_state_handle.push_user_message_and_ack(ConversationItem::user("U6b L21 unheld prompt")).await;
+    let domain = fx.session.domain(&fx.server);
+    let observed = U6_ARM_OBSERVATIONS.with(Clone::clone);
+    let counters = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let counters_out = counters.clone();
+    let active = super::turn_task::TurnActiveGuard::activate(Some(&actor.session_turn_active));
+    let mut running = tokio::task::spawn_local(async move {
+        let _active = active;
+        let mut salvage = super::length_salvage::LengthSalvage::new(Some(1));
+        let mut sampling = Default::default();
+        let mut prepare = |_: &mut ConversationRequest, _: &xai_chat_state::RequestTransportBinding| Ok(());
+        U6_ARM_OBSERVATIONS.scope(observed, async {
+            let outcome = super::switch_projection::HISTORY_S3_TEST_DOMAIN.scope(domain,
+                super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(k2_history::NativeHistoryRequirement::Inactive,
+                    actor.process_conversation_turn_for_native_history_test("U6b L21 unheld prompt", None, None, None,
+                        &mut salvage, &mut sampling, &mut prepare))).await;
+            *counters_out.borrow_mut() = Some(json!({"continues":salvage.continues(),"budget":salvage.budget(),"escalated":salvage.escalated()}));
+            if let Err(error) = &outcome {
+                u6_observe(json!({"stage":"direct turn error outcome","error_code":error.data.as_ref()
+                    .and_then(|data| data.get("code")).and_then(Value::as_str)}));
+            }
+            outcome
+        }).await
+    });
+    let _stop = K0Abort(running.abort_handle());
+    u6_install_running(fx, running.abort_handle()).await;
+    u6b_u66_progress(&mut running, produced.wait_blocked(), "H6_L21_UNHELD_WRITER_REQUEST").await;
+    assert_eq!(fx.server.messages_request_count(), 1, "H6_L21_UNHELD_INITIAL_COUNT");
+    assert!(fx.session.actor.state.lock().await.message_delivery.held_input.entries.is_empty(), "H6_L21_UNHELD_NO_CUSTODY");
+    if writer == U6bL21Writer::MediaResample { u6b_l21_media_guard(&fx.session.actor); }
+    produced.release();
+    u6b_u66_progress(&mut running, next.wait_blocked(), "H6_L21_UNHELD_NEXT_REQUEST").await;
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 2, "H6_L21_UNHELD_RETRY_COUNT");
+    assert_eq!(u6b_l21_writer_count(&bodies[1], writer), 1, "H6_L21_UNHELD_WRITER_BYTES");
+    assert!(fx.session.actor.state.lock().await.message_delivery.held_input.entries.is_empty(), "H6_L21_UNHELD_NO_CUSTODY");
+    if writer == U6bL21Writer::MediaResample {
+        assert!(fx.session.entered.try_recv().is_err(), "H6_L21_UNHELD_MEDIA_NEVER_EXECUTED");
+    }
+    next.release();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut running).await.expect("H6_L21_UNHELD_JOIN_BOUND")
+        .expect("H6_L21_UNHELD_JOIN");
+    assert!(outcome.is_ok(), "H6_L21_UNHELD_FINAL_OUTCOME");
+    let counters = counters.borrow().clone().expect("H6_L21_UNHELD_COUNTER_OBSERVATION");
+    if writer == U6bL21Writer::ToolFreeLength {
+        assert_eq!(counters["continues"], 1, "H6_L21_UNHELD_LENGTH_BUDGET");
+        assert_eq!(counters["budget"], 1, "H6_L21_UNHELD_LENGTH_BUDGET");
+        assert_eq!(counters["escalated"], false, "H6_L21_UNHELD_LENGTH_BUDGET");
+    }
+    json!({"writer":format!("{writer:?}"),"held":false,"bodies":bodies,"retry_counters":counters})
+}
+
+async fn u6b_l21_tool_call_length_tripwire() -> Value {
+    const HUMAN: &str = "U6b L21 human precedes the held real writer";
+    let writer = U6bL21Writer::ToolCallLength;
+    let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false});
+    let mut fixture = u6_fixture_with_bookkeeping(None, K2lgNOptions::default(), false, false).await;
+    let fx = &mut fixture.fx;
+    let mut turn = u6_handoff_with_salvage(fx, Some(1), Some(schema), None, None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let (checkpoint, _) = u6b_u66_progress(&mut turn.running,
+        u6_quiescent_reload(fx, "H6_L21_TRIPWIRE_INITIAL_CHECKPOINT_READ"), "H6_L21_TRIPWIRE_INITIAL_CHECKPOINT_OUTCOME").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_L21_TRIPWIRE_REAL_PENDING_PRECONDITION");
+    assert!(k2lg_n_selected(fx, fx.session.actor.native_inputs_held()).await, "H6_L21_TRIPWIRE_REAL_LATCH_PRECONDITION");
+    u6_interject(fx, HUMAN, Vec::new()).await;
+    let matcher = xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages);
+    let mut produced = fx.server.expect_response_blocked("L21 actual production writer", matcher,
+        k2_script(k2_frames("msg_u6b_l21_writer", writer.blocks(), writer.stop())));
+    fx.session.releases[1].add_permits(1);
+    u6b_u66_progress(&mut turn.running, produced.wait_blocked(), "H6_L21_TRIPWIRE_WRITER_REQUEST_REACHED").await;
+    let before = k2lg_n_bodies(&fx.server);
+    assert_eq!(before.len(), 3, "H6_L21_TRIPWIRE_WRITER_REQUEST_COUNT");
+    assert_eq!(u6b_l21_writer_count(&before[2], writer), 0, "H6_L21_TRIPWIRE_WRITER_NOT_PREGENERATED");
+    produced.release();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_L21_TRIPWIRE_TURN_END_BOUND").expect("H6_L21_TRIPWIRE_TURN_JOIN");
+    let error = match outcome {
+        Err(error) => error,
+        Ok(_) => panic!("H6_L21_TRIPWIRE_REFUSED_OUTCOME"),
+    };
+    let code = error.data.as_ref().and_then(|data| data.get("code")).and_then(Value::as_str);
+    assert_eq!(code, Some("native_waiting_set_refused"), "H6_L21_TRIPWIRE_WAITING_SET_REFUSED");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 3, "H6_L21_TRIPWIRE_EXACTLY_THREE_REQUESTS");
+    let no_length_reminder_request = bodies.iter().all(|body| !body.to_string().contains(writer.needle()));
+    assert!(no_length_reminder_request, "H6_L21_TRIPWIRE_NO_LENGTH_REMINDER_REQUEST");
+    let no_human_request = bodies.iter().all(|body| !body.to_string().contains(HUMAN));
+    assert!(no_human_request, "H6_L21_TRIPWIRE_NO_HUMAN_REQUEST");
+    let custody_reminder_sources = {
+        let state = fx.session.actor.state.lock().await;
+        state.message_delivery.held_input.entries.iter().filter_map(|entry| {
+            let body_has_reminder = match &entry.body {
+                super::interjection::HeldBody::Human(raw) => raw.text.contains(writer.needle()),
+                super::interjection::HeldBody::Owned(item) => item.text_content().contains(writer.needle()),
+                super::interjection::HeldBody::Parent(id) => id.contains(writer.needle()),
+                super::interjection::HeldBody::Monitor | super::interjection::HeldBody::Plan => false,
+            };
+            (body_has_reminder || entry.meta.to_string().contains(writer.needle()))
+                .then(|| format!("{:?}", entry.source))
+        }).collect::<Vec<_>>()
+    };
+    assert_eq!(custody_reminder_sources.len(), 1, "H6_L21_S10_CUSTODY_ONCE");
+    assert_eq!(custody_reminder_sources[0], "LengthReminder", "H6_L21_S10_OWN_SOURCE");
+    json!({"custody_arm":"R49 held tool-call Length S10", "error_code":code,
+        "request_count":bodies.len(), "no_length_reminder_request":no_length_reminder_request,
+        "custody_length_reminder_count":custody_reminder_sources.len(),
+        "custody_length_reminder_sources":custody_reminder_sources, "no_human_request":no_human_request,
+        "retired_legs":"continuation, closure, release: NOT_REPRESENTABLE_AT_BASE / NOT_RUN / NOT_CREDITED",
+        "counterfactual_kind":"M4-writer-bypasses-hold tool-call Length application; refusal guard control outside M4"})
+}
+
+async fn u6b_n11_u67_band_custody(
+    source: super::interjection::HeldSource,
+    reason_name: &str,
+    reason_tag: &str,
+) -> Value {
+    let (mut fixture, mut turn, _, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &mut fixture.fx;
+    let source_tag = u6_source_name(source);
+    let checkpoint = u6_readable_checkpoint(fx, &mut turn.running, true,
+        "H6_N11_U67_REAL_LATCH_PRECONDITION").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_N11_U67_REAL_LATCH_PRECONDITION");
+    for index in 0..128 {
+        k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+            ConversationItem::system_reminder(format!("U67 N11 {source_tag} accepted {index:03}")), source,
+        )).await.expect("H6_N11_U67_ACCEPTED_PREFIX");
+    }
+    let error = k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+        ConversationItem::system_reminder(format!("U67 N11 {source_tag} crossing")), source,
+    )).await.expect_err("H6_N11_U67_BAND_LIMIT");
+    assert_eq!(error.data.as_ref().and_then(|data| data.get("code")).and_then(Value::as_str),
+        Some("native_held_input_incomplete"), "H6_N11_U67_TYPED_INCOMPLETE");
+    let message = error.data.as_ref().and_then(|data| data.get("message"))
+        .and_then(Value::as_str).unwrap_or(&error.message);
+    assert!(message.contains(reason_tag), "H6_N11_U67_NAMED_REASON");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source == source).count(), 128,
+            "H6_N11_U67_PREFIX_RETAINED");
+        let refusal = ledger.refusal.as_ref().expect("H6_N11_U67_REFUSAL_RECORD");
+        assert_eq!(refusal.source, source, "H6_N11_U67_REFUSAL_SOURCE");
+        assert_eq!(format!("{:?}", refusal.reason), reason_name, "H6_N11_U67_REFUSAL_REASON");
+        assert_eq!(refusal.observed_len, 128, "H6_N11_U67_REFUSAL_COUNT");
+    }
+    u6_queue_resident(fx, "U67 N11 human admitted after full machine band", Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N11_U67_HUMAN_HELD");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert_eq!(state.message_delivery.held_input.entries.iter().filter(|entry|
+            entry.source == super::interjection::HeldSource::HumanInterjection).count(), 1,
+            "H6_N11_U67_FULL_BAND_NEVER_REFUSES_HUMAN");
+    }
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N11_U67_NO_NEW_CONTINUATION_HTTP");
+    assert!(!turn.running.is_finished(), "H6_N11_U67_LATCH_REMAINS_ACTIVE");
+    continuation.release();
+    turn.running.abort();
+    let _ = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N11_U67_FINAL_ABORT_BOUND");
+    json!({"constructed":true,"kind":"U67 writer/stationarity custody-call crossing fallback",
+        "source":source_tag,"reason":reason_tag,"typed_outcome":"native_held_input_incomplete",
+        "accepted_prefix":128,"human_after_full_band":1,"new_http":0,
+        "real_129_writer_invocations_proven":false,"restored_counters_required":true})
+}
+
+async fn u6b_n11_u67_skill_crossing() -> Value {
+    use super::interjection::HeldSource;
+    const PREFIX: &str = "U67 N11 real skill update ";
+    let (mut fixture, mut turn, _, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &mut fixture.fx;
+    let checkpoint = u6_readable_checkpoint(fx, &mut turn.running, true,
+        "H6_N11_SKILL_REAL_LATCH_PRECONDITION").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_N11_SKILL_REAL_LATCH_PRECONDITION");
+    for index in 0..129 {
+        u6b_u66_progress(&mut turn.running,
+            u6b_l19_skill(&fx.session.actor, &format!("{PREFIX}{index:03}")),
+            "H6_N11_SKILL_REAL_UPDATE_API").await;
+    }
+    assert_eq!(fx.session.actor.pending_skill_reminders.lock().len(), 129,
+        "H6_N11_SKILL_REAL_RESIDENT_PREFIX");
+    u6b_u66_progress(&mut turn.running,
+        k2lg_n_selected(fx, fx.session.actor.flush_skills_at_native_safe_point()),
+        "H6_N11_SKILL_SELECTED_SAFE_POINT").await;
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source == HeldSource::SkillReminder).count(), 128,
+            "H6_N11_SKILL_BAND_LIMIT");
+        let refusal = ledger.refusal.as_ref().expect("H6_N11_SKILL_REFUSAL_RECORD");
+        assert_eq!(refusal.source, HeldSource::SkillReminder, "H6_N11_SKILL_REFUSAL_SOURCE");
+        assert_eq!(format!("{:?}", refusal.reason), "SkillBandFull", "H6_N11_SKILL_REFUSAL_REASON");
+        assert_eq!(refusal.observed_len, 128, "H6_N11_SKILL_REFUSAL_COUNT");
+    }
+    {
+        let resident = fx.session.actor.pending_skill_reminders.lock();
+        assert_eq!(resident.len(), 1, "H6_N11_SKILL_REFUSED_STAYS_RESIDENT");
+        assert!(resident[0].text_content().contains(&format!("{PREFIX}128")),
+            "H6_N11_SKILL_REFUSED_STAYS_RESIDENT");
+    }
+    u6_queue_resident(fx, "U67 N11 full skill band never refuses a human", Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N11_SKILL_HUMAN_HELD");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert_eq!(state.message_delivery.held_input.entries.iter().filter(|entry|
+            entry.source == HeldSource::HumanInterjection).count(), 1,
+            "H6_N11_SKILL_HUMAN_INDEPENDENT");
+    }
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N11_SKILL_NO_NEW_CONTINUATION_HTTP");
+    continuation.release();
+    turn.running.abort();
+    let _ = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N11_SKILL_FINAL_ABORT_BOUND");
+    json!({"constructed":false,"real_producer":"apply_skill_update_effects",
+        "real_updates":129,"accepted_prefix":128,"resident_refused":1,
+        "reason":"skill_band_full","human_independent":true,"new_http":0,
+        "release_coverage":"separately preserved L19 refused-skill legs"})
+}
+
+async fn u6b_n11_u67_peer_at_flush() -> Value {
+    use super::interjection::HeldSource;
+    const HUMAN: &str = "U67 peer-at-flush held human";
+    const PEER: &str = "U6b peer text 000";
+    const PROMPT: &str = "U67 peer-at-flush next admitted prompt";
+    let (mut fixture, mut turn, stepper, continuation, idle) = u6b_n12_end_fixture().await;
+    let control = fixture.persistence_control.clone();
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &mut fixture.fx;
+    u6_queue_resident(fx, HUMAN, Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N11_PEER_FLUSH_HUMAN_HELD");
+    u6b_u66_progress(&mut turn.running, u6b_u67_send_peer(fx, 0, false),
+        "H6_N11_PEER_FLUSH_REAL_INGRESS").await;
+    u6b_u67_mailbox_barrier(fx, &mut turn).await;
+    let residents = u6_resident_keys(&fx.session.actor);
+    assert_eq!(residents.len(), 1, "H6_N11_PEER_FLUSH_LATE_RESIDENT_PRECONDITION");
+    let peer_key = residents[0]["key"].as_u64().expect("H6_N11_PEER_FLUSH_REAL_OCCURRENCE");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert_eq!(state.message_delivery.held_input.entries.iter().filter(|entry|
+            entry.source == HeldSource::PeerAgent).count(), 0, "H6_N11_PEER_FLUSH_NOT_DRAINED_EARLY");
+        assert!(state.message_delivery.held_input.peer_origins.iter().any(|key| key.as_u64() == peer_key),
+            "H6_N11_PEER_FLUSH_REAL_ORIGIN");
+    }
+    control.n12_drop_next_native_ack.store(true, std::sync::atomic::Ordering::SeqCst);
+    continuation.release();
+    stepper.resume();
+    let ended = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N11_PEER_FLUSH_OWNED_ERROR_BOUND").expect("H6_N11_PEER_FLUSH_OWNED_ERROR_JOIN");
+    let error = ended.err().expect("H6_N11_PEER_FLUSH_OWNED_ERROR_REQUIRED");
+    assert_eq!(error.data.as_ref().and_then(|data| data.get("code")),
+        Some(&json!("native_history_read_refused")), "H6_N11_PEER_FLUSH_QUALIFIED_ERROR");
+    let read = fx.session.actor.chat_state_handle.read_native_history().await;
+    assert_eq!(read.as_ref().err(), Some(&k2_history::NativeUnavailable::Indeterminate),
+        "H6_N11_PEER_FLUSH_UNAVAILABLE_PRECONDITION");
+    fx.session.actor.state.lock().await.notifications_suppressed = true;
+    let (processed, acknowledgement) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+        prompt_id: KOXD_U6_PROMPT.into(), epoch: turn.epoch,
+        result: Box::new(Err(error)), elapsed_ms: Some(0), processed,
+    }).expect("H6_N11_PEER_FLUSH_COMPLETION_SEND");
+    tokio::time::timeout(K0_TIMEOUT, acknowledgement).await
+        .expect("H6_N11_PEER_FLUSH_COMPLETION_BOUND").expect("H6_N11_PEER_FLUSH_COMPLETION_ACK");
+    tokio::time::timeout(K0_TIMEOUT, idle.notification.notified()).await
+        .expect("H6_N11_PEER_FLUSH_POST_DRAIN_IDLE");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        let peers: Vec<_> = ledger.entries.iter().filter(|entry| entry.source == HeldSource::PeerAgent).collect();
+        assert_eq!(peers.len(), 1, "H6_N11_PEER_FLUSH_JOIN");
+        assert_eq!(peers[0].key.as_u64(), peer_key, "H6_N11_PEER_FLUSH_KEY_PRESERVED");
+        assert!(state.running_task.is_none() && state.pending_inputs.is_empty(), "H6_N11_PEER_FLUSH_NO_PROMPT_ROW");
+    }
+    assert!(fx.session.actor.pending_interjections.is_empty(), "H6_N11_PEER_FLUSH_RESIDENT_JOINED");
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N11_PEER_FLUSH_NO_RESTART_HTTP");
+    let (mut next, _next_stop) = u6b_u66_next_prompt(fx, PROMPT, "H6_N11_PEER_FLUSH_NEXT_PROMPT").await;
+    let bodies = k2lg_n_bodies(&fx.server);
+    let text = u6_body_text(bodies.last().expect("H6_N11_PEER_FLUSH_RELEASE_REQUEST"));
+    assert_eq!(text.matches(HUMAN).count(), 1, "H6_N11_PEER_FLUSH_RELEASE_ONCE");
+    assert_eq!(text.matches(PEER).count(), 1, "H6_N11_PEER_FLUSH_RELEASE_ONCE");
+    let prompt_at = text.find(PROMPT).expect("H6_N11_PEER_FLUSH_PROMPT_PRESENT");
+    let human_at = text.find(HUMAN).expect("H6_N11_PEER_FLUSH_HUMAN_PRESENT");
+    let peer_at = text.find(PEER).expect("H6_N11_PEER_FLUSH_PEER_PRESENT");
+    assert!(prompt_at < human_at && human_at < peer_at, "H6_N11_PEER_FLUSH_RELEASE_KEY_ORDER");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.message_delivery.held_input.entries.is_empty(), "H6_N11_PEER_FLUSH_EMPTY_CUSTODY");
+    }
+    next.release();
+    tokio::time::timeout(K0_TIMEOUT, next.wait_satisfied()).await.expect("H6_N11_PEER_FLUSH_NEXT_SATISFIED");
+    next.assert_satisfied();
+    continuation.assert_satisfied();
+    json!({"constructed":false,"real_ingress":"SessionCommand::AgentMessage mailbox text",
+        "real_completion":"InjectTurnCompletion owned native_history_read_refused / Indeterminate",
+        "peer_key":peer_key,"peer_joined_band":1,"fallback_rows":0,"released_once":true,
+        "release_order":"next prompt, held human, late peer","http_after_end":3,"http_at_release":bodies.len()})
+}
+
+async fn u6b_n11_u67_peer_flush_refusal() -> Value {
+    use super::interjection::HeldSource;
+    let (mut fixture, mut turn, stepper, continuation, _) = u6b_n12_end_fixture().await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &mut fixture.fx;
+    u6_queue_resident(fx, "U67 constructed peer-flush existing human custody", Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N11_PEER_FLUSH_DEFENSIVE_HUMAN_HELD");
+    u6b_u66_progress(&mut turn.running, u6b_u67_send_peer(fx, 0, false),
+        "H6_N11_PEER_FLUSH_DEFENSIVE_REAL_INGRESS").await;
+    u6b_u67_mailbox_barrier(fx, &mut turn).await;
+    let residents = u6_resident_keys(&fx.session.actor);
+    assert_eq!(residents.len(), 1, "H6_N11_PEER_FLUSH_DEFENSIVE_ONE_RESIDENT");
+    let key_u64 = residents[0]["key"].as_u64().expect("H6_N11_PEER_FLUSH_DEFENSIVE_KEY");
+    let pending_before;
+    let peer_key = {
+        let mut state = fx.session.actor.state.lock().await;
+        pending_before = state.pending_inputs.len();
+        let ledger = &mut state.message_delivery.held_input;
+        let peer_key = *ledger.peer_origins.iter().find(|key| key.as_u64() == key_u64)
+            .expect("H6_N11_PEER_FLUSH_DEFENSIVE_REAL_ORIGIN");
+        assert!(ledger.peer_origins.remove(&peer_key), "H6_N11_PEER_FLUSH_DEFENSIVE_CONSTRUCTION");
+        peer_key
+    };
+    assert!(k2lg_n_selected(fx, fx.session.actor.native_inputs_held()).await,
+        "H6_N11_PEER_FLUSH_DEFENSIVE_ACTIVE_HOLD");
+    for index in 0..50 {
+        assert!(k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+            ConversationItem::system_reminder(format!("U67 constructed peer full-band entry {index:03}")),
+            HeldSource::PeerAgent)).await.is_ok(), "H6_N11_PEER_FLUSH_DEFENSIVE_FILL");
+        let state = fx.session.actor.state.lock().await;
+        assert_eq!(state.message_delivery.held_input.entries.iter()
+            .filter(|entry| entry.source == HeldSource::PeerAgent).count(), index + 1,
+            "H6_N11_PEER_FLUSH_DEFENSIVE_FILL_CUSTODY");
+    }
+    {
+        let mut state = fx.session.actor.state.lock().await;
+        let ledger = &mut state.message_delivery.held_input;
+        ledger.peer_origins.insert(peer_key);
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source == HeldSource::PeerAgent).count(), 50,
+            "H6_N11_PEER_FLUSH_DEFENSIVE_FULL_PRECONDITION");
+    }
+    assert_eq!(k2lg_n_selected(fx, fx.session.actor.flush_stranded_interjections()).await, 0,
+        "H6_N11_PEER_FLUSH_DEFENSIVE_NO_PROMPT_ROW");
+    let after = u6_resident_keys(&fx.session.actor);
+    assert_eq!(after.len(), 1, "H6_N11_PEER_FLUSH_REFUSED_RESIDENT");
+    assert_eq!(after[0]["key"].as_u64(), Some(key_u64), "H6_N11_PEER_FLUSH_REFUSED_RESIDENT");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        let refusal = ledger.refusal.as_ref().expect("H6_N11_PEER_FLUSH_DEFENSIVE_REFUSAL_RECORD");
+        assert_eq!(refusal.source, HeldSource::PeerAgent, "H6_N11_PEER_FLUSH_DEFENSIVE_REFUSAL_SOURCE");
+        assert_eq!(format!("{:?}", refusal.reason), "PeerBandFull", "H6_N11_PEER_FLUSH_DEFENSIVE_REFUSAL_REASON");
+        assert_eq!(refusal.observed_len, 50, "H6_N11_PEER_FLUSH_DEFENSIVE_REFUSAL_COUNT");
+        assert!(ledger.peer_origins.iter().any(|key| key.as_u64() == key_u64),
+            "H6_N11_PEER_FLUSH_DEFENSIVE_ORIGIN_RETAINED");
+        assert_eq!(state.pending_inputs.len(), pending_before, "H6_N11_PEER_FLUSH_DEFENSIVE_NO_PROMPT_ROW");
+    }
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N11_PEER_FLUSH_DEFENSIVE_NO_NEW_HTTP");
+    continuation.release();
+    stepper.resume();
+    turn.running.abort();
+    let _ = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N11_PEER_FLUSH_DEFENSIVE_FINAL_ABORT_BOUND");
+    json!({"constructed":true,"construction":"50 held peer entries plus an already-admitted real mailbox peer at the flush band check",
+        "real_resident_key":key_u64,"refused_keeps_key":true,"reason":"peer_band_full","new_prompt_rows":0,
+        "real_full_peer_producer_bypass_claimed":false})
+}
+
+async fn u6b_n12_u67_band_extension() -> Value {
+    use super::interjection::HeldSource;
+    const HUMAN: &str = "U67 N12 large held human:";
+    const RESIDENT: &str = "U67 N12 resident after all bands";
+    const PROMPT: &str = "U67 N12 next admitted plan prompt";
+    const MONITOR: &str = "U67 N12 held monitor";
+    const DEFERRED: &str = "U67 N12 held deferred";
+    const STATIONARITY: &str = "U67 N12 held stationarity";
+    const SKILL: &str = "U67 N12 held real skill";
+    const PEER: &str = "U6b peer text 000";
+    const MEDIA: &str = "U67 N12 held media source";
+    const TOOL_FREE: &str = "U67 N12 held tool-free Length source";
+    const S10: &str = "U67 N12 held S10 source";
+    let (mut fixture, mut turn, stepper, continuation, idle) = u6b_n12_end_fixture().await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &mut fixture.fx;
+    let human = format!("{HUMAN}{}", "h".repeat(256 * 1024 - HUMAN.len()));
+    u6_queue_resident(fx, &human, Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N12_HUMAN_CUSTODY");
+    u6_monitor(fx, "u67-n12-monitor", MONITOR).await;
+    k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+    for (text, source) in [(DEFERRED, HeldSource::DeferredFollowUp),
+        (STATIONARITY, HeldSource::StationarityReminder), (MEDIA, HeldSource::MediaResample),
+        (TOOL_FREE, HeldSource::ToolFreeLength), (S10, HeldSource::LengthReminder)]
+    {
+        k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+            ConversationItem::system_reminder(text), source,
+        )).await.expect("H6_N12_MACHINE_CUSTODY");
+    }
+    let (responds_to, mut replied) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::SessionMode {
+        session_mode: acp::SessionModeId::new("plan"), responds_to,
+    }).expect("H6_N12_PLAN_COMMAND_SEND");
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            result = &mut replied => result.expect("H6_N12_PLAN_MODE_REPLY"),
+            _ = &mut turn.running => panic!("H6_N12_PLAN_TURN_ENDED"),
+        }
+    }).await.expect("H6_N12_PLAN_COMMAND_BOUND");
+    u6b_u66_progress(&mut turn.running, u6b_l19_skill(&fx.session.actor, SKILL),
+        "H6_N12_REAL_SKILL_UPDATE").await;
+    u6b_u66_progress(&mut turn.running,
+        k2lg_n_selected(fx, fx.session.actor.flush_skills_at_native_safe_point()),
+        "H6_N12_SKILL_AND_PLAN_HELD").await;
+    u6b_u66_progress(&mut turn.running, u6b_u67_send_peer(fx, 0, false),
+        "H6_N12_REAL_PEER_INGRESS").await;
+    u6b_u67_mailbox_barrier(fx, &mut turn).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N12_PEER_HELD");
+    let mut keys = u6_mixed_keys(fx).await;
+    assert_eq!(keys.len(), 10, "H6_N12_EVERY_PRESENT_BAND_ADMITTED");
+    assert!(keys.iter().all(|entry| entry["source"] != "parent_steer"), "H6_N12_S4_EXCLUDED");
+    let plan = fx.session.actor.plan_mode.lock().pending_activation_text()
+        .expect("H6_N12_HELD_PLAN_REFERENCE").to_owned();
+    u6_queue_resident(fx, RESIDENT, Vec::new()).await;
+    let residents = u6_resident_keys(&fx.session.actor);
+    assert_eq!(residents.len(), 1, "H6_N12_ONE_LATE_RESIDENT");
+    let resident_key = residents[0]["key"].as_u64().expect("H6_N12_LATE_RESIDENT_KEY");
+    keys.push(json!({"key":resident_key,"source":"late_resident"}));
+    keys.sort_by_key(|entry| entry["key"].as_u64().unwrap());
+    fixture.persistence_control.n12_drop_next_native_ack.store(true, std::sync::atomic::Ordering::SeqCst);
+    continuation.release();
+    stepper.resume();
+    let ended = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N12_OWNED_ERROR_OUTCOME").expect("H6_N12_OWNED_ERROR_JOIN");
+    let error = ended.err().expect("H6_N12_OWNED_ERROR_REQUIRED");
+    assert_eq!(error.data.as_ref().and_then(|data| data.get("code")),
+        Some(&json!("native_history_read_refused")), "H6_N12_QUALIFIED_OWNED_REFUSAL");
+    let read = fx.session.actor.chat_state_handle.read_native_history().await;
+    assert_eq!(read.as_ref().err(), Some(&k2_history::NativeUnavailable::Indeterminate),
+        "H6_N12_CHECKPOINT_INDETERMINATE");
+    u6_observe(json!({"stage":"N12 checkpoint before turn-end progress",
+        "native_unavailable":"Indeterminate","error_code":"native_history_read_refused",
+        "custody_and_resident_keys":keys.clone(),"http_count":fx.server.messages_request_count()}));
+    fx.session.actor.state.lock().await.notifications_suppressed = true;
+    let (processed, acknowledgement) = tokio::sync::oneshot::channel();
+    fx.loop_tx.send(SessionCommand::InjectTurnCompletion {
+        prompt_id: KOXD_U6_PROMPT.into(), epoch: turn.epoch,
+        result: Box::new(Err(error)), elapsed_ms: Some(0), processed,
+    }).expect("H6_N12_COMPLETION_COMMAND_SEND");
+    tokio::time::timeout(K0_TIMEOUT, acknowledgement).await
+        .expect("H6_N12_COMPLETION_COMMAND_BOUND").expect("H6_N12_COMPLETION_COMMAND_ACK");
+    tokio::time::timeout(K0_TIMEOUT, idle.notification.notified()).await
+        .expect("H6_N12_SETTLED_OR_REPORTED");
+    let records = u6b_host_records(fx).await;
+    let retained: Vec<_> = records.iter().filter(|record|
+        record["reason"] == "retained_view_unavailable").collect();
+    assert_eq!(retained.len(), 1, "H6_N12_SETTLED_OR_REPORTED");
+    assert_eq!(retained[0]["bands"], json!({
+        "human_interjection":2,"parent_steer":0,"monitor_event":1,"deferred_followup":1,
+        "stationarity_reminder":1,"skill_reminder":1,"plan_activation":1,"peer_agent":1,
+        "media_resample":1,"tool_free_length":1,"length_reminder":1,
+    }), "H6_N12_SETTLED_OR_REPORTED");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.running_task.is_none() && state.pending_inputs.is_empty(),
+            "H6_N12_SETTLED_OR_REPORTED");
+    }
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N12_SETTLED_OR_REPORTED");
+    let mut retained_keys = u6_mixed_keys(fx).await;
+    retained_keys.sort_by_key(|entry| entry["key"].as_u64().unwrap());
+    assert_eq!(retained_keys.iter().map(|entry| &entry["key"]).collect::<Vec<_>>(),
+        keys.iter().map(|entry| &entry["key"]).collect::<Vec<_>>(), "H6_N12_SETTLED_OR_REPORTED");
+    let mut next = fx.server.expect_response_blocked("U67 N12 next admitted plan prompt",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2lg_n_after_frames("msg_u67_n12_next")));
+    let mut response = u6b_l19_enqueue_prompt(fx, PROMPT, "u67-n12-next-owner", PromptMode::Plan);
+    tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = next.wait_blocked() => {},
+            _ = &mut response => panic!("H6_N12_NEXT_PROMPT_ENDED_BEFORE_HTTP"),
+        }
+    }).await.expect("H6_N12_ORDER");
+    let handle = fx.session.actor.state.lock().await.running_task.as_ref()
+        .expect("H6_N12_NEXT_RUNNING_OWNER").handle.clone();
+    let _next_stop = K0Abort(handle);
+    let read = fx.session.actor.chat_state_handle.read_native_history().await;
+    assert_eq!(read.as_ref().err(), Some(&k2_history::NativeUnavailable::Indeterminate),
+        "H6_N12_STILL_UNREADABLE_AT_RELEASE");
+    let bodies = k2lg_n_bodies(&fx.server);
+    let text = u6_body_text(bodies.last().expect("H6_N12_NEXT_ACTUAL_REQUEST"));
+    let prompt_at = text.find(PROMPT).expect("H6_N12_NEXT_PROMPT_PRESENT");
+    let mut positions = Vec::new();
+    for entry in &keys {
+        let needle = match entry["source"].as_str().unwrap() {
+            "human_interjection" => HUMAN, "monitor_event" => MONITOR,
+            "deferred_followup" => DEFERRED, "stationarity_reminder" => STATIONARITY,
+            "skill_reminder" => SKILL, "plan_activation" => plan.as_str(),
+            "peer_agent" => PEER, "media_resample" => MEDIA,
+            "tool_free_length" => TOOL_FREE, "length_reminder" => S10,
+            "late_resident" => RESIDENT,
+            _ => panic!("H6_N12_UNEXPECTED_BAND"),
+        };
+        assert_eq!(text.matches(needle).count(), 1, "H6_N12_ORDER");
+        let at = text.find(needle).expect("H6_N12_ORDER");
+        assert!(at > prompt_at, "H6_N12_ORDER");
+        positions.push(at);
+    }
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "H6_N12_ORDER");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert!(ledger.entries.is_empty() && ledger.latch.is_none(), "H6_N12_EMPTY");
+    }
+    assert!(u6_pinned_monitor_keys(fx).await.is_empty(), "H6_N12_EMPTY");
+    assert!(fx.session.actor.pending_interjections.is_empty(), "H6_N12_EMPTY");
+    next.release();
+    tokio::time::timeout(K0_TIMEOUT, next.wait_satisfied()).await.expect("H6_N12_NEXT_SATISFIED");
+    next.assert_satisfied();
+    continuation.assert_satisfied();
+    json!({"kind":"N12_U67_ALL_BANDS_UNAVAILABLE_TURN_END","constructed":true,
+        "constructed_scope":"single writer-band custody-call entries; real peer, skill, plan, monitor and owned error",
+        "native_unavailable":"Indeterminate","retained_band_counts":retained[0]["bands"],
+        "custody_and_resident_keys":keys,"positions_in_next_request":positions,
+        "post_drain_idle_observer":true,"next_prompt_http_count":bodies.len(),"ledger_empty":true})
+}
+
+async fn u6b_n13_admit_band(
+    fx: &K2lgN,
+    turn: &mut K2lgNTurn,
+    source: super::interjection::HeldSource,
+    count: usize,
+    markers: &mut std::collections::BTreeMap<u64, String>,
+) -> Vec<U6bIdAdmission> {
+    use super::interjection::HeldSource;
+    let mut steers = Vec::new();
+    for index in 0..count {
+        let before = u6_mixed_keys(fx).await;
+        let mut text = format!("U67 N13 {} item {index:03}", u6_source_name(source));
+        match source {
+            HeldSource::HumanInterjection => panic!("H6_N13_MACHINE_SOURCE_REQUIRED"),
+            HeldSource::MonitorEvent => {
+                u6b_u66_progress(&mut turn.running,
+                    u6_monitor(fx, &format!("u67-n13-monitor-{index:03}"), &text),
+                    "H6_N13_MONITOR_PRODUCER").await;
+                k2lg_n_selected(fx, fx.session.actor.inject_pending_monitor_events()).await;
+            }
+            HeldSource::ParentSteer => {
+                let admitted = u6b_admit_steer_id(fx, &mut turn.running,
+                    &format!("u67-n13-steer-{index:03}"), &text, "H6_N13_STEER_ADMISSION").await;
+                assert_eq!(admitted.admission, k0_coordinator::ActiveMessageAdmission::Admitted,
+                    "H6_N13_OTHER_BAND_ADMITTED");
+                assert!(admitted.receipt.is_some(), "H6_N13_STEER_RECEIPT");
+                steers.push(admitted);
+            }
+            HeldSource::PlanActivation => {
+                let (responds_to, replied) = tokio::sync::oneshot::channel();
+                fx.loop_tx.send(SessionCommand::SessionMode {
+                    session_mode: acp::SessionModeId::new("plan"), responds_to,
+                }).expect("H6_N13_PLAN_COMMAND_SEND");
+                u6b_u66_progress(&mut turn.running, replied, "H6_N13_PLAN_COMMAND_BOUND")
+                    .await.expect("H6_N13_PLAN_COMMAND_REPLY");
+                text = fx.session.actor.plan_mode.lock().pending_activation_text()
+                    .expect("H6_N13_PLAN_RESIDENT_PRECONDITION").to_owned();
+            }
+            HeldSource::DeferredFollowUp | HeldSource::StationarityReminder |
+            HeldSource::SkillReminder | HeldSource::PeerAgent | HeldSource::MediaResample |
+            HeldSource::ToolFreeLength | HeldSource::LengthReminder => {
+                k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+                    ConversationItem::system_reminder(&text), source,
+                )).await.expect("H6_N13_OTHER_BAND_ADMITTED");
+            }
+        }
+        k2lg_n_selected(fx, async {
+            assert!(!fx.session.actor.drain_interjections_at_safe_point().await,
+                "H6_N13_BAND_HELD");
+            fx.session.actor.flush_skills_at_native_safe_point().await;
+        }).await;
+        let after = u6_mixed_keys(fx).await;
+        let added: Vec<_> = after.iter().filter(|entry|
+            !before.iter().any(|old| old["key"] == entry["key"])).collect();
+        assert_eq!(added.len(), 1, "H6_N13_OTHER_BAND_ADMITTED");
+        assert_eq!(added[0]["source"], u6_source_name(source), "H6_N13_SOURCE_INDEPENDENT");
+        let key = added[0]["key"].as_u64().expect("H6_N13_ADMISSION_KEY");
+        assert!(markers.insert(key, text).is_none(), "H6_N13_DISTINCT_OCCURRENCES");
+    }
+    steers
+}
+
+async fn u6b_n13_band_isolation(full_source: super::interjection::HeldSource) -> Value {
+    use super::interjection::HeldSource;
+    const HUMAN: &str = "U67 N13 human after a full machine band";
+    let sources = [HeldSource::ParentSteer, HeldSource::MonitorEvent,
+        HeldSource::DeferredFollowUp, HeldSource::StationarityReminder, HeldSource::SkillReminder,
+        HeldSource::PlanActivation, HeldSource::PeerAgent, HeldSource::MediaResample,
+        HeldSource::ToolFreeLength, HeldSource::LengthReminder];
+    let limit = match full_source {
+        HeldSource::HumanInterjection => panic!("H6_N13_MACHINE_SOURCE_REQUIRED"),
+        HeldSource::ParentSteer => 32,
+        HeldSource::PlanActivation => 1,
+        HeldSource::PeerAgent => 50,
+        HeldSource::MonitorEvent | HeldSource::DeferredFollowUp | HeldSource::StationarityReminder |
+        HeldSource::SkillReminder | HeldSource::MediaResample | HeldSource::ToolFreeLength |
+        HeldSource::LengthReminder => 128,
+    };
+    let mut fixture = u6_fixture_controlled(None, K2lgNOptions::default(), U6PersistenceControl {
+        plan_tools: true, ..Default::default()
+    }).await;
+    let fx = &mut fixture.fx;
+    let stepper = U6TurnStepper::default();
+    let mut turn = u6_handoff_with_salvage(fx, None, None, None, Some(stepper.clone())).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    stepper.pause();
+    let mut continuation = fx.server.expect_response_blocked("U67 N13 held continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(
+            xai_grok_test_support::InferenceEndpoint::Messages), k2_script(k2lg_n_closure_frames()));
+    fx.session.releases[1].add_permits(1);
+    u6_step_to_http(&stepper, &mut continuation).await;
+    let checkpoint = u6_readable_checkpoint(fx, &mut turn.running, true,
+        "H6_N13_REAL_LATCH_PRECONDITION").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_N13_REAL_LATCH_PRECONDITION");
+    let mut markers = std::collections::BTreeMap::new();
+    let mut steers = u6b_n13_admit_band(fx, &mut turn, full_source, limit, &mut markers).await;
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert_eq!(state.message_delivery.held_input.entries.iter()
+            .filter(|entry| entry.source == full_source).count(), limit, "H6_N13_FULL_BAND_PRECONDITION");
+    }
+    u6_queue_resident(fx, HUMAN, Vec::new()).await;
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N13_HUMAN_ADMITTED_AFTER_FULL_BAND");
+    let human_key = u6_mixed_keys(fx).await.into_iter().find(|entry|
+        entry["source"] == "human_interjection").expect("H6_N13_HUMAN_INDEPENDENT")["key"]
+        .as_u64().expect("H6_N13_HUMAN_KEY");
+    assert!(markers.insert(human_key, HUMAN.to_owned()).is_none(), "H6_N13_DISTINCT_OCCURRENCES");
+    for source in sources {
+        if source != full_source {
+            steers.extend(u6b_n13_admit_band(fx, &mut turn, source, 1, &mut markers).await);
+        }
+    }
+    let held = u6_mixed_keys(fx).await;
+    assert_eq!(held.len(), limit + 10, "H6_N13_ALL_OTHER_BANDS_ADMITTED");
+    assert_eq!(markers.len(), held.len(), "H6_N13_DISTINCT_OCCURRENCES");
+    {
+        let state = fx.session.actor.state.lock().await;
+        assert!(state.message_delivery.held_input.refusal.is_none(), "H6_N13_NO_CROSS_BAND_REFUSAL");
+    }
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N13_NO_EARLY_RELEASE");
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u67_n13_after")));
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_N13_READABLE_CLOSED_CHECKPOINT").await;
+    stepper.resume();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N13_RELEASE_PROGRESS").expect("H6_N13_TURN_JOIN");
+    assert!(outcome.is_ok(), "H6_N13_RELEASE_PROGRESS");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 4, "H6_N13_ONE_RELEASE_REQUEST");
+    let text = u6_body_text(bodies.last().expect("H6_N13_ACTUAL_RELEASE_BODY"));
+    let mut positions = Vec::new();
+    for needle in markers.values() {
+        assert_eq!(text.matches(needle.as_str()).count(), 1, "H6_N13_RELEASE_ONCE");
+        positions.push(text.find(needle.as_str()).expect("H6_N13_RELEASE_KEY_ORDER"));
+    }
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "H6_N13_RELEASE_KEY_ORDER");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert!(ledger.entries.is_empty() && ledger.latch.is_none(), "H6_N13_EMPTY_CUSTODY");
+    }
+    assert!(u6_pinned_monitor_keys(fx).await.is_empty(), "H6_N13_EMPTY_PINS");
+    assert!(fx.session.actor.pending_interjections.is_empty(), "H6_N13_EMPTY_RESIDENTS");
+    continuation.assert_satisfied();
+    json!({"constructed":true,"kind":"N13_PER_BAND_CONSTRUCTED_FILL",
+        "full_band":u6_source_name(full_source),"full_count":limit,"other_machine_bands":9,
+        "human_independent":true,"released_entries":markers.len(),"positions_in_key_order":positions,
+        "constructed_scope":"per-band custody-call fills; real monitor, Steer and plan admissions; real latch and release",
+        "held_steer_receipts":steers.len(),"http_count":bodies.len()})
+}
+
+async fn u6b_n13_real_peer_isolation() -> Value {
+    use super::interjection::HeldSource;
+    const HUMAN: &str = "U67 N13 human alongside real mailbox peers";
+    const DEFERRED: &str = "U67 N13 deferred alongside real mailbox peers";
+    const FIRST: &str = "U6b peer text 000";
+    const SECOND: &str = "U6b peer text 001";
+    let (mut fixture, mut turn, stepper, continuation) = u6_u63_prepare_fixture(None).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let fx = &mut fixture.fx;
+    let checkpoint = u6_readable_checkpoint(fx, &mut turn.running, true,
+        "H6_N13_REAL_PEER_LATCH_PRECONDITION").await;
+    assert!(k2lg_n_live(&checkpoint), "H6_N13_REAL_PEER_LATCH_PRECONDITION");
+    u6_queue_resident(fx, HUMAN, Vec::new()).await;
+    for index in 0..2 {
+        u6b_u66_progress(&mut turn.running, u6b_u67_send_peer(fx, index, false),
+            "H6_N13_REAL_MAILBOX_PEER_INGRESS").await;
+    }
+    u6b_u67_mailbox_barrier(fx, &mut turn).await;
+    let residents = u6_resident_keys(&fx.session.actor);
+    assert_eq!(residents.len(), 3, "H6_N13_REAL_PEER_RESIDENT_PRECONDITION");
+    assert!(!k2lg_n_selected(fx, fx.session.actor.drain_interjections_at_safe_point()).await,
+        "H6_N13_REAL_PEER_HELD");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source == HeldSource::PeerAgent).count(),
+            2, "H6_N13_PEER_ISOLATED_FROM_HUMAN");
+        assert_eq!(ledger.entries.iter().filter(|entry| entry.source == HeldSource::HumanInterjection).count(),
+            1, "H6_N13_PEER_ISOLATED_FROM_HUMAN");
+    }
+    k2lg_n_selected(fx, fx.session.actor.hold_or_push_user_item(
+        ConversationItem::system_reminder(DEFERRED), HeldSource::DeferredFollowUp,
+    )).await.expect("H6_N13_REAL_PEER_OTHER_BAND_ADMITTED");
+    let mut keys = u6_mixed_keys(fx).await;
+    keys.sort_by_key(|entry| entry["key"].as_u64().unwrap());
+    assert_eq!(keys.len(), 4, "H6_N13_REAL_PEER_DISTINCT_KEYS");
+    assert_eq!(fx.server.messages_request_count(), 3, "H6_N13_REAL_PEER_NO_EARLY_RELEASE");
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u67_n13_real_peer_after")));
+    u6_release_after_checkpoint(fx, &mut turn.running, &continuation, false,
+        "H6_N13_REAL_PEER_CLOSED_CHECKPOINT").await;
+    stepper.resume();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .expect("H6_N13_REAL_PEER_RELEASE_PROGRESS").expect("H6_N13_REAL_PEER_TURN_JOIN");
+    assert!(outcome.is_ok(), "H6_N13_REAL_PEER_RELEASE_PROGRESS");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 4, "H6_N13_REAL_PEER_ONE_RELEASE_REQUEST");
+    let text = u6_body_text(bodies.last().expect("H6_N13_REAL_PEER_ACTUAL_BODY"));
+    let positions: Vec<_> = [HUMAN, FIRST, SECOND, DEFERRED].into_iter().map(|needle| {
+        assert_eq!(text.matches(needle).count(), 1, "H6_N13_REAL_PEER_RELEASE_ONCE");
+        text.find(needle).expect("H6_N13_REAL_PEER_RELEASE_KEY_ORDER")
+    }).collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "H6_N13_REAL_PEER_RELEASE_KEY_ORDER");
+    {
+        let state = fx.session.actor.state.lock().await;
+        let ledger = &state.message_delivery.held_input;
+        assert!(ledger.entries.is_empty() && ledger.latch.is_none(), "H6_N13_REAL_PEER_EMPTY_CUSTODY");
+    }
+    continuation.assert_satisfied();
+    json!({"constructed":false,"kind":"N13_REAL_MAILBOX_PEER_HUMAN_ISOLATION",
+        "real_producer":"SessionCommand::AgentMessage mailbox text", "peer_entries":2,"human_entries":1,
+        "deferred_entries":1,"custody_keys":keys,"positions_in_key_order":positions,"http_count":bodies.len()})
+}
+
+#[derive(Clone, Copy)]
+enum U6bL15mArm { Durable, Rearm }
+
+async fn u6b_l15m_native_memory(arm: U6bL15mArm) -> Value {
+    const FIRST_HUMAN: &str = "U6b L15m human forces the first closed-exchange build";
+    const SECOND_HUMAN: &str = "U6b L15m second human forces the sixth build";
+    let (prefix, outcome_tag, reached_tag, first_tag, second_tag) = match arm {
+        U6bL15mArm::Durable => ("H6_L15M_DURABLE", "H6_L15M_DURABLE_CLOSED_EXCHANGE_OUTCOME", "H6_L15M_DURABLE_FIFTH_REQUEST_REACHED", "H6_L15M_DURABLE_FIRST_CONTINUATION_BOUND", "H6_L15M_DURABLE_SECOND_CONTINUATION_BOUND"),
+        U6bL15mArm::Rearm => ("H6_L15M_REARM", "H6_L15M_REARM_CLOSED_EXCHANGE_OUTCOME", "H6_L15M_REARM_FIFTH_REQUEST_REACHED", "H6_L15M_REARM_FIRST_CONTINUATION_BOUND", "H6_L15M_REARM_SECOND_CONTINUATION_BOUND"),
+    };
+    let (mut fixture, chat_rx) = u6b_l15_fixture(None, K2lgNOptions::default(), U6PersistenceControl::default()).await;
+    let fx = &mut fixture.fx;
+    let stepper = U6TurnStepper::default();
+    let mut turn = u6b_l15_handoff(fx, None, None, None, Some(stepper.clone()), chat_rx).await;
+    let _stop = K0Abort(turn.running.abort_handle());
+    let root = fx.session.directory.path().join("l15m-memory-v2");
+    let storage = crate::session::memory::MemoryStorage::new_for_mode(
+        fx.session.actor.tool_context.cwd.as_path(), Some(&root), crate::config::MemoryMode::V2);
+    storage.ensure_initialized().unwrap_or_else(|_| panic!("{prefix}_STORAGE_INITIALIZED"));
+    fx.session.actor.memory.storage.replace(Some(storage));
+    assert_eq!(fx.session.actor.memory.mode(), Some(crate::config::MemoryMode::V2), "{prefix}_STORAGE_MODE");
+    fx.session.actor.memory.context_injected.store(false, std::sync::atomic::Ordering::Relaxed);
+    let before = fx.session.actor.chat_state_handle.get_conversation().await;
+    let system_before = native_content_digest(&serde_json::to_vec(before.first().unwrap_or_else(|| panic!("{prefix}_SYSTEM_PRECONDITION"))).unwrap());
+    let (checkpoint, _) = u6_quiescent_reload(fx, &format!("{prefix}_INITIAL_CHECKPOINT")).await;
+    assert!(k2lg_n_live(&checkpoint), "{prefix}_LIVE_HOLD_PRECONDITION");
+    u6_interject(fx, FIRST_HUMAN, Vec::new()).await;
+    let mut first = fx.server.expect_response_blocked("L15m first held results-only continuation",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(u6_next_pending(true)));
+    fx.session.releases[1].add_permits(1);
+    u6b_u66_progress(&mut turn.running, first.wait_blocked(), first_tag).await;
+    let bodies = k2lg_n_bodies(&fx.server);
+    u6_assert_results_only(&checkpoint, &bodies[1], &bodies[2]);
+    assert!(!fx.session.actor.memory.context_injected.load(std::sync::atomic::Ordering::Relaxed),
+        "{prefix}_HELD_MEMORY_LATCH_OPEN");
+    let mut second = fx.server.expect_response_blocked("L15m matching native closure",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2_frames("msg_u6b_l15m_closed", vec![k2_result("srvtoolu_u6_next", "alpha__lookup"),
+            (json!({"type":"text","text":"L15m closing reply"}), Vec::new())], "end_turn")));
+    first.release();
+    let mut entered = u6_client_dispatch(&mut fx.session.entered, &mut turn.running, json!("Accepted"),
+        "L15m second real client batch", &format!("{prefix}_SECOND_BATCH_BOUND"),
+        &format!("{prefix}_SECOND_BATCH_TURN_ENDED")).await;
+    entered.sort();
+    assert_eq!(entered, vec!["alpha__lookup", "zeta__fetch"], "{prefix}_SECOND_CLIENT_BATCH");
+    fx.session.releases[1].add_permits(1);
+    u6b_u66_progress(&mut turn.running, second.wait_blocked(), second_tag).await;
+    assert_eq!(fx.server.messages_request_count(), 4, "{prefix}_FOUR_HELD_REQUESTS");
+    stepper.pause();
+    u6_release_after_checkpoint(fx, &mut turn.running, &second, false, &format!("{prefix}_MATCHING_CLOSURE")).await;
+    let closed = fx.session.actor.chat_state_handle.read_native_history().await
+        .unwrap_or_else(|_| panic!("{prefix}_CLOSED_CHECKPOINT_READ"));
+    let closed = closed.checkpoint.unwrap_or_else(|| panic!("{prefix}_CLOSED_CHECKPOINT_PRESENT"));
+    let covered_at_closure = closed.record.history_boundary.items;
+    let mut fifth = fx.server.expect_response_blocked("L15m first eligible memory build",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2lg_n_after_frames("msg_u6b_l15m_fifth")));
+    stepper.resume();
+    let reached = tokio::time::timeout(K0_TIMEOUT, async {
+        tokio::select! {
+            _ = fifth.wait_blocked() => true,
+            result = &mut turn.running => {
+                let outcome = result.unwrap_or_else(|_| panic!("{prefix}_FIFTH_TURN_JOIN"));
+                assert!(outcome.is_ok(), "{outcome_tag}");
+                false
+            },
+        }
+    }).await.unwrap_or_else(|_| panic!("{prefix}_FIFTH_WAIT_BOUND"));
+    assert!(reached, "{reached_tag}");
+    let rearm_counter = if matches!(arm, U6bL15mArm::Rearm) {
+        let count = fx.session.actor.memory.injection_count.load(std::sync::atomic::Ordering::Relaxed);
+        fx.session.actor.memory.context_injected.store(false, std::sync::atomic::Ordering::Relaxed);
+        Some(count)
+    } else { None };
+    u6_interject(fx, SECOND_HUMAN, Vec::new()).await;
+    fx.server.enqueue_response("/v1/messages", k2_script(k2lg_n_after_frames("msg_u6b_l15m_sixth")));
+    fifth.release();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+        .unwrap_or_else(|_| panic!("{prefix}_FINAL_TURN_BOUND"))
+        .unwrap_or_else(|_| panic!("{prefix}_FINAL_TURN_JOIN"));
+    assert!(outcome.is_ok(), "{outcome_tag}");
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 6, "{prefix}_SIX_REQUESTS");
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    let tag = fx.session.actor.reminder_wrapper_tag();
+    let locations: Vec<_> = history.iter().enumerate().filter(|(_, item)|
+        crate::session::helpers::memory_context::conversation_has_memory_reminder_item(std::slice::from_ref(*item), tag)).collect();
+    match arm {
+        U6bL15mArm::Durable => {
+            assert_eq!(locations.len(), 1, "H6_L15M_DURABLE_ONE_MEMORY_ITEM");
+            let (index, item) = locations[0];
+            assert!(index >= covered_at_closure.try_into().expect("covered count fits usize"),
+                "H6_L15M_DURABLE_ONE_MEMORY_ITEM");
+            assert_eq!(native_content_digest(&serde_json::to_vec(history.first().unwrap()).unwrap()),
+                system_before, "H6_L15M_DURABLE_SYSTEM_HEAD_UNCHANGED");
+            let (checkpoint, disk) = u6_quiescent_reload(fx, "H6_L15M_DURABLE_DISK_RELOAD_BOUND").await;
+            assert!(k2lg_n_values(&disk).contains(&serde_json::to_value(item).unwrap()), "H6_L15M_DURABLE_ITEM_ON_DISK");
+            assert!(serde_json::to_string(&bodies[5]).unwrap().contains("## Global memory manifest"),
+                "H6_L15M_DURABLE_SIXTH_BODY_MANIFEST");
+            assert_eq!(locations.len(), 1, "H6_L15M_DURABLE_NO_SECOND_MEMORY_ITEM");
+            assert!(checkpoint.record.history_boundary.items > index.try_into().expect("memory index fits boundary"),
+                "H6_L15M_DURABLE_CHECKPOINT_COVERS_ITEM");
+        }
+        U6bL15mArm::Rearm => {
+            assert_eq!(locations.len(), 1, "H6_L15M_REARM_NO_SECOND_MEMORY_ITEM");
+            assert_eq!(fx.session.actor.memory.injection_count.load(std::sync::atomic::Ordering::Relaxed),
+                rearm_counter.unwrap(), "H6_L15M_REARM_COUNTER_UNCHANGED");
+            assert!(fx.session.actor.memory.context_injected.load(std::sync::atomic::Ordering::Relaxed),
+                "H6_L15M_REARM_LATCH_CLOSED");
+            assert!(serde_json::to_string(&bodies[5]).unwrap().contains("## Global memory manifest"),
+                "H6_L15M_REARM_REQUEST_MANIFEST");
+        }
+    }
+    assert_eq!(history.iter().filter(|item| item.text_content().contains(FIRST_HUMAN)).count(), 1,
+        "{prefix}_FIRST_HUMAN_RELEASE_ONCE");
+    assert_eq!(history.iter().filter(|item| item.text_content().contains(SECOND_HUMAN)).count(), 1,
+        "{prefix}_SECOND_HUMAN_RELEASE_ONCE");
+    json!({"constructed":false,"arm":prefix,"http_count":bodies.len(),
+        "covered_at_closure":covered_at_closure,"memory_items":locations.len(),"system_before":system_before})
+}
+
+async fn u6b_l15m_selected_no_checkpoint() -> Value {
+    let (mut fixture, chat_rx) = u6b_l15_fixture(None, K2lgNOptions::default(), U6PersistenceControl::default()).await;
+    let fx = &mut fixture.fx;
+    let initial = fx.session.actor.chat_state_handle.read_native_history().await;
+    assert!(initial.as_ref().ok().and_then(|read| read.checkpoint.as_ref()).is_none(),
+        "H6_L15M_SELECTED_NO_CHECKPOINT_INITIAL_NATIVE_EMPTY");
+    let root = fx.session.directory.path().join("l15m-first-build-memory-v2");
+    let storage = crate::session::memory::MemoryStorage::new_for_mode(
+        fx.session.actor.tool_context.cwd.as_path(), Some(&root), crate::config::MemoryMode::V2);
+    storage.ensure_initialized().expect("H6_L15M_SELECTED_NO_CHECKPOINT_STORAGE_READY");
+    fx.session.actor.memory.storage.replace(Some(storage));
+    fx.session.actor.memory.context_injected.store(false, std::sync::atomic::Ordering::Relaxed);
+    let mut first = fx.server.expect_response_blocked("L15m Selected first build without native checkpoint",
+        xai_grok_test_support::InferenceRequestMatcher::foreground(xai_grok_test_support::InferenceEndpoint::Messages),
+        k2_script(k2_frames("msg_u6b_l15m_selected_first", vec![(json!({"type":"text","text":"Selected first build complete"}), Vec::new())], "end_turn")));
+    let actor = fx.session.actor.clone();
+    actor.chat_state_handle.begin_turn_capture();
+    actor.chat_state_handle.get_conversation().await;
+    actor.chat_state_handle.push_user_message_and_ack(ConversationItem::user("U6b L15m Selected first memory build")).await;
+    let domain = fx.session.domain(&fx.server);
+    let observations = U6_ARM_OBSERVATIONS.with(Clone::clone);
+    let active = super::turn_task::TurnActiveGuard::activate(Some(&actor.session_turn_active));
+    let mut running = tokio::task::spawn_local(async move {
+        let _active = active;
+        let mut salvage = super::length_salvage::LengthSalvage::new(None);
+        let mut sampling = Default::default();
+        let mut prepare = |_: &mut ConversationRequest, _: &xai_chat_state::RequestTransportBinding| Ok(());
+        U6_ARM_OBSERVATIONS.scope(observations, async {
+            let outcome = super::switch_projection::HISTORY_S3_TEST_DOMAIN.scope(domain,
+                super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(k2_history::NativeHistoryRequirement::Selected,
+                    actor.process_conversation_turn_for_native_history_test(KOXD_U6_PROMPT, None, None, None,
+                        &mut salvage, &mut sampling, &mut prepare))).await;
+            if let Err(error) = &outcome {
+                u6_observe(json!({"stage":"direct turn error outcome","error_code":error.data.as_ref()
+                    .and_then(|data| data.get("code")).and_then(Value::as_str)}));
+            }
+            outcome
+        }).await
+    });
+    let _stop = K0Abort(running.abort_handle());
+    u6b_l15_install_running(fx, running.abort_handle(), chat_rx).await;
+    u6b_u66_progress(&mut running, first.wait_blocked(), "H6_L15M_SELECTED_NO_CHECKPOINT_FIRST_REQUEST_BOUND").await;
+    let bodies = k2lg_n_bodies(&fx.server);
+    assert_eq!(bodies.len(), 1, "H6_L15M_SELECTED_NO_CHECKPOINT_ONE_BUILD");
+    assert!(bodies[0]["system"].to_string().contains("## Global memory manifest"),
+        "H6_L15M_SELECTED_NO_CHECKPOINT_BLOCK_IN_SYSTEM");
+    let history = fx.session.actor.chat_state_handle.get_conversation().await;
+    assert!(!crate::session::helpers::memory_context::conversation_has_memory_reminder_item(
+        &history, fx.session.actor.reminder_wrapper_tag()),
+        "H6_L15M_SELECTED_NO_CHECKPOINT_NO_MEMORY_ITEM");
+    first.release();
+    let outcome = tokio::time::timeout(K0_TIMEOUT, &mut running).await
+        .expect("H6_L15M_SELECTED_NO_CHECKPOINT_FINAL_BOUND").expect("H6_L15M_SELECTED_NO_CHECKPOINT_FINAL_JOIN");
+    assert!(outcome.is_ok(), "H6_L15M_SELECTED_NO_CHECKPOINT_FINAL_OUTCOME");
+    first.assert_satisfied();
+    json!({"constructed":false,"kind":"L15M_SELECTED_FIRST_BUILD_SYSTEM_HEAD",
+        "native_checkpoint_before_build":false,"memory_item_added":false,"http_count":bodies.len()})
+}
+
+async fn u6b_l15m_configure_inactive_v1(shell: &mut K0Shell, server: &MockInferenceServer) -> tempfile::TempDir {
+    let drainer = shell.tasks.pop().expect("H6_L15M_INACTIVE_GUARD_SAMPLER_DRAINER");
+    drainer.abort();
+    let _ = tokio::time::timeout(K0_TIMEOUT, drainer).await
+        .expect("H6_L15M_INACTIVE_GUARD_SAMPLER_DRAINER_JOIN_BOUND");
+    let actor = Arc::get_mut(&mut shell.actor).expect("H6_L15M_INACTIVE_GUARD_UNSHARED_SETUP");
+    let temp = tempfile::TempDir::new().expect("H6_L15M_INACTIVE_GUARD_MEMORY_DIRECTORY");
+    let root = temp.path().join("memory-v1");
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("H6_L15M_INACTIVE_GUARD_WORKSPACE_DIRECTORY");
+    let storage = crate::session::memory::MemoryStorage::with_paths(root, workspace.clone());
+    crate::session::memory::index::init_sqlite_vec();
+    let note = temp.path().join("note.md");
+    std::fs::write(&note, "# Rust backend conventions\n\nI2_FRESH_V1_MEMORY_MARKER: Rust backend services use bounded tasks.")
+        .expect("H6_L15M_INACTIVE_GUARD_MEMORY_NOTE");
+    let mut index = crate::session::memory::index::MemoryIndex::open_or_create(
+        &workspace.join("index.sqlite"), storage.clone(), crate::config::MemoryIndexConfig::default(), 4,
+    ).expect("H6_L15M_INACTIVE_GUARD_MEMORY_INDEX");
+    index.reindex_file(&note, "workspace").expect("H6_L15M_INACTIVE_GUARD_MEMORY_REINDEX");
+    drop(index);
+    actor.memory.configured_mode = Some(crate::config::MemoryMode::Legacy);
+    actor.memory.configured_storage = Some(storage.clone());
+    actor.memory.storage.replace(Some(storage));
+    actor.memory.initial_injection_config.enabled = true;
+    actor.memory.backend_params = Some(crate::session::memory::MemoryBackendParams {
+        session_id: "u6b-l15m-inactive-guard".into(), embed_config: None,
+        embed_base_url: "http://localhost".into(), embed_api_key: None,
+        search_config: crate::config::MemorySearchConfig::default(), watcher: None,
+        stale_claim_secs: 60, search_source: crate::session::memory::MemorySearchSource::Tool,
+        observation_sink: crate::session::memory::noop_memory_observation_sink(),
+        embedding_credentials: crate::session::memory::EndpointScopedCredentials::none(),
+    });
+    actor.memory.context_injected.store(false, std::sync::atomic::Ordering::Relaxed);
+    let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+    actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+        xai_grok_sampler::SamplerConfig {
+            base_url: server.url(), model: "test".into(), api_key: Some("test-key".into()),
+            api_backend: xai_grok_sampler::ApiBackend::Messages,
+            max_completion_tokens: Some(4096), max_retries: Some(0), ..Default::default()
+        },
+        xai_grok_sampler::RetryPolicy { max_retries: 0, ..Default::default() }, sampler_tx,
+    );
+    let drainer = shell.actor.clone();
+    shell.tasks.push(tokio::task::spawn_local(async move {
+        while let Some(event) = sampler_rx.recv().await {
+            drainer.handle_sampling_event(event).await;
+        }
+    }));
+    temp
+}
+
+async fn u6b_l15m_inactive_guard() -> Value {
+    let server = MockInferenceServer::start().await.expect("H6_L15M_INACTIVE_GUARD_SERVER");
+    let mut shell = K0Shell::new(&server, false).await;
+    let _memory_directory = u6b_l15m_configure_inactive_v1(&mut shell, &server).await;
+    assert_eq!(super::switch_projection::select_native_history(), k2_history::NativeHistoryRequirement::Inactive,
+        "H6_L15M_INACTIVE_GUARD_PRODUCTION_SELECTOR");
+    assert!(shell.actor.memory.initial_injection_config.enabled && shell.actor.memory.backend_params.is_some(),
+        "H6_L15M_INACTIVE_GUARD_INJECTION_PRECONDITION");
+    assert_eq!(shell.actor.memory.mode(), Some(crate::config::MemoryMode::Legacy),
+        "H6_L15M_INACTIVE_GUARD_V1_STORAGE");
+    let existing = xai_grok_tools::reminders::wrap_reminder_with_tag(
+        "<memory-context>\nI2_EXISTING_MEMORY_EPOCH\n</memory-context>", shell.actor.reminder_wrapper_tag());
+    shell.actor.chat_state_handle.push_user_message_and_ack(ConversationItem::system_reminder(existing)).await;
+    let before = shell.actor.chat_state_handle.get_conversation().await;
+    assert_eq!(before.iter().filter(|item|
+        crate::session::helpers::memory_context::conversation_has_memory_reminder_item(
+            std::slice::from_ref(*item), shell.actor.reminder_wrapper_tag())).count(), 1,
+        "H6_L15M_INACTIVE_GUARD_ITEM_PRESENT");
+    server.enqueue_response("/v1/messages", k0_script(vec![json!({"type":"text","text":"Inactive memory guard complete"})], "end_turn"));
+    let outcome = tokio::time::timeout(K0_TIMEOUT, shell.actor.handle_prompt(
+        "u6b-l15m-inactive-guard",
+        vec![acp::ContentBlock::Text(acp::TextContent::new("tell me about Rust backend services conventions"))],
+        PromptMode::Agent, None, None, None, None, true, false, None, None, None,
+    )).await.expect("H6_L15M_INACTIVE_GUARD_TURN_BOUND");
+    assert!(outcome.is_ok(), "H6_L15M_INACTIVE_GUARD_TURN_OUTCOME");
+    let history = shell.actor.chat_state_handle.get_conversation().await;
+    let system = history.first().expect("H6_L15M_INACTIVE_GUARD_SYSTEM_HEAD").text_content();
+    assert!(system.contains("<memory-context>") && system.contains("I2_FRESH_V1_MEMORY_MARKER"),
+        "H6_L15M_INACTIVE_GUARD_SYSTEM_HEAD_UPSERTED");
+    assert_eq!(server.messages_request_count(), 1, "H6_L15M_INACTIVE_GUARD_ONE_REQUEST");
+    json!({"constructed":false,"kind":"L15M_INACTIVE_V1_EXISTING_REMINDER_GUARD",
+        "production_selector":"Inactive","existing_memory_item":true,"fresh_system_head_upserted":true,
+        "http_count":server.messages_request_count(),"embedding_configured":false})
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_latch_only_teardown_with_nonentry_skill_retains_native_prefix() {
+    const SELECTOR: &str = "session::acp_session::native_messages_replay_tests::messages_latch_only_teardown_with_nonentry_skill_retains_native_prefix";
+    const ARM: &str = "W03/nonentries-skill-owned-cancel";
+    i7yx_report_child_names();
+    if std::env::var_os("K2LG_N_CHILD").is_some() {
+        tokio::task::LocalSet::new().run_until(async {
+            println!("\nK2LG_N_BUILD {}", k2lg_n_compiled_sources());
+            let passed = k2lg_n_arm(ARM, async {
+                const BODY: &str = "W03 native prefix with a late non-entry skill";
+                const SKILL: &str = "W03 late skill after the last held safe point";
+                let mut fx = k2lg_n_fixture(K2lgNOptions::default()).await;
+                let mut turn = k2lg_n_handoff(&mut fx, None).await;
+                let sender_turn = super::turn_task::TurnActiveGuard::activate(Some(&fx.agent_wide));
+                u6b_u66_progress(&mut turn.running, k2lg_n_send(&mut fx, BODY),
+                    "K2LG boundary H6_W03_REAL_NATIVE_PRODUCER").await;
+                assert_eq!(k2lg_n_natives(&k2lg_n_resident(&fx.session)),
+                    vec![k2lg_n_native_text(BODY)], "K2LG boundary H6_W03_NATIVE_PRODUCER_SHAPE");
+                drop(sender_turn);
+                let mut continuation = fx.server.expect_response_blocked(
+                    "W03 last held continuation before the late skill",
+                    xai_grok_test_support::InferenceRequestMatcher::foreground(
+                        xai_grok_test_support::InferenceEndpoint::Messages,
+                    ),
+                    k2_script(k2lg_n_closure_frames()),
+                );
+                fx.session.releases[1].add_permits(1);
+                u6b_u66_progress(&mut turn.running, continuation.wait_blocked(),
+                    "K2LG boundary H6_W03_LAST_HELD_HTTP").await;
+                u6b_u66_progress(&mut turn.running, u6b_l19_skill(&fx.session.actor, SKILL),
+                    "K2LG boundary H6_W03_LATE_SKILL_PRODUCER").await;
+                {
+                    let state = fx.session.actor.state.lock().await;
+                    let ledger = &state.message_delivery.held_input;
+                    assert!(ledger.latch.is_some() && !ledger.terminal,
+                        "K2LG boundary H6_W03_REAL_LATCH_PRECONDITION");
+                    assert!(ledger.entries.is_empty(),
+                        "K2LG boundary H6_W03_NO_ENTRY_CUSTODY_PRECONDITION");
+                }
+                assert!(fx.session.actor.pending_interjections.is_empty(),
+                    "K2LG boundary H6_W03_NO_RESIDENT_HUMAN_PRECONDITION");
+                assert!(!fx.session.actor.plan_mode.lock().has_pending_activation(),
+                    "K2LG boundary H6_W03_NO_PENDING_PLAN_PRECONDITION");
+                assert_eq!(fx.session.actor.pending_skill_reminders.lock().len(), 1,
+                    "K2LG boundary H6_W03_NONENTRY_SKILL_PRECONDITION");
+                assert_eq!(k2lg_n_resident(&fx.session).len(), 1,
+                    "K2LG boundary H6_W03_NATIVE_PREFIX_PRECONDITION");
+                let ops_before = k2lg_n_ops(&fx).len();
+                let requests_before = fx.server.messages_request_count();
+                tokio::time::timeout(K0_TIMEOUT, k2lg_n_selected(
+                    &fx,
+                    fx.session.actor.cancel_running_task(crate::session::CancelOptions::default()),
+                )).await.expect("K2LG boundary H6_W03_OWNED_CANCEL_BOUND");
+                continuation.release();
+                let joined = tokio::time::timeout(K0_TIMEOUT, &mut turn.running).await
+                    .expect("K2LG boundary H6_W03_CANCELLED_TURN_BOUND");
+                assert!(joined.is_err_and(|error| error.is_cancelled()),
+                    "K2LG boundary H6_W03_OWNED_CANCEL_OUTCOME");
+                u6b_l19_ended_fence(&fx).await;
+                assert!(fx.session.actor.state.lock().await.running_task.is_none(),
+                    "K2LG boundary H6_W03_OWNED_TEARDOWN_COMPLETED");
+                assert_eq!(k2lg_n_resident(&fx.session).len(), 1,
+                    "K2LG boundary H6_W03_NONENTRY_NATIVE_PREFIX_WITHHELD");
+                assert_eq!(k2lg_n_native_persists(&k2lg_n_ops(&fx)[ops_before..]), 0,
+                    "K2LG boundary H6_W03_NONENTRY_NATIVE_PREFIX_NOT_APPENDED");
+                assert_eq!(fx.session.actor.pending_skill_reminders.lock().len(), 1,
+                    "K2LG boundary H6_W03_LATE_SKILL_RETAINED");
+                assert!(!fx.session.actor.chat_state_handle.get_conversation().await.iter()
+                    .any(|item| item.text_content().contains(SKILL)),
+                    "K2LG boundary H6_W03_LATE_SKILL_NOT_APPENDED");
+                assert_eq!(fx.server.messages_request_count(), requests_before,
+                    "K2LG boundary H6_W03_NO_TEARDOWN_REQUEST");
+            }).await;
+            assert!(passed, "K2LG boundary H6_W03_NONENTRY_WITNESS_FAILED");
+        }).await;
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let (mut command, parent_names) =
+        i7yx_shell_child_command(I7yxChildRoute::NativeN, home.path());
+    command.args(["--exact", SELECTOR, "--nocapture"])
+        .stdin(std::process::Stdio::null());
+    xai_tty_utils::detach_std_command(&mut command);
+    let output = tokio::task::spawn_blocking(move || command.output())
+        .await.unwrap().unwrap();
+    i7yx_assert_child_hygiene(I7yxChildRoute::NativeN, &output.stdout, &parent_names);
+    i7yx_print_proof_records(&output.stdout, I7yxChildRoute::NativeN);
+    assert!(output.status.success(), "K2LG boundary W03 witness child failed: {}",
+        i7yx_output_diagnostic(I7yxChildRoute::NativeN, &output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
 }

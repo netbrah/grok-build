@@ -235,7 +235,20 @@ impl SessionActor {
         if effective == ActiveAgentMessageOperation::Steer
             && state.message_delivery.lifecycle.len() >= MAX_PARENT_STEER_SLOTS
         {
-            let _ = respond_to.send(ActiveMessageAdmission::Rejected);
+            if super::switch_projection::select_native_history()
+                == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
+            {
+                let observed = state.message_delivery.lifecycle.len();
+                state.message_delivery.held_input.refusal(
+                    super::interjection::HeldSource::ParentSteer,
+                    super::interjection::HoldRefusalReason::SteerSlotsFull,
+                    xai_interjection_core::events::next_occurrence(),
+                    observed,
+                );
+            }
+            let _ = respond_to.send(ActiveMessageAdmission::SteerSlotsFull {
+                max_slots: MAX_PARENT_STEER_SLOTS,
+            });
             return;
         }
         let telemetry = crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry::new(
@@ -272,7 +285,14 @@ impl SessionActor {
                         .as_ref()
                         .unwrap_or_else(|| unreachable!("Steer effective only while running")),
                 );
-                state.message_delivery.held_input.stamp_parent(&message.message_id);
+                {
+                    let delivery = &mut state.message_delivery;
+                    let lifecycle = &delivery.lifecycle;
+                    delivery.held_input.parent_stamps.retain(|(identity, _)| {
+                        lifecycle.contains_identity(identity)
+                    });
+                    delivery.held_input.stamp_parent(&message.message_id);
+                }
                 state
                     .message_delivery
                     .lifecycle
@@ -522,6 +542,18 @@ impl SessionActor {
         cause: TerminalCause,
     ) -> (Vec<ParentOwnedDelivery>, bool) {
         let transition = state.message_delivery.transition(target, cause);
+        let removed_parent_identities = transition
+            .completions
+            .iter()
+            .chain(transition.fallbacks.iter())
+            .map(|owned| owned.message().identity())
+            .collect::<Vec<_>>();
+        let ledger = &mut state.message_delivery.held_input;
+        ledger.entries.retain(|entry| match &entry.body {
+            super::interjection::HeldBody::Parent(identity) => !removed_parent_identities.contains(&identity),
+            _ => true,
+        });
+        ledger.parent_stamps.retain(|(identity, _)| !removed_parent_identities.contains(&identity));
         let has_fallbacks = !transition.fallbacks.is_empty();
         for owned in transition.fallbacks {
             let fallback_reason = match cause {
@@ -548,17 +580,49 @@ impl SessionActor {
         (transition.completions, has_fallbacks)
     }
 
+    pub(super) fn live_parent_steer_slots(&self, state: &State) -> usize {
+        state.message_delivery.lifecycle.len()
+    }
+
+    pub(super) fn parent_identity_is_live(&self, state: &State, identity: &String) -> bool {
+        state.message_delivery.lifecycle.contains_identity(identity)
+    }
+
+    pub(super) fn held_projecting_parent_views(
+        &self,
+        state: &mut State,
+        binding: &xai_message_delivery_core::TurnBinding<String, TurnEpoch>,
+        binding_meta: &super::interjection::HeldBindingMeta,
+    ) -> Vec<super::interjection::HeldParentView> {
+        let delivery = &mut state.message_delivery;
+        // Returning Err leaves every Projecting slot unchanged.
+        delivery
+            .lifecycle
+            .finish_delivery(binding, |messages| {
+                Err(messages
+                    .iter()
+                    .map(|message| self.held_parent_view(message, &delivery.held_input, binding_meta))
+                    .collect::<Vec<_>>())
+            })
+            .err()
+            .unwrap_or_default()
+    }
+
     pub(super) async fn settle_all_parent_messages(&self, cause: TerminalCause) {
         debug_assert!(matches!(
             cause,
             TerminalCause::HardTeardown | TerminalCause::ActorDrop
         ));
-        let completions = {
+        let (completions, held_notice) = {
             let mut state = self.state.lock().await;
+            let held_notice = self.settle_held_inputs_terminal(&mut state);
             let (completions, _) =
                 self.transition_parent_messages(&mut state, TerminalTarget::All, cause);
-            completions
+            (completions, held_notice)
         };
+        if let Some(record) = held_notice {
+            self.send_hook_annotation(&record.to_string()).await;
+        }
         let result = Err(acp::Error::internal_error()
             .data("active-message owner ended before delivery completed"));
         Self::settle_parent_message_completions(completions, &result);
@@ -575,7 +639,7 @@ impl SessionActor {
     }
 
     #[cfg(test)]
-    async fn admit_parent_agent_message_for_test(
+    pub(super) async fn admit_parent_agent_message_for_test(
         self: &Arc<Self>,
         message: ActiveAgentMessage,
         source: ActiveAgentMessageSource,

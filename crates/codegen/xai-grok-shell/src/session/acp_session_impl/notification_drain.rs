@@ -67,6 +67,14 @@ impl SessionActor {
         completion_ids.dedup();
         let deferred_ids: std::collections::HashSet<&str> =
             completion_ids.iter().map(String::as_str).collect();
+        if let (Some(buffer), Some(owner)) = (
+            self.tool_context.monitor_event_buffer.as_ref(),
+            state.message_delivery.held_input.pin_owner,
+        ) {
+            let discarded = buffer.discard_pinned(owner, |event| deferred_ids.contains(event.task_id.as_str()));
+            let keys = discarded.into_iter().map(|(key, _)| key).collect::<Vec<_>>();
+            state.message_delivery.held_input.commit_keys(&keys);
+        }
 
         let notifications = std::mem::take(&mut state.pending_notifications);
         let mut deferred = Vec::new();
@@ -610,10 +618,10 @@ impl SessionActor {
         let Some(buffer) = &self.tool_context.monitor_event_buffer else {
             return;
         };
-        for event in xai_grok_tools::implementations::grok_build::monitor::types::drain_owned(
-            buffer,
-            Some(self.session_info.id.0.as_ref()),
-        ) {
+        // Pinned occurrences remain in hold custody.
+        for event in buffer.drain_unpinned_matching(|event| {
+            event.owned_by_session(Some(self.session_info.id.0.as_ref()))
+        }) {
             Self::push_pending_notification(
                 state,
                 PendingNotification {

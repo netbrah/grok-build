@@ -937,7 +937,9 @@ async fn steer_slots_reject_past_named_cap() {
         .await;
         assert_eq!(
             admission_response(await_with_timeout(response_rx).await),
-            ActiveMessageAdmission::Rejected
+            ActiveMessageAdmission::SteerSlotsFull {
+                max_slots: super::MAX_PARENT_STEER_SLOTS,
+            }
         );
     }))
     .await;

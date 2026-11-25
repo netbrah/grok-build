@@ -4704,7 +4704,12 @@ impl NativeHistoryPlan {
 
     fn validate_decisions(&self) -> Result<(), NativePlanRefusal> {
         let accounting = &self.core.accounting;
-        if accounting.target.as_ref() != Some(&self.context.capture.target)
+        // A plan with no native groups observes no target (native_returned_accounting).
+        let target_matches = match &accounting.target {
+            Some(target) => *target == self.context.capture.target,
+            None => accounting.qualification.is_empty() && self.core.decision.groups.is_empty(),
+        };
+        if !target_matches
             || self.qualification != accounting.qualification
             || accounting.qualification != self.core.decision.qualification
         {
@@ -7554,6 +7559,180 @@ mod tests {
             passive_recheck(&plan),
             Err(NativePlanRefusal::InvalidQualification),
             "F4 the passive plan cannot reassert qualification different from the common core"
+        );
+    }
+
+
+    #[test]
+    fn native_history_plan_accepts_zero_group_plan_without_target() {
+        let digest = super::super::projection::native_content_digest;
+        let mut blobs: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
+        let mut put = |kind: &str, value: Value| {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let reference = NativeBlobRef {
+                kind: kind.into(),
+                byte_len: bytes.len() as u64,
+                digest: digest(&bytes),
+            };
+            blobs.insert(reference.digest.clone(), bytes.into());
+            reference
+        };
+        let source = NativeSource {
+            schema_version: 1,
+            lineage: "genesis-lineage".into(),
+            source_revision: 1,
+            producing_bindings: Vec::new(),
+            responses: Vec::new(),
+            ordered_blocks: Vec::new(),
+            eligible_snapshots: Vec::new(),
+            older_sources: Vec::new(),
+        };
+        let source_ref = put("source", serde_json::to_value(&source).unwrap());
+        let active_ref = put(
+            "active",
+            serde_json::to_value(NativeActive::default()).unwrap(),
+        );
+        let ledger = NativeLedger {
+            source_digest: source_ref.digest.clone(),
+            active_digest: active_ref.digest.clone(),
+            ..Default::default()
+        };
+        let ledger_ref = put("ledger", serde_json::to_value(&ledger).unwrap());
+        let original = vec![
+            ConversationItem::system("system"),
+            ConversationItem::user("user"),
+        ];
+        let history_bytes: Arc<[u8]> = serde_json::to_vec(&original).unwrap().into();
+        let history = NativeHistoryBoundary {
+            items: original.len() as u64,
+            digest: digest(&history_bytes),
+        };
+        let record = NativeSearchHistoryV1 {
+            schema_version: 1,
+            policy_revision: 1,
+            reader_floor: 1,
+            limits_revision: 1,
+            lineage: NativeLineage {
+                id: source.lineage.clone(),
+                source_revision: 1,
+                source_digest: source_ref.digest.clone(),
+            },
+            generation: 0,
+            high_water: 0,
+            source: source_ref,
+            active: active_ref,
+            ledger: ledger_ref,
+            history_boundary: history.clone(),
+            exchange_snapshot: None,
+            previous_checkpoint: None,
+            capacity: BTreeMap::new(),
+        };
+        let domain = NativeReplayDomain {
+            backend: crate::ApiBackend::Messages,
+            dialect: NativeReplayDialect::Messages,
+            model: "genesis-target".into(),
+            row: "genesis-target".into(),
+            provider: "offline".into(),
+            deployment: "loopback".into(),
+            deployment_revision: "1".into(),
+            endpoint: "https://offline.invalid/v1".into(),
+            principal: "nonsecret-fixture".into(),
+        };
+        let admission = crate::SearchAdmission {
+            supports_search_tool: false,
+            has_searchable_tools: false,
+        };
+        let target = TargetRoute::new(crate::ApiBackend::Messages, Boundary::Vertex, admission);
+        let core = prepare_native_history_core(
+            &NativePureHistory {
+                record: &record,
+                source: &source,
+                ledger: &ledger,
+                identity: &NativeIdentityExtension::Revision1Unknown,
+                blobs: &blobs,
+                authorship: &BTreeMap::new(),
+            },
+            &NativeProjectionInputs {
+                target_model_id: &domain.model,
+                target: &target,
+                tools: &[],
+                current: None,
+                selected: &[],
+                origin_domains: &Default::default(),
+                pending: &Default::default(),
+                prior_f: None,
+            },
+            |_| unreachable!("no native groups to qualify"),
+        )
+        .unwrap();
+        let context = NativeHistoryRequestContext::captured(
+            NativeHistoryRequirement::Selected,
+            NativeHistoryCapture {
+                history: history.clone(),
+                history_revision: 1,
+                lineage: record.lineage.clone(),
+                native_generation: 0,
+                high_water: 0,
+                projection_revision: 0,
+                strict_append_sequence: 0,
+                binding_generation: 1,
+                install_generation: 1,
+                issued_request: "genesis-request".into(),
+                target: domain.clone(),
+                execution: NativeHistoryExecution::Server,
+                original_admission: admission,
+                versions: NativeHistoryVersions {
+                    schema: 1,
+                    policy: 1,
+                    projection: 1,
+                    reader: 1,
+                    limits: 1,
+                },
+            },
+            NativeHistoryWriteAuthority::SendOnly,
+        );
+        let request = crate::ConversationRequest {
+            items: original,
+            model: Some(domain.model.clone()),
+            search_admission: Some(admission),
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        };
+        let plan = NativeHistoryPlan {
+            context,
+            input_history_bytes: history_bytes.clone(),
+            ledger_bytes: blobs[&record.ledger.digest].clone(),
+            record,
+            post_history: history,
+            post_history_bytes: history_bytes,
+            lowered_history: NativeLoweredHistory::capture(&request, &domain.backend).unwrap(),
+            carrier: NativeFinalCarrier::capture(
+                serde_json::to_vec(&passive_lower(&request, domain.backend.clone()))
+                    .unwrap()
+                    .into(),
+            )
+            .unwrap(),
+            identities: Vec::new(),
+            qualification: core.accounting.qualification.clone(),
+            core,
+            readiness: NativePlanReadiness::Tentative,
+            finalization: None,
+        };
+        let checked = match passive_recheck(&plan) {
+            Ok(checked) => checked,
+            Err(error) => panic!("WG1_GENESIS_ACCEPTANCE: Err({error:?})"),
+        };
+        assert_eq!(
+            validate_native_history_plan(&checked.context, Some(&checked), &checked.carrier),
+            Ok(NativeHistoryReady::SendOnly)
+        );
+        let mut foreign = plan.clone();
+        let mut foreign_domain = domain;
+        foreign_domain.deployment.push_str("-foreign");
+        foreign.core.accounting.target = Some(foreign_domain);
+        assert_eq!(
+            passive_recheck(&foreign).err(),
+            Some(NativePlanRefusal::InvalidQualification)
         );
     }
 

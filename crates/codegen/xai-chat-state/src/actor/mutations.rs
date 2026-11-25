@@ -425,7 +425,7 @@ impl ChatStateActor {
             checkpoint: candidate.clone(),
         };
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(30),
             if self
                 .state
                 .native

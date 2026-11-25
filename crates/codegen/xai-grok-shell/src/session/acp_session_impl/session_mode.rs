@@ -240,7 +240,7 @@ impl SessionActor {
                 );
             }
         }
-        if !injected_this_turn {
+        if !injected_this_turn && !self.plan_mode.lock().has_pending_activation() {
             let per_turn = {
                 let tracker = self.plan_mode.lock();
                 tracker.is_active().then(|| {

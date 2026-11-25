@@ -201,6 +201,11 @@ fn protocol_outcome_from_completion(
         ActiveMessageCompletionOutcome::Admission(ActiveMessageAdmission::Rejected) => {
             ActiveAgentMessageOutcome::NotActiveOrFinalizing
         }
+        ActiveMessageCompletionOutcome::Admission(ActiveMessageAdmission::SteerSlotsFull {
+            max_slots,
+        }) => ActiveAgentMessageOutcome::Saturated {
+            max_in_flight: max_slots,
+        },
         ActiveMessageCompletionOutcome::Cancelled
         | ActiveMessageCompletionOutcome::DeadlineElapsed => {
             ActiveAgentMessageOutcome::NotAcceptedBeforeDeadline

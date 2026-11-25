@@ -538,6 +538,11 @@ impl SessionActor {
             // When killing all background tasks, also clear their pending notifications; the monitors that produced them are now dead
             if kill_background_tasks {
                 state.clear_pending_notifications();
+                let ledger = &mut state.message_delivery.held_input;
+                if let (Some(owner), Some(buffer)) = (ledger.pin_owner.take(), ledger.pinned_in.take()) {
+                    buffer.discard_pinned(owner, |_| true);
+                }
+                ledger.entries.retain(|entry| entry.source != super::interjection::HeldSource::MonitorEvent);
             }
 
             let front_is_user_row = front_is_rewind_poppable(state.pending_inputs.front());
