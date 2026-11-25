@@ -2992,10 +2992,16 @@ impl SessionActor {
                 xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected => {
                     if native_owner_guard.is_none() {
                         #[cfg(test)]
-                        let target = super::switch_projection::HISTORY_S3_TEST_DOMAIN.try_with(Clone::clone).ok();
+                        let supplied = super::switch_projection::HISTORY_S3_TEST_DOMAIN.try_with(Clone::clone).ok();
                         #[cfg(not(test))]
-                        let target: Option<xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain> = None;
-                        let target = target.ok_or_else(|| crate::sampling::error::local_error("native_history_binding_unknown", "Selected history requires independently supplied nonsecret target facts"))?;
+                        let supplied: Option<xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain> = None;
+                        let target = match supplied {
+                            Some(target) => target,
+                            None => {
+                                let config = self.chat_state_handle.get_sampling_config().await.ok_or_else(|| crate::sampling::error::local_error("native_history_binding_unknown", "Selected history requires independently supplied nonsecret target facts"))?;
+                                super::switch_projection::production_native_replay_domain(&config).ok_or_else(|| crate::sampling::error::local_error("native_history_binding_unknown", "Selected history requires independently supplied nonsecret target facts"))?
+                            }
+                        };
                         native_owner_guard = Some(self.chat_state_handle.register_native_history_owner(
                             self.session_id_string(), req_id.to_owned(), target,
                             xai_grok_sampling_types::conversation::native_search_history::NativeProjectionOwner::OwningPrimary,

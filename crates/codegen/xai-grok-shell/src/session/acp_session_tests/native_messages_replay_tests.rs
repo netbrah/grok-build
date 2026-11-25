@@ -2902,22 +2902,33 @@ async fn k1_shell_actor_case(
     };
     let mut salvage = super::length_salvage::LengthSalvage::new(None);
     let mut sampling = Default::default();
+    shell
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let result = tokio::time::timeout(
         K0_TIMEOUT,
-        shell
-            .actor
-            .process_conversation_turn_for_native_history_test(
-                "k1-shell-turn",
-                None,
-                None,
-                None,
-                &mut salvage,
-                &mut sampling,
-                &mut prepare,
-            ),
+        super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+            NativeHistoryRequirement::Inactive,
+            shell
+                .actor
+                .process_conversation_turn_for_native_history_test(
+                    "k1-shell-turn",
+                    None,
+                    None,
+                    None,
+                    &mut salvage,
+                    &mut sampling,
+                    &mut prepare,
+                ),
+        ),
     )
     .await
     .expect("K1 shell turn terminates");
+    shell
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(builds.get(), 1, "one real bound build; no fixture rebuild");
     let success = matches!(case, "valid" | "install-B-retain-A");
     {
@@ -2966,6 +2977,133 @@ async fn k1_shell_actor_case(
     );
     drop(evidence);
     shell.finish().await;
+}
+
+async fn production_plan_case(case: &str) {
+    let server = MockInferenceServer::start().await.unwrap();
+    server.enqueue_response(
+        "/v1/messages",
+        k0_script(
+            vec![json!({"type":"text","text":"production plan answer"})],
+            "end_turn",
+        ),
+    );
+    let session = K2ReplaySession::new(&server).await;
+    session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user("production selected plan"))
+        .await;
+    let before = server.messages_request_count();
+    let planned = std::cell::RefCell::new(Vec::new());
+    let mut prepare = |request: &mut ConversationRequest, _: &xai_chat_state::RequestTransportBinding| {
+        let native = request
+            .native_history
+            .as_ref()
+            .expect("production Selected attaches native history");
+        assert!(
+            native.plan().is_some(),
+            "a valid replay plan is present before the case mutation"
+        );
+        *planned.borrow_mut() = request
+            .encoded
+            .as_ref()
+            .expect("finalized carrier")
+            .as_bytes()
+            .to_vec();
+        let borrowed = planned.borrow();
+        let rendered = String::from_utf8_lossy(&borrowed);
+        assert!(
+            rendered.contains("production selected plan"),
+            "the plan body is the outgoing history"
+        );
+        match case {
+            "valid" => {}
+            "missing-plan" => {
+                request.native_history.as_mut().unwrap().invalidate_plan();
+            }
+            "stale-context" => {
+                let native = request.native_history.as_ref().unwrap();
+                let mut context = native.context().capture().clone();
+                context.history_revision += 1;
+                request.native_history = Some(NativeHistoryRequest::new(
+                    NativeHistoryRequestContext::captured(
+                        NativeHistoryRequirement::Selected,
+                        context,
+                        native.context().authority().clone(),
+                    ),
+                    native.plan().cloned(),
+                ));
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    };
+    session
+        .actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut salvage = super::length_salvage::LengthSalvage::new(None);
+    let mut sampling = Default::default();
+    let result = tokio::time::timeout(
+        K0_TIMEOUT,
+        session
+            .actor
+            .process_conversation_turn_for_native_history_test(
+                "k5-production-turn",
+                None,
+                None,
+                None,
+                &mut salvage,
+                &mut sampling,
+                &mut prepare,
+            ),
+    )
+    .await
+    .expect("production turn terminates");
+    session
+        .actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    if case == "valid" {
+        if let Err(err) = &result {
+            panic!("valid plan reaches transport: {err}");
+        }
+        assert_eq!(server.messages_request_count(), before + 1);
+        let sent = server.request_bodies();
+        let planned_value: Value = serde_json::from_slice(&planned.borrow()).unwrap();
+        assert_eq!(
+            sent[before], planned_value,
+            "the sent bytes are the plan carrier, not a pin fallback"
+        );
+    } else {
+        assert!(result.is_err(), "missing or stale plan refuses");
+        assert_eq!(
+            server.messages_request_count(),
+            before,
+            "a refused plan sends no HTTP and no pin fallback"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_production_native_selection_requires_valid_replay_plan() {
+    assert_eq!(
+        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        NativeHistoryRequirement::Selected,
+        "K5 switches native search on"
+    );
+    assert_eq!(
+        super::switch_projection::select_native_history(),
+        NativeHistoryRequirement::Selected
+    );
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            production_plan_case("valid").await;
+            production_plan_case("missing-plan").await;
+            production_plan_case("stale-context").await;
+        })
+        .await;
 }
 
 async fn k1_shell_direct_cases(base_url: &str, bodies: &Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
@@ -18232,8 +18370,8 @@ async fn u6b_l15m_inactive_guard() -> Value {
     let server = MockInferenceServer::start().await.expect("H6_L15M_INACTIVE_GUARD_SERVER");
     let mut shell = K0Shell::new(&server, false).await;
     let _memory_directory = u6b_l15m_configure_inactive_v1(&mut shell, &server).await;
-    assert_eq!(super::switch_projection::select_native_history(), k2_history::NativeHistoryRequirement::Inactive,
-        "H6_L15M_INACTIVE_GUARD_PRODUCTION_SELECTOR");
+    assert_eq!(super::switch_projection::select_native_history(), k2_history::NativeHistoryRequirement::Selected,
+        "H6_L15M_PRODUCTION_SELECTOR_ON");
     assert!(shell.actor.memory.initial_injection_config.enabled && shell.actor.memory.backend_params.is_some(),
         "H6_L15M_INACTIVE_GUARD_INJECTION_PRECONDITION");
     assert_eq!(shell.actor.memory.mode(), Some(crate::config::MemoryMode::Legacy),
@@ -18247,10 +18385,13 @@ async fn u6b_l15m_inactive_guard() -> Value {
             std::slice::from_ref(*item), shell.actor.reminder_wrapper_tag())).count(), 1,
         "H6_L15M_INACTIVE_GUARD_ITEM_PRESENT");
     server.enqueue_response("/v1/messages", k0_script(vec![json!({"type":"text","text":"Inactive memory guard complete"})], "end_turn"));
-    let outcome = tokio::time::timeout(K0_TIMEOUT, shell.actor.handle_prompt(
-        "u6b-l15m-inactive-guard",
-        vec![acp::ContentBlock::Text(acp::TextContent::new("tell me about Rust backend services conventions"))],
-        PromptMode::Agent, None, None, None, None, true, false, None, None, None,
+    let outcome = tokio::time::timeout(K0_TIMEOUT, super::switch_projection::HISTORY_S3_TEST_REQUIREMENT.scope(
+        k2_history::NativeHistoryRequirement::Inactive,
+        shell.actor.handle_prompt(
+            "u6b-l15m-inactive-guard",
+            vec![acp::ContentBlock::Text(acp::TextContent::new("tell me about Rust backend services conventions"))],
+            PromptMode::Agent, None, None, None, None, true, false, None, None, None,
+        ),
     )).await.expect("H6_L15M_INACTIVE_GUARD_TURN_BOUND");
     assert!(outcome.is_ok(), "H6_L15M_INACTIVE_GUARD_TURN_OUTCOME");
     let history = shell.actor.chat_state_handle.get_conversation().await;
@@ -18259,7 +18400,7 @@ async fn u6b_l15m_inactive_guard() -> Value {
         "H6_L15M_INACTIVE_GUARD_SYSTEM_HEAD_UPSERTED");
     assert_eq!(server.messages_request_count(), 1, "H6_L15M_INACTIVE_GUARD_ONE_REQUEST");
     json!({"constructed":false,"kind":"L15M_INACTIVE_V1_EXISTING_REMINDER_GUARD",
-        "production_selector":"Inactive","existing_memory_item":true,"fresh_system_head_upserted":true,
+        "production_selector":"Selected","explicit_turn":"Inactive","existing_memory_item":true,"fresh_system_head_upserted":true,
         "http_count":server.messages_request_count(),"embedding_configured":false})
 }
 

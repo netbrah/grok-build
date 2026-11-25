@@ -10420,8 +10420,8 @@ async fn native_history_bridge_r11_uses_neutral_group_projection() {
         );
         assert_eq!(
             crate::session::acp_session::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
-            xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive,
-            "S5 does not switch native search on"
+            xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected,
+            "K5 switches the production selector on"
         );
     }).await;
 }

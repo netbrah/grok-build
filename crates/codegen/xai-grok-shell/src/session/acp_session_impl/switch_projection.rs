@@ -28,10 +28,20 @@ impl SessionActor {
     {
         use xai_grok_sampling_types::conversation::native_search_history::*;
         #[cfg(test)]
-        let target = HISTORY_S3_TEST_DOMAIN.try_with(Clone::clone).ok();
+        let supplied = HISTORY_S3_TEST_DOMAIN.try_with(Clone::clone).ok();
         #[cfg(not(test))]
-        let target: Option<NativeReplayDomain> = None;
-        let target = target.ok_or(NativeUnavailable::UnknownIdentity)?;
+        let supplied: Option<NativeReplayDomain> = None;
+        let target = match supplied {
+            Some(target) => target,
+            None => {
+                let config = self
+                    .chat_state_handle
+                    .get_sampling_config()
+                    .await
+                    .ok_or(NativeUnavailable::Incomplete)?;
+                production_native_replay_domain(&config).ok_or(NativeUnavailable::UnknownIdentity)?
+            }
+        };
         if target.model != target_model || target.backend != route.backend() {
             return Err(NativeUnavailable::UnknownIdentity);
         }
@@ -144,13 +154,48 @@ impl SessionActor {
 
 /// The single production selector for the native-history requirement (waj2-U8).
 ///
-/// Exactly one place decides the mode for a fresh bound request, so the
-/// activation cannot be scattered across the turn, switch and auxiliary
-/// callers. It stays `Inactive` for the whole of history-S3: the Selected route
-/// only becomes real once the joint U9 owner/compound-readiness path exists,
-/// and nothing here may send Selected before that cutover.
+/// Exactly one place decides the mode for a fresh bound request. K5/S6 is the
+/// cutover: production is `Selected`. A missing or stale plan refuses the send.
+/// It does not fall back to the pre-cutover pin body.
 pub(crate) const PRODUCTION_NATIVE_HISTORY_MODE: NativeHistoryRequirement =
-    NativeHistoryRequirement::Inactive;
+    NativeHistoryRequirement::Selected;
+
+/// Non-secret replay target for the configured sampling row.
+///
+/// The row supplies the model, backend, and endpoint. The remaining nonempty
+/// domain fields are labels of that same row. They are not credentials.
+pub(crate) fn production_native_replay_domain(
+    config: &xai_grok_sampling_types::SamplingConfig,
+) -> Option<xai_grok_sampling_types::conversation::projection::NativeReplayDomain> {
+    use xai_grok_sampling_types::conversation::projection::{NativeReplayDialect, NativeReplayDomain};
+    use xai_grok_sampling_types::ApiBackend;
+    let root = config.base_url.trim_end_matches('/');
+    if config.model.is_empty() || !(root.starts_with("http://") || root.starts_with("https://")) {
+        return None;
+    }
+    let (dialect, suffix) = match config.api_backend {
+        ApiBackend::Messages => (NativeReplayDialect::Messages, "/messages"),
+        ApiBackend::Responses => (
+            NativeReplayDialect::Responses(
+                xai_grok_sampling_types::conversation::ResponsesReplayDialect::Codex,
+            ),
+            "/responses",
+        ),
+        ApiBackend::ChatCompletions => (NativeReplayDialect::Messages, "/chat/completions"),
+    };
+    let domain = NativeReplayDomain {
+        backend: config.api_backend.clone(),
+        dialect,
+        model: config.model.clone(),
+        row: config.model.clone(),
+        provider: "configured".into(),
+        deployment: "configured".into(),
+        deployment_revision: "1".into(),
+        endpoint: format!("{root}{suffix}"),
+        principal: "configured".into(),
+    };
+    Some(domain)
+}
 
 /// Read the sole production mode. Crate-internal on purpose: tests drive the
 /// Selected arm through the same private path rather than a post-build callback.
