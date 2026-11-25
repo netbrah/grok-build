@@ -7904,6 +7904,101 @@ async fn approved_receipt_is_retained_on_readback() {
     assert_eq!(stored.source.producing_bindings[0].origin["status"], "Unknown");
 }
 
+fn keep_route() -> (
+    xai_grok_sampling_types::conversation::projection::TargetRoute,
+    xai_grok_sampling_types::conversation::projection::NativeReplayDomain,
+) {
+    use xai_grok_sampling_types::conversation::projection::{
+        Boundary, NativeReplayDialect, NativeReplayDomain, TargetRoute,
+    };
+    use xai_grok_sampling_types::{ApiBackend, SearchAdmission};
+    let admission = SearchAdmission {
+        supports_search_tool: true,
+        has_searchable_tools: true,
+    };
+    let route = TargetRoute::new(ApiBackend::Messages, Boundary::Vertex, admission);
+    let domain = NativeReplayDomain {
+        backend: ApiBackend::Messages,
+        dialect: NativeReplayDialect::Messages,
+        model: "vertex-row".into(),
+        row: "vertex-row".into(),
+        provider: "offline".into(),
+        deployment: "local".into(),
+        deployment_revision: "1".into(),
+        endpoint: "http://127.0.0.1/v1/messages".into(),
+        principal: "offline".into(),
+    };
+    (route, domain)
+}
+
+async fn capture_completed_group(h: &TestHarness, request: &str, admit: bool) -> std::sync::Arc<crate::persistence::native::NativeCheckpoint> {
+    let call = serde_json::json!({
+        "type":"server_tool_use","id":"srvtoolu_keep","name":"tool_search_tool_regex",
+        "input":{"query":"account"}
+    });
+    let result = serde_json::json!({
+        "type":"tool_search_tool_result","tool_use_id":"srvtoolu_keep",
+        "content":{"type":"tool_search_tool_search_result","tool_references":[]}
+    });
+    let call_item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(call.clone()).unwrap();
+    let result_item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(result.clone()).unwrap();
+    let call_output = ConversationItem::Discovery { item: call_item };
+    let result_output = ConversationItem::Discovery { item: result_item };
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = h.handle.begin_native_capture("mock".into(), request.into(), 1).await.unwrap();
+    if admit {
+        h.handle
+            .admit_producing_origin(request.into(), lease.clone(), known_origin("messages"))
+            .await
+            .unwrap();
+        h.handle
+            .admit_qualification_receipt(request.into(), lease.clone(), "offline-approved".into())
+            .await
+            .unwrap();
+    }
+    let captured = NativeAttemptEvidence {
+        attempt: 1, admitted: true, response_started: true,
+        provider_response_id: Some(serde_json::json!("msg_keep")), source_stop_reason: Some("end_turn".into()),
+        stream_complete: true, status: NativeResponseStatus::Accepted,
+        blocks: vec![
+            NativeCapturedBlock { wire_index: 0, arrival_ordinal: 0, raw: call.to_string(), partial_json: None, state: NativeBlockState::ClosedFaithful },
+            NativeCapturedBlock { wire_index: 1, arrival_ordinal: 1, raw: result.to_string(), partial_json: None, state: NativeBlockState::ClosedFaithful },
+        ],
+        usage: std::collections::BTreeMap::from([("input_tokens".into(), serde_json::json!(10))]),
+        messages_metadata: NativeMessagesCapture::CompatibilityUnrecorded,
+        latency_ms: Some(1), http_dispatches: 1, observed_bytes: 180, failed_block: None,
+        view_roles: vec![Some((0, "Discovery".into())), Some((1, "Discovery".into()))],
+        view_digests: vec![
+            crate::persistence::native::history_boundary(std::slice::from_ref(&call_output)).unwrap().digest,
+            crate::persistence::native::history_boundary(std::slice::from_ref(&result_output)).unwrap().digest,
+        ],
+    };
+    h.handle.append_native_evidence(request.into(), lease, NativeEvidenceEvent::Attempt(std::sync::Arc::new(captured))).await.unwrap();
+    h.handle.push_model_output(call_output);
+    h.handle.push_model_output(result_output);
+    h.handle.get_conversation().await;
+    h.handle.read_native_history().await.unwrap().checkpoint.unwrap()
+}
+
+#[tokio::test]
+async fn admitted_completed_group_keeps_on_replay() {
+    use xai_grok_sampling_types::conversation::projection::NativeHistoryAction;
+    let (route, domain) = keep_route();
+    let request = xai_grok_sampling_types::ConversationRequest::default();
+    let admitted = capture_completed_group(&TestHarness::new(), "keep-admitted", true).await;
+    let actions = admitted.qualified_group_actions(&request, &route, &domain).unwrap();
+    assert!(
+        actions.contains(&NativeHistoryAction::Keep),
+        "an admitted completed group keeps, actions={actions:?}"
+    );
+    let plain = capture_completed_group(&TestHarness::new(), "keep-plain", false).await;
+    let plain_actions = plain.qualified_group_actions(&request, &route, &domain).unwrap();
+    assert!(
+        !plain_actions.contains(&NativeHistoryAction::Keep),
+        "a group without origin and receipt does not keep, actions={plain_actions:?}"
+    );
+}
+
 fn u2_native_attempt(
     attempt: u64,
     payload: String,

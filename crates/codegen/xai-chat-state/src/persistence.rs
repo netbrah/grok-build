@@ -300,6 +300,87 @@ pub mod native {
     }
 
     impl NativeCheckpoint {
+        fn qualification_for(
+            &self,
+            group: &NativeGroupRecord,
+            route: &xai_grok_sampling_types::conversation::projection::TargetRoute,
+            domain: &NativeReplayDomain,
+            unadmitted_boundary: xai_grok_sampling_types::conversation::projection::Boundary,
+        ) -> (
+            xai_grok_sampling_types::conversation::projection::DiscoveryOrigin,
+            NativeQualification,
+        ) {
+            use xai_grok_sampling_types::conversation::projection::DiscoveryOrigin;
+            let admitted = self.source.producing_bindings.iter().any(|binding| {
+                binding.origin_ref == group.origin_ref
+                    && binding
+                        .origin
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("Known")
+                    && binding.receipt.as_deref() == Some("offline-approved")
+            });
+            let shape = NativeReplayShape {
+                family: if group.family == "Messages" {
+                    NativeReplayFamily::MessagesServer
+                } else {
+                    NativeReplayFamily::ResponsesClient
+                },
+                keyless_server: group.keyless_server_fifo,
+                output_id_present: false,
+                completed: group.state == "Completed",
+                result_error: false,
+                referenced_members: 0,
+            };
+            let (boundary, owner_model_id, source, receipt) = if admitted {
+                (
+                    route.boundary(),
+                    Some(domain.model.clone()),
+                    Some(domain.clone()),
+                    Some(xai_grok_sampling_types::conversation::projection::NativeShapeReceipt {
+                        target: domain.clone(),
+                        shape: shape.clone(),
+                        receipt_id: "offline-approved".into(),
+                    }),
+                )
+            } else {
+                (unadmitted_boundary, None, None, None)
+            };
+            (
+                DiscoveryOrigin {
+                    boundary,
+                    owner_model_id,
+                },
+                NativeQualification {
+                    source,
+                    target: Some(domain.clone()),
+                    request: Some(domain.clone()),
+                    original_admission: route.admission(),
+                    shape,
+                    receipt,
+                    intact_membership: true,
+                    current_backing: false,
+                    faithful_identity: false,
+                },
+            )
+        }
+
+        pub(crate) fn qualified_group_actions(
+            &self,
+            request: &xai_grok_sampling_types::ConversationRequest,
+            route: &xai_grok_sampling_types::conversation::projection::TargetRoute,
+            domain: &NativeReplayDomain,
+        ) -> Result<Vec<xai_grok_sampling_types::conversation::projection::NativeHistoryAction>, NativeUnavailable>
+        {
+            let core = self.core_for_request(
+                request,
+                route,
+                domain,
+                &NativePendingContext::default(),
+            )?;
+            Ok(core.decision.groups.into_iter().map(|group| group.action).collect())
+        }
+
         fn core_for_request(
             &self,
             request: &xai_grok_sampling_types::ConversationRequest,
@@ -307,7 +388,6 @@ pub mod native {
             domain: &NativeReplayDomain,
             pending: &NativePendingContext,
         ) -> Result<NativeHistoryCore, NativeUnavailable> {
-            use xai_grok_sampling_types::conversation::projection::Boundary;
             let selected: Vec<_> = self
                 .source
                 .ordered_blocks
@@ -341,33 +421,11 @@ pub mod native {
                     prior_f: None,
                 },
                 |group| {
-                    (
-                        DiscoveryOrigin {
-                            boundary: Boundary::Vertex,
-                            owner_model_id: None,
-                        },
-                        NativeQualification {
-                            source: None,
-                            target: Some(domain.clone()),
-                            request: Some(domain.clone()),
-                            original_admission: route.admission(),
-                            shape: NativeReplayShape {
-                                family: if group.family == "Messages" {
-                                    NativeReplayFamily::MessagesServer
-                                } else {
-                                    NativeReplayFamily::ResponsesClient
-                                },
-                                keyless_server: group.keyless_server_fifo,
-                                output_id_present: false,
-                                completed: group.state == "Completed",
-                                result_error: false,
-                                referenced_members: 0,
-                            },
-                            receipt: None,
-                            intact_membership: true,
-                            current_backing: false,
-                            faithful_identity: false,
-                        },
+                    self.qualification_for(
+                        group,
+                        route,
+                        domain,
+                        xai_grok_sampling_types::conversation::projection::Boundary::Vertex,
                     )
                 },
             )
@@ -593,34 +651,7 @@ pub mod native {
                     prior_f: None,
                 },
                 |group| {
-                    (
-                        DiscoveryOrigin {
-                            boundary: route.boundary(),
-                            owner_model_id: None,
-                        },
-                        NativeQualification {
-                            source: None,
-                            target: Some(domain.clone()),
-                            request: Some(domain.clone()),
-                            original_admission: admission,
-                            shape: NativeReplayShape {
-                                family: if group.family == "Messages" {
-                                    NativeReplayFamily::MessagesServer
-                                } else {
-                                    NativeReplayFamily::ResponsesClient
-                                },
-                                keyless_server: group.keyless_server_fifo,
-                                output_id_present: false,
-                                completed: group.state == "Completed",
-                                result_error: false,
-                                referenced_members: 0,
-                            },
-                            receipt: None,
-                            intact_membership: true,
-                            current_backing: false,
-                            faithful_identity: false,
-                        },
-                    )
+                    previous.qualification_for(group, &route, &domain, route.boundary())
                 },
             )
             .map_err(|reason| reason.reason)?;

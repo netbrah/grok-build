@@ -1649,6 +1649,11 @@ pub(super) fn prepare_native_history_reproject(
                 .primary
                 .iter()
                 .all(|member| member.2.faithful_identity);
+            if let Some(receipt) = qualified.receipt.as_mut() {
+                if receipt.receipt_id == "offline-approved" {
+                    receipt.shape = qualified.shape.clone();
+                }
+            }
             let tier = discovery_tier(target_model_id, target, &origin, &qualified);
             let policy = match tier {
                 DiscoveryTier::Keep => NativeHistoryAction::Keep,
