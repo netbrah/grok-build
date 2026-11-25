@@ -137,9 +137,16 @@ impl SessionActor {
                 Ok(self.parent_cached_request(call))
             }
             xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected => {
-                Err(acp::Error::internal_error().data(
-                    "auxiliary call refused: native history is Selected and no natural-producer preparation exists",
-                ))
+                let mut request = self.parent_cached_request(call);
+                for item in &mut request.items {
+                    if let ConversationItem::Discovery { item: discovery } = item {
+                        let text = xai_grok_sampling_types::conversation::projection::send_only_neutral_text(
+                            discovery.raw(),
+                        );
+                        *item = ConversationItem::assistant(text);
+                    }
+                }
+                Ok(request)
             }
         }
     }

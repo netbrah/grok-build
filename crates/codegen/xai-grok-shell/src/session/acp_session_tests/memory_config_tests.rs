@@ -1072,3 +1072,21 @@ async fn test_idle_flush_timeout_from_config() {
         })
         .await;
 }
+
+#[test]
+fn memory_flush_outgoing_request_is_text_only() {
+    use xai_grok_sampling_types::ConversationItem;
+    let raw = serde_json::json!({
+        "type":"server_tool_use","id":"srvtoolu_flush","name":"tool_search_tool_regex","input":{"query":"flush query"}
+    });
+    let discovery = ConversationItem::Discovery {
+        item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(raw).unwrap(),
+    };
+    let stored = vec![ConversationItem::user("remember this"), discovery.clone()];
+    let view = xai_chat_state::compaction_utils::prepare_conversation_for_summarization(stored.clone());
+    assert!(matches!(stored[1], ConversationItem::Discovery { .. }), "the stored discovery is unchanged");
+    let rendered = serde_json::to_string(&view).unwrap();
+    assert!(!rendered.contains("server_tool_use"));
+    assert!(rendered.contains("[tool_search]"));
+    assert!(view.iter().all(|item| !matches!(item, ConversationItem::Discovery { .. })));
+}

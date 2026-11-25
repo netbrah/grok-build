@@ -14980,3 +14980,116 @@ async fn native_history_pending_input_and_compaction_respect_lifecycle() {
         .run_until(k3q_pre_loss_compaction_and_backing())
         .await;
 }
+
+#[test]
+fn native_history_paused_a_binding_and_fresh_b_policy() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_pause_turn_sse(
+                    "partial answer before the pause",
+                ),
+            );
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("resubmit must not run"),
+            );
+            let actor = super::length_salvage_tests::salvage_test_actor_on_backend(
+                &server,
+                0,
+                256_000,
+                xai_grok_sampling_types::ApiBackend::Messages,
+                true,
+            )
+            .await;
+            let outcome = super::length_salvage_tests::run_prompt(&actor, "pause-w14").await;
+            let err = outcome.expect_err("a paused turn ends as the typed incomplete result");
+            assert_eq!(
+                crate::sampling::error::error_kind_from_error(&err),
+                Some(xai_grok_sampler::SamplingErrorKind::IncompleteTurn)
+            );
+            assert!(format!("{err}").contains("pause_turn"));
+            assert_eq!(server.messages_request_count(), 1);
+            let body = server.request_bodies()[0].to_string();
+            assert!(body.contains("write out the numbers"));
+            assert_eq!(
+                super::switch_projection::select_native_history(),
+                NativeHistoryRequirement::Inactive,
+                "the pause result does not switch native search on"
+            );
+        });
+    });
+}
+
+async fn auxiliary_neutral_f_body() {
+    tokio::task::LocalSet::new().run_until(async {
+        let server = MockInferenceServer::start().await.unwrap();
+        server.enqueue_response("/v1/messages", native_history_script(native_history_frames()));
+        let session = NativeHistorySession::new(&server).await;
+        session.sample().await;
+        let before = k3q_checkpoint_raws(
+            &session
+                .actor
+                .chat_state_handle
+                .read_native_history()
+                .await
+                .unwrap()
+                .checkpoint
+                .unwrap(),
+        );
+        let discovery = ConversationItem::Discovery {
+            item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(serde_json::json!({
+                "type":"server_tool_use","id":"srvtoolu_aux","name":"tool_search_tool_regex","input":{"query":"secret query"}
+            })).unwrap(),
+        };
+        let call = super::side_call::AuxCall {
+            items: vec![ConversationItem::user("aux"), discovery],
+            tools: super::child_tool_projection::ToolSpecBundle::without_identity(Vec::new()),
+            hosted_tools: Vec::new(),
+            model: "offline".into(),
+            supports_search_tool: false,
+            reasoning_effort: None,
+            ultra_wire_effort: None,
+            backend: crate::sampling::ApiBackend::Messages,
+            conv_id: "aux".into(),
+            req_id: "aux-1".into(),
+        };
+        let selected = xai_chat_state::NativeHistoryEntry::send_only(
+            xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected,
+        );
+        let request = session
+            .actor
+            .parent_cached_request_with_history_entry(call, &selected)
+            .expect("a Selected auxiliary send uses the neutral body");
+        let rendered = serde_json::to_string(&request.items).unwrap();
+        assert!(rendered.contains("Historical search recorded"));
+        assert!(!rendered.contains("secret query"));
+        assert!(!rendered.contains("server_tool_use"));
+        let after = k3q_checkpoint_raws(
+            &session
+                .actor
+                .chat_state_handle
+                .read_native_history()
+                .await
+                .unwrap()
+                .checkpoint
+                .unwrap(),
+        );
+        assert_eq!(after, before, "the auxiliary body does not rewrite durable native source");
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_history_auxiliary_send_body_uses_neutral_f() {
+    auxiliary_neutral_f_body().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_history_auxiliary_requests_never_commit_disposition() {
+    auxiliary_neutral_f_body().await;
+}

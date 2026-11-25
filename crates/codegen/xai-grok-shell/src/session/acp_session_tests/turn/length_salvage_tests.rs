@@ -11,7 +11,7 @@ use xai_grok_test_support::{MockInferenceServer, ScriptedResponse, SseEvent};
 /// Distinctive fragment of the continue reminder.
 const REMINDER_MARKER: &str = "exceeded the output token limit";
 /// `SessionActor` turn futures overflow the default test thread stack.
-fn block_on_session(f: impl FnOnce() + Send + 'static) {
+pub(crate) fn block_on_session(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(f)
@@ -19,7 +19,7 @@ fn block_on_session(f: impl FnOnce() + Send + 'static) {
         .join()
         .expect("test thread");
 }
-fn current_thread_local<F>(f: F)
+pub(crate) fn current_thread_local<F>(f: F)
 where
     F: std::future::Future<Output = ()> + 'static,
 {
@@ -93,7 +93,7 @@ async fn salvage_test_actor_with_context(
 /// [`salvage_test_actor`] on an explicit backend.
 /// The Messages test exists because only that stream layer delivers `Length` with completed tool calls.
 /// Chat Completions rewrites the stop reason to `ToolCalls`.
-async fn salvage_test_actor_on_backend(
+pub(crate) async fn salvage_test_actor_on_backend(
     server: &MockInferenceServer,
     total_tokens: u64,
     context_window: u64,
@@ -168,7 +168,7 @@ async fn salvage_test_actor_on_backend(
     }
     actor
 }
-async fn run_prompt(actor: &Arc<SessionActor>, prompt_id: &str) -> PromptTurnResult {
+pub(crate) async fn run_prompt(actor: &Arc<SessionActor>, prompt_id: &str) -> PromptTurnResult {
     let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
         "write out the numbers".to_string(),
     ))];
@@ -442,7 +442,7 @@ fn messages_length_with_tool_call_sse(
     )
 }
 /// Messages SSE: plain text terminated `stop_reason: "end_turn"`.
-fn messages_stop_sse(text: &str) -> ScriptedResponse {
+pub(crate) fn messages_stop_sse(text: &str) -> ScriptedResponse {
     let events = vec![
         serde_json::json!({
             "type": "message_start",
@@ -688,7 +688,7 @@ fn messages_refusal_with_tools_sse(
 }
 
 /// Messages SSE: partial text streamed, then a terminal `stop_reason: "pause_turn"`.
-fn messages_pause_turn_sse(text: &str) -> ScriptedResponse {
+pub(crate) fn messages_pause_turn_sse(text: &str) -> ScriptedResponse {
     let events = vec![
         serde_json::json!({
             "type": "message_start",

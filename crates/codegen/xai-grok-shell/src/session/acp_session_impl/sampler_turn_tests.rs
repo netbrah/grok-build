@@ -10293,3 +10293,46 @@ async fn native_history_identity_invalidates_loaded_authority() {
         u7_authority_matrix(&session,&checkpoint,&request,&schemas).await;
     }).await;
 }
+
+#[test]
+fn native_history_bridge_r11_uses_neutral_group_projection() {
+    use xai_grok_sampling_types::conversation::projection::send_only_neutral_text;
+    use xai_grok_sampling_types::{ConversationItem, ConversationRequest};
+    let discovery = serde_json::json!({
+        "type":"server_tool_use","id":"srvtoolu_bridge","name":"tool_search_tool_regex","input":{"query":"bridge query"}
+    });
+    let item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(discovery.clone()).unwrap();
+    let summary = xai_chat_state::compaction_utils::prepare_conversation_for_summarization(vec![
+        ConversationItem::Discovery { item: item.clone() },
+    ]);
+    let summary_text = serde_json::to_string(&summary).unwrap();
+    assert!(summary_text.contains("[tool_search]"));
+    assert!(!summary_text.contains("server_tool_use"), "the query summary is not a native keep");
+    let neutral = send_only_neutral_text(&discovery);
+    assert!(neutral.contains("Historical search recorded"));
+    assert!(!neutral.contains("bridge query"));
+    let mut paired = ConversationItem::assistant("checking");
+    if let ConversationItem::Assistant(assistant) = &mut paired {
+        assistant.tool_calls.push(xai_grok_sampling_types::ToolCall {
+            id: "client_bridge".into(),
+            name: "lookup".into(),
+            arguments: "{}".into(),
+        });
+    }
+    let request = ConversationRequest {
+        items: vec![
+            paired,
+            ConversationItem::tool_result("client_bridge", "found"),
+        ],
+        model: Some("offline".into()),
+        max_output_tokens: Some(64),
+        ..Default::default()
+    };
+    let body = serde_json::to_value(xai_grok_sampling_types::build_messages_request(&request)).unwrap();
+    let rendered = body.to_string();
+    assert!(rendered.contains("client_bridge"), "an ordinary client pair stays on the bridge");
+    assert_eq!(
+        crate::session::acp_session::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive
+    );
+}

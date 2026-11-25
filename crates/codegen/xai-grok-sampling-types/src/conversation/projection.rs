@@ -1273,6 +1273,28 @@ fn native_policy_backing(
     Ok(backed)
 }
 
+/// Send-only neutral text for one native discovery. Auxiliary callers use this
+/// instead of the query summary, and it does not write a durable disposition.
+pub fn send_only_neutral_text(raw: &serde_json::Value) -> String {
+    let kind = match raw.get("type").and_then(serde_json::Value::as_str) {
+        Some("tool_search_tool_result" | "tool_search_output") => {
+            super::native_search_history::NativeNeutralKind::Result
+        }
+        _ => super::native_search_history::NativeNeutralKind::Call,
+    };
+    let count = raw
+        .pointer("/content/tool_references")
+        .or_else(|| raw.get("tools"))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| items.len() as u64);
+    native_render_neutral(
+        kind,
+        super::native_search_history::NativeNeutralStatus::Completed,
+        count,
+    )
+    .text
+}
+
 fn native_render_neutral(
     kind: super::native_search_history::NativeNeutralKind,
     status: super::native_search_history::NativeNeutralStatus,
