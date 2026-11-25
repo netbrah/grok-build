@@ -14691,3 +14691,230 @@ pub(crate) async fn k3q_leftover_pending_projected_out() {
     );
     assert!(completed_text.contains("fresh k3q input after completion"));
 }
+
+fn k3q_checkpoint_raws(checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint) -> Vec<String> {
+    checkpoint
+        .source
+        .ordered_blocks
+        .iter()
+        .filter_map(|block| {
+            checkpoint
+                .blobs
+                .get(&block.block.digest)
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        })
+        .collect()
+}
+
+fn k3q_overflow_error() -> xai_grok_sampler::SamplingErrorInfo {
+    xai_grok_sampler::SamplingErrorInfo {
+        kind: xai_grok_sampler::SamplingErrorKind::Api,
+        status_code: Some(400),
+        message: "prompt is too long".into(),
+        is_retryable: false,
+        retry_after_secs: None,
+        should_retry: None,
+        error_code: None,
+        model_metadata: Some(xai_grok_sampling_types::ResponseModelMetadata {
+            context_window: Some(50_000),
+            max_completion_tokens: None,
+            models_etag: None,
+        }),
+        empty_response_context: None,
+        doom_loop_triggers: None,
+        doom_loop_aborted_at_chunk: None,
+        credential: xai_grok_sampling_types::SentCredential::Sent,
+    }
+}
+
+pub(crate) async fn k3q_pre_loss_compaction_and_backing() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let retained_id = "srvtoolu_native_history";
+    let unretained_id = "srvtoolu_k3q_unretained";
+    let server = MockInferenceServer::start().await.unwrap();
+    server.enqueue_response("/v1/messages", native_history_script(native_history_frames()));
+    let session = NativeHistorySession::new(&server).await;
+    session.sample().await;
+    let before_requests = server.messages_request_count();
+    let retained = session
+        .actor
+        .chat_state_handle
+        .read_native_history()
+        .await
+        .expect("retained native read")
+        .checkpoint
+        .expect("real capture retained a checkpoint");
+    let retained_raws = k3q_checkpoint_raws(&retained);
+    assert!(
+        retained_raws.iter().any(|raw| raw.contains(retained_id)),
+        "backed native source keeps the captured server call"
+    );
+    assert!(
+        retained_raws.iter().all(|raw| !raw.contains("cache_control")),
+        "native source blocks do not gain a cache marker"
+    );
+    let lineage = retained.record.lineage.id.clone();
+    let request_id = xai_grok_sampler::RequestId::random();
+    let lease = session
+        .actor
+        .chat_state_handle
+        .begin_native_capture(lineage, request_id.as_str().into(), 2)
+        .await
+        .expect("second capture lease");
+    let unretained_raw = json!({
+        "type":"server_tool_use","id":unretained_id,"name":"tool_search_tool_regex","input":{"query":"unretained"}
+    });
+    let parked = NativeAttemptEvidence {
+        attempt: 1,
+        admitted: false,
+        response_started: true,
+        provider_response_id: Some(json!("msg_k3q_unretained")),
+        source_stop_reason: Some("end_turn".into()),
+        stream_complete: true,
+        status: NativeResponseStatus::Accepted,
+        blocks: vec![NativeCapturedBlock {
+            wire_index: 0,
+            arrival_ordinal: 0,
+            raw: unretained_raw.to_string(),
+            partial_json: None,
+            state: NativeBlockState::ClosedFaithful,
+        }],
+        usage: std::collections::BTreeMap::new(),
+        messages_metadata: NativeMessagesCapture::CompatibilityUnrecorded,
+        latency_ms: Some(1),
+        http_dispatches: 1,
+        observed_bytes: unretained_raw.to_string().len() as u64,
+        failed_block: None,
+        view_roles: Vec::new(),
+        view_digests: Vec::new(),
+    };
+    let ack = session
+        .actor
+        .chat_state_handle
+        .append_native_evidence(
+            request_id.as_str().into(),
+            lease.clone(),
+            NativeEvidenceEvent::Attempt(std::sync::Arc::new(parked)),
+        )
+        .await
+        .expect("unadmitted evidence stays pending");
+    assert!(
+        matches!(ack, xai_chat_state::persistence::native::NativeAppendAck::Unchanged),
+        "unadmitted evidence is not a retained checkpoint write"
+    );
+    assert!(session.actor.chat_state_handle.native_source_unretained().await);
+    let item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(unretained_raw.clone())
+        .expect("unretained server call decodes");
+    session
+        .actor
+        .chat_state_handle
+        .push_model_output(ConversationItem::Discovery { item });
+    session.actor.chat_state_handle.record_token_usage(80_000);
+    assert!(session.actor.should_compact_on_error(&k3q_overflow_error()).await);
+    let mut binding = session
+        .actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .expect("transport binding");
+    let refused = tokio::time::timeout(
+        NATIVE_TIMEOUT,
+        session.actor.handle_sampling_failure(
+            k3q_overflow_error(),
+            &mut binding,
+            0,
+            transient_state(0, false),
+            false,
+            TurnParkState::Fresh,
+        ),
+    )
+    .await
+    .expect("pre-loss compaction decision");
+    let code = refused.as_ref().err().and_then(|error| {
+        error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("code"))
+            .and_then(Value::as_str)
+    });
+    assert_eq!(
+        code,
+        Some("native_history_pre_loss_compaction"),
+        "compaction is refused while native evidence is unretained"
+    );
+    assert_eq!(server.messages_request_count(), before_requests);
+    let history = serde_json::to_string(
+        &session.actor.chat_state_handle.get_conversation().await,
+    )
+    .unwrap();
+    assert!(
+        history.contains(unretained_id),
+        "the unretained call stays in the conversation"
+    );
+    let after_refusal = session
+        .actor
+        .chat_state_handle
+        .read_native_history()
+        .await
+        .unwrap()
+        .checkpoint
+        .unwrap();
+    let after_refusal_raws = k3q_checkpoint_raws(&after_refusal);
+    assert_eq!(after_refusal_raws, retained_raws);
+    assert!(after_refusal_raws.iter().all(|raw| !raw.contains(unretained_id)));
+
+    session
+        .actor
+        .chat_state_handle
+        .append_native_evidence(
+            request_id.as_str().into(),
+            lease,
+            NativeEvidenceEvent::End,
+        )
+        .await
+        .expect("release the unretained lease");
+    assert!(!session.actor.chat_state_handle.native_source_unretained().await);
+    let mut history_items = session.actor.chat_state_handle.get_conversation().await;
+    history_items.insert(
+        0,
+        ConversationItem::system("Preserve the captured native source."),
+    );
+    session
+        .actor
+        .chat_state_handle
+        .replace_conversation(history_items);
+    server.set_response(
+        "<summary>Retain the captured native server call and its backed source.</summary>".repeat(8),
+    );
+    let source_ref = {
+        let current: Value = serde_json::from_slice(
+            &std::fs::read(session.directory.path().join("native_history/current.json")).unwrap(),
+        )
+        .unwrap();
+        current["source"].clone()
+    };
+    let source_before = native_blob(session.directory.path(), &source_ref);
+    let cleaned = tokio::time::timeout(
+        NATIVE_TIMEOUT,
+        session.actor.handle_sampling_failure(
+            k3q_overflow_error(),
+            &mut binding,
+            0,
+            transient_state(0, false),
+            false,
+            TurnParkState::Fresh,
+        ),
+    )
+    .await
+    .expect("retained compaction decision");
+    assert!(
+        matches!(cleaned, Ok(SamplerFailureRecovery::CompactAndResubmit)),
+        "retained source allows compaction, code={:?}",
+        cleaned.as_ref().err().and_then(|error| error.data.as_ref()).map(|data| data.to_string())
+    );
+    let source_after = native_blob(session.directory.path(), &source_ref);
+    assert_eq!(
+        source_after, source_before,
+        "compaction cleans the view without rewriting the retained native source"
+    );
+}

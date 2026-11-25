@@ -497,6 +497,15 @@ impl ChatStateActor {
                 let result = self.resolve_native_primary(lease, decision).await;
                 let _ = reply.send(result);
             }
+            ChatStateCommand::NativeSourceUnretained { reply } => {
+                let blocked = self
+                    .state
+                    .native
+                    .leases
+                    .values()
+                    .any(|lease| !lease.pending.is_empty());
+                let _ = reply.send(blocked);
+            }
             ChatStateCommand::ReadNativeHistory { reply } => {
                 let result = if let Some(reason) = self.state.native.unavailable {
                     Err(reason)

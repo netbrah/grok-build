@@ -434,6 +434,9 @@ pub enum ChatStateCommand {
             >,
         >,
     },
+    /// True while a capture lease still holds attempt evidence that has not been
+    /// written into the native checkpoint.
+    NativeSourceUnretained { reply: oneshot::Sender<bool> },
 
     /// Truncate conversation to a target prompt index (for rewind).
     TruncateToPromptIndex {

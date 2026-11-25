@@ -18202,3 +18202,10 @@ async fn messages_leftover_pending_is_projected_out() {
         .run_until(super::native_history_policy_tests::k3q_leftover_pending_projected_out())
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_live_pending_blocks_destructive_compaction() {
+    tokio::task::LocalSet::new()
+        .run_until(super::native_history_policy_tests::k3q_pre_loss_compaction_and_backing())
+        .await;
+}

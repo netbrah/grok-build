@@ -921,6 +921,14 @@ impl ChatStateHandle {
         self.query("ResolveNativePrimary", |reply| ChatStateCommand::ResolveNativePrimary { lease, decision, reply })
             .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
     }
+    /// A capture lease is holding attempt evidence that is not in the checkpoint yet.
+    pub async fn native_source_unretained(&self) -> bool {
+        self.query("NativeSourceUnretained", |reply| {
+            ChatStateCommand::NativeSourceUnretained { reply }
+        })
+        .await
+        .unwrap_or(true)
+    }
     pub async fn read_native_history(
         &self,
     ) -> Result<

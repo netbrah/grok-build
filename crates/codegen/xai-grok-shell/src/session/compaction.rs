@@ -2971,6 +2971,12 @@ impl SessionActor {
         lossy_input: bool,
     ) -> Result<(), acp::Error> {
         use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
+        if self.chat_state_handle.native_source_unretained().await {
+            return Err(crate::sampling::error::local_error(
+                "native_history_pre_loss_compaction",
+                "compaction refused until the native source is retained",
+            ));
+        }
         let (_cancel, _cancel_scope) = self.compaction.cancel.enter();
         let _compaction_phase = self.turn_phases.begin_compaction();
         self.record_compaction_variant();
