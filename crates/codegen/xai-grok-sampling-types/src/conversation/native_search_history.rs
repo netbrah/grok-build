@@ -3973,7 +3973,12 @@ impl NativeFinalizationEvidence {
             .decision
             .members
             .iter()
-            .filter(|member| member.action == NativeHistoryAction::Keep)
+            .filter(|member| {
+                matches!(
+                    member.action,
+                    NativeHistoryAction::Keep | NativeHistoryAction::ContinueOriginal
+                )
+            })
             .filter_map(|member| member.raw.as_ref())
             .collect();
         let mut marked = request.clone();
@@ -5566,7 +5571,23 @@ impl NativeHistoryPlan {
                 }
             }
         }
-        let mut plan = Self::checked(context, input)?;
+        let keep_messages = input
+            .core
+            .decision
+            .groups
+            .iter()
+            .any(|group| group.action == NativeHistoryAction::Keep)
+            && context.capture.target.backend == crate::ApiBackend::Messages;
+        let mut plan = if keep_messages {
+            let evidence = NativeFinalizationEvidence::checked_native_messages(
+                input.lowering_request,
+                &input.core,
+                input.carrier.clone(),
+            )?;
+            Self::checked_finalized(context, input, evidence)?
+        } else {
+            Self::checked(context, input)?
+        };
         plan.readiness = NativePlanReadiness::OwningPrimary {
             preparation: Box::new(preparation),
             certificate: Arc::new(certificate),
@@ -7838,6 +7859,83 @@ mod tests {
         assert_eq!(
             validate_native_history_plan(&context, Some(&required), &required.carrier),
             Err(NativePlanRefusal::KeepCarrierUnverified)
+        );
+    }
+
+    #[test]
+    fn checked_native_messages_emits_keep_and_continue_original() {
+        let (context, plan) = passive_plan_candidate_for(PassiveMembers::MessagesKeep).unwrap();
+        let continuation = json!({"type":"server_tool_use","id":"srvtoolu_continue","name":"tool_search_tool_regex","input":{"query":"continue"}});
+        let mut core = plan.core().clone();
+        let source = core.decision.members[0].source.clone();
+        core.decision.members.push(crate::conversation::projection::NativePreparedMember {
+            source,
+            action: NativeHistoryAction::ContinueOriginal,
+            raw: Some(continuation.clone()),
+            neutral: None,
+            duplicate_of: None,
+        });
+        core.proof = std::sync::Arc::new(NativeHistoryCoreProof {
+            decision: core.decision.clone(),
+            loaded: core.loaded.clone(),
+            accounting: core.accounting.clone(),
+        });
+        let mut items: Vec<ConversationItem> =
+            serde_json::from_slice(plan.post_history_bytes()).unwrap();
+        items.push(ConversationItem::Discovery {
+            item: super::super::tool_search::ToolSearchItem::from_wire(continuation).unwrap(),
+        });
+        let mut request = crate::ConversationRequest {
+            items,
+            model: Some(context.capture.target.model.clone()),
+            search_admission: Some(context.capture.original_admission),
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        };
+        request.native_history = Some(crate::request_validation::NativeHistoryRequest::new(
+            context.clone(),
+            None,
+        ));
+        let carrier = NativeFinalCarrier::capture(
+            serde_json::to_vec(&passive_lower(&request, crate::ApiBackend::Messages))
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+        let emitted =
+            NativeFinalizationEvidence::checked_native_messages(&request, &core, carrier);
+        assert!(
+            emitted.is_ok(),
+            "Keep and ContinueOriginal raw members are both emitted: {emitted:?}"
+        );
+        let mut keep_only = request.clone();
+        keep_only.items.pop();
+        let keep_carrier = NativeFinalCarrier::capture(
+            serde_json::to_vec(&passive_lower(&keep_only, crate::ApiBackend::Messages))
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+        assert_eq!(
+            NativeFinalizationEvidence::checked_native_messages(&keep_only, &core, keep_carrier),
+            Err(NativePlanRefusal::InvalidHistory),
+            "dropping ContinueOriginal from the body is not a Keep-only send"
+        );
+        let await_raw = json!({"type":"server_tool_use","id":"srvtoolu_await","name":"tool_search_tool_regex","input":{"query":"await"}});
+        let mut awaiting = request.clone();
+        awaiting.items.push(ConversationItem::Discovery {
+            item: super::super::tool_search::ToolSearchItem::from_wire(await_raw).unwrap(),
+        });
+        let await_carrier = NativeFinalCarrier::capture(
+            serde_json::to_vec(&passive_lower(&awaiting, crate::ApiBackend::Messages))
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+        assert_eq!(
+            NativeFinalizationEvidence::checked_native_messages(&awaiting, &core, await_carrier),
+            Err(NativePlanRefusal::InvalidHistory),
+            "an extra discovery is not emitted"
         );
     }
 
