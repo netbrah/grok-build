@@ -4684,18 +4684,26 @@ impl NativeHistoryPlan {
                 return Err(NativePlanRefusal::InvalidDeclarations);
             }
         }
-        for (position, declaration) in declarations.iter().enumerate() {
-            if let Some(children) = declaration.get("tools").and_then(Value::as_array) {
-                for (child, _) in children.iter().enumerate() {
-                    if !positions.contains(&(position, Some(child as u64))) {
-                        return Err(NativePlanRefusal::InvalidDeclarations);
+        // checked_bound copies identities from eligible entries before this
+        // runs. A first turn has no loaded definitions, so a declaration that
+        // the filler could not pair (the current offer: deferred MCP tools,
+        // the placeholder when its schema is the live one) is not a replay
+        // mismatch. Requiring a pair refuses the turn before HTTP. Once a
+        // definition has been loaded, every schema declaration must pair.
+        if !self.core.loaded.definitions.is_empty() {
+            for (position, declaration) in declarations.iter().enumerate() {
+                if let Some(children) = declaration.get("tools").and_then(Value::as_array) {
+                    for (child, _) in children.iter().enumerate() {
+                        if !positions.contains(&(position, Some(child as u64))) {
+                            return Err(NativePlanRefusal::InvalidDeclarations);
+                        }
                     }
+                } else if (declaration.get("input_schema").is_some()
+                    || declaration.get("parameters").is_some())
+                    && !positions.contains(&(position, None))
+                {
+                    return Err(NativePlanRefusal::InvalidDeclarations);
                 }
-            } else if (declaration.get("input_schema").is_some()
-                || declaration.get("parameters").is_some())
-                && !positions.contains(&(position, None))
-            {
-                return Err(NativePlanRefusal::InvalidDeclarations);
             }
         }
         for loaded in &self.core.loaded.definitions {

@@ -1163,15 +1163,33 @@ impl ChatStateActor {
             .owner
             .clone()
             .ok_or(NativeUnavailable::Incomplete)?;
-        if !self.native_owner_is_current(&token)
-            || self.state.native.issued.as_ref() != Some(&preparation)
-            || !preparation
-                .seal()
-                .is_some_and(|seal| self.state.native.issuer.owns(seal))
-            || preparation.history_revision() != Some(self.state.native.history_revision)
-            || crate::persistence::native::history_boundary(&self.state.conversation)?
-                != *preparation.history()
+        if !self.native_owner_is_current(&token) {
+            tracing::warn!("native commit stale: owner");
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if self.state.native.issued.as_ref() != Some(&preparation) {
+            tracing::warn!("native commit stale: issued preparation");
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if !preparation
+            .seal()
+            .is_some_and(|seal| self.state.native.issuer.owns(seal))
         {
+            tracing::warn!("native commit stale: seal");
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if preparation.history_revision() != Some(self.state.native.history_revision) {
+            tracing::warn!(
+                prepared = ?preparation.history_revision(),
+                current = self.state.native.history_revision,
+                "native commit stale: history revision"
+            );
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if crate::persistence::native::history_boundary(&self.state.conversation)?
+            != *preparation.history()
+        {
+            tracing::warn!("native commit stale: history boundary");
             return Err(NativeUnavailable::StaleHistory);
         }
         let checkpoint = match self.state.native.checkpoint.clone() {
@@ -1192,11 +1210,18 @@ impl ChatStateActor {
                 .await
                 .map_err(|_| NativeUnavailable::Indeterminate)?
                 .map_err(|_| NativeUnavailable::Indeterminate)??;
-                let persisted = read.checkpoint.ok_or(NativeUnavailable::StaleHistory)?;
+                let persisted = match read.checkpoint {
+                    Some(checkpoint) => checkpoint,
+                    None => {
+                        tracing::warn!("native commit stale: persisted checkpoint missing");
+                        return Err(NativeUnavailable::StaleHistory);
+                    }
+                };
                 if read.lineage != token.lineage()
                     || persisted.bytes != checkpoint.bytes
                     || persisted.authority_digest.is_none()
                 {
+                    tracing::warn!("native commit stale: persisted checkpoint mismatch");
                     return Err(NativeUnavailable::StaleHistory);
                 }
                 self.state.native.checkpoint = Some(persisted.clone());
@@ -1208,6 +1233,13 @@ impl ChatStateActor {
         if checkpoint.record.generation != context.capture().native_generation
             || checkpoint.record.high_water != context.capture().high_water
         {
+            tracing::warn!(
+                checkpoint_generation = checkpoint.record.generation,
+                capture_generation = context.capture().native_generation,
+                checkpoint_high_water = checkpoint.record.high_water,
+                capture_high_water = context.capture().high_water,
+                "native commit stale: checkpoint generation"
+            );
             return Err(NativeUnavailable::StaleHistory);
         }
         let stage = checkpoint.prepare_projection(&preparation, &request, &route)?;

@@ -45,6 +45,18 @@ impl NativeToolCandidates {
         self.select_with_identity(config).0
     }
 
+    /// Drop named tools and keep the eligible-input positions aligned.
+    pub fn without_names(self, names: &[&str]) -> Self {
+        let positions: Vec<usize> = self
+            .specs
+            .iter()
+            .enumerate()
+            .filter(|(_, spec)| !names.contains(&spec.name.as_str()))
+            .map(|(position, _)| position)
+            .collect();
+        self.filter_positions(&positions)
+    }
+
     /// Transform prepared specs, preserving membership only for surviving tools.
     pub fn map_specs(mut self, transform: impl FnOnce(Vec<ToolSpec>) -> Vec<ToolSpec>) -> Self {
         self.specs = transform(self.specs);
