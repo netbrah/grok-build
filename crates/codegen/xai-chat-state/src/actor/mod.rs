@@ -480,6 +480,15 @@ impl ChatStateActor {
                     self.state.native.leases.remove(&lease.ordinal());
                 }
             }
+            ChatStateCommand::AdmitProducingOrigin {
+                request,
+                lease,
+                origin,
+                reply,
+            } => {
+                let result = self.admit_producing_origin(&request, &lease, origin);
+                let _ = reply.send(result);
+            }
             ChatStateCommand::AppendNativeEvidence {
                 request,
                 lease,

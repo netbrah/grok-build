@@ -293,9 +293,37 @@ impl ChatStateActor {
                 publication,
                 primary_pending: None,
                 primary_decision: None,
+                origin: None,
             },
         );
         Ok(lease)
+    }
+
+    pub(super) fn admit_producing_origin(
+        &mut self,
+        request: &str,
+        lease: &xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        origin: serde_json::Value,
+    ) -> Result<
+        (),
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        crate::persistence::native::known_producing_origin(&origin)?;
+        let owner = self
+            .state
+            .native
+            .leases
+            .get_mut(&lease.ordinal())
+            .ok_or(NativeUnavailable::StaleHistory)?;
+        if request != lease.request() || !owner.capability.same_lease(lease) {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if owner.origin.is_some() {
+            return Err(NativeUnavailable::ConflictingObservation);
+        }
+        owner.origin = Some(origin);
+        Ok(())
     }
 
     pub(super) async fn append_native_evidence(
@@ -394,6 +422,7 @@ impl ChatStateActor {
         } else {
             owner.inputs.clone()
         };
+        let producing_origin = owner.origin.clone();
         let candidate = match NativeCheckpoint::append_with_publication(
             self.state.native.checkpoint.as_deref(),
             &lease,
@@ -401,6 +430,7 @@ impl ChatStateActor {
             &self.state.conversation,
             inputs.as_deref(),
             owner.publication,
+            producing_origin.as_ref(),
         ) {
             Ok(candidate) => {
                 owner.admitted = true;

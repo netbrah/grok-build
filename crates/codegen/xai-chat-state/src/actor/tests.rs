@@ -7758,6 +7758,81 @@ async fn persisted_versioned_native_record() {
     assert_eq!(stored.ledger.usage[0].observed["output_tokens"], 0);
 }
 
+fn known_origin(backend: &str) -> serde_json::Value {
+    serde_json::json!({
+        "status": "Known",
+        "version": 1,
+        "backend": backend,
+        "model": "test-model",
+        "endpoint_path": "/v1/messages",
+    })
+}
+
+#[tokio::test]
+async fn known_producing_origin_is_retained_on_readback() {
+    let mut h = TestHarness::new();
+    let raw = serde_json::json!({
+        "type":"server_tool_use","id":"srvtoolu_known_origin","name":"tool_search_tool_regex",
+        "input":{"query":"account"}
+    });
+    let item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(raw.clone()).unwrap();
+    let output = ConversationItem::Discovery { item };
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = h
+        .handle
+        .begin_native_capture("mock".into(), "known-origin".into(), 1)
+        .await
+        .unwrap();
+    let ordinal = lease.ordinal();
+    let forged = serde_json::json!({"status":"Known","version":1,"backend":"messages"});
+    assert!(
+        h.handle
+            .admit_producing_origin("known-origin".into(), lease.clone(), forged)
+            .await
+            .is_err(),
+        "an incomplete origin is refused"
+    );
+    h.handle
+        .admit_producing_origin("known-origin".into(), lease.clone(), known_origin("messages"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        h.handle
+            .admit_producing_origin("known-origin".into(), lease.clone(), known_origin("other"))
+            .await,
+        Err(NativeUnavailable::ConflictingObservation)
+    ));
+    let captured = NativeAttemptEvidence {
+        attempt: 1, admitted: true, response_started: true,
+        provider_response_id: Some(serde_json::json!("msg_known_origin")), source_stop_reason: Some("end_turn".into()),
+        stream_complete: true, status: NativeResponseStatus::Accepted,
+        blocks: vec![NativeCapturedBlock {
+            wire_index: 0, arrival_ordinal: 0, raw: raw.to_string(), partial_json: None, state: NativeBlockState::ClosedFaithful,
+        }],
+        usage: std::collections::BTreeMap::from([("input_tokens".into(), serde_json::json!(10)), ("output_tokens".into(), serde_json::json!(0))]),
+        messages_metadata: NativeMessagesCapture::CompatibilityUnrecorded,
+        latency_ms: Some(1), http_dispatches: 1, observed_bytes: 100, failed_block: None,
+        view_roles: vec![Some((0, "Discovery".into()))],
+        view_digests: vec![crate::persistence::native::history_boundary(std::slice::from_ref(&output)).unwrap().digest],
+    };
+    h.handle
+        .append_native_evidence(
+            "known-origin".into(),
+            lease,
+            NativeEvidenceEvent::Attempt(std::sync::Arc::new(captured)),
+        )
+        .await
+        .unwrap();
+    h.handle.push_model_output(output);
+    h.handle.get_conversation().await;
+    let stored = h.handle.read_native_history().await.unwrap().checkpoint.unwrap();
+    let binding = &stored.source.producing_bindings[0];
+    assert_eq!(binding.origin["status"], "Known");
+    assert_eq!(binding.origin["backend"], "messages");
+    assert_eq!(binding.origin["version"], 1);
+    assert_eq!(binding.generation, Some(ordinal));
+}
+
 fn u2_native_attempt(
     attempt: u64,
     payload: String,
@@ -10388,6 +10463,7 @@ fn u5a_primary_capacity_controls() {
                 &[],
                 inputs.as_deref(),
                 NativePrimaryPublication::Deferred,
+                None,
             )
             .unwrap();
             assert!(pending.active.view_links.is_empty());
@@ -10471,6 +10547,7 @@ fn u5a_primary_capacity_controls() {
                     &[],
                     inputs.as_deref(),
                     NativePrimaryPublication::Deferred,
+                    None,
                 );
                 assert_eq!(
                     result.is_ok(),
@@ -11779,6 +11856,7 @@ fn s3l_base(
         &[],
         None,
         S3lPublication::Legacy,
+        None,
     )
     .unwrap();
     let mut items = s3l_output_items(&attempt);
@@ -11812,6 +11890,7 @@ fn s3l_capture(
         items,
         None,
         publication,
+        None,
     )
 }
 
@@ -11984,6 +12063,7 @@ fn native_capture_joins_continuation_result_to_live_group() {
             &[],
             None,
             Deferred,
+            None,
         )
         .unwrap();
         let intent = pending
@@ -12017,6 +12097,7 @@ fn native_capture_joins_continuation_result_to_live_group() {
             &[],
             None,
             Legacy,
+            None,
         )
         .unwrap();
         s3l_no_join(&empty, &result, &prior, "r2", "C-1 (f) no call");
@@ -12151,6 +12232,7 @@ fn native_continuation_join_preflight_matches_capture_at_last_fit() {
         &[],
         None,
         Legacy,
+        None,
     )
     .unwrap();
     let (_, items, call) = s3l_base(S3lProfile::Observed, &["c1"]);

@@ -898,6 +898,28 @@ impl ChatStateHandle {
             .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
             .and_then(|mut reply| reply.lease.take().ok_or(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Indeterminate))
     }
+    pub async fn admit_producing_origin(
+        &self,
+        request: String,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        origin: serde_json::Value,
+    ) -> Result<
+        (),
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.query("AdmitProducingOrigin", |reply| {
+            ChatStateCommand::AdmitProducingOrigin {
+                request,
+                lease,
+                origin,
+                reply,
+            }
+        })
+        .await
+        .unwrap_or(Err(
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence,
+        ))
+    }
     pub async fn append_native_evidence(
         &self,
         request: String,

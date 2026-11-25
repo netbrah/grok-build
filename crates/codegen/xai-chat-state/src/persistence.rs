@@ -1534,6 +1534,24 @@ pub mod native {
         }
     }
 
+    pub(crate) fn known_producing_origin(origin: &serde_json::Value) -> Result<(), NativeUnavailable> {
+        let object = origin.as_object().ok_or(NativeUnavailable::InvalidReference)?;
+        if object.len() != 5 {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        if object.get("status").and_then(serde_json::Value::as_str) != Some("Known")
+            || object.get("version").and_then(serde_json::Value::as_i64) != Some(1)
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        for key in ["backend", "model", "endpoint_path"] {
+            if object.get(key).and_then(serde_json::Value::as_str).is_none_or(str::is_empty) {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) struct NativeActorLease {
         pub capability: NativeCaptureLease,
         pub pending: Vec<Arc<NativeAttemptEvidence>>,
@@ -1543,6 +1561,7 @@ pub mod native {
         pub publication: NativePrimaryPublication,
         pub primary_pending: Option<NativePrimaryPending>,
         pub primary_decision: Option<NativePrimaryDecision>,
+        pub origin: Option<serde_json::Value>,
     }
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum NativePrimaryPublication {
@@ -3127,6 +3146,7 @@ pub mod native {
                 items,
                 inputs,
                 NativePrimaryPublication::Legacy,
+                None,
             )
         }
 
@@ -3137,6 +3157,7 @@ pub mod native {
             items: &[ConversationItem],
             inputs: Option<&NativeEligibleInputs>,
             publication: NativePrimaryPublication,
+            origin: Option<&serde_json::Value>,
         ) -> Result<Self, NativeUnavailable> {
             let generation = previous
                 .map_or(0, |p| p.record.generation)
@@ -3290,9 +3311,15 @@ pub mod native {
             };
             let old_link_count = active.view_links.len();
             let old_accounting_count = ledger.accounting.len();
-            let origin = serde_json::json!({"status":"Unknown","reason":"producing identity unavailable before U3"});
-            let descriptor =
-                serde_json::json!({"request":lease.request(),"generation":null,"origin":origin});
+            let stored_origin = match origin {
+                Some(origin) => {
+                    known_producing_origin(origin)?;
+                    origin.clone()
+                }
+                None => serde_json::json!({"status":"Unknown","reason":"producing identity unavailable before U3"}),
+            };
+            let binding_generation = origin.map(|_| lease.ordinal());
+            let descriptor = serde_json::json!({"request":lease.request(),"generation":binding_generation,"origin":stored_origin});
             let origin_ref = add_json(
                 &mut blobs,
                 &mut blob_kinds,
@@ -3307,8 +3334,8 @@ pub mod native {
             {
                 source.producing_bindings.push(NativeProducingBinding {
                     request: lease.request().into(),
-                    generation: None,
-                    origin,
+                    generation: binding_generation,
+                    origin: stored_origin,
                     origin_ref: origin_ref.clone(),
                 });
             }
@@ -4208,14 +4235,15 @@ pub mod native {
                         .map_err(|_| NativeUnavailable::InvalidReference)?;
                 if descriptor
                     != serde_json::json!({"request":binding.request,"generation":binding.generation,"origin":binding.origin})
-                    || binding.generation.is_none()
-                        && binding
-                            .origin
-                            .get("status")
-                            .and_then(serde_json::Value::as_str)
-                            != Some("Unknown")
                 {
                     return Err(NativeUnavailable::InvalidReference);
+                }
+                match binding.origin.get("status").and_then(serde_json::Value::as_str) {
+                    Some("Unknown") if binding.generation.is_none() => {}
+                    Some("Known") if binding.generation.is_some() => {
+                        known_producing_origin(&binding.origin)?;
+                    }
+                    _ => return Err(NativeUnavailable::InvalidReference),
                 }
             }
             let source_member = |coordinate: &NativeSourceCoordinate| -> Result<&NativeRawBlock, NativeUnavailable> {
@@ -4862,6 +4890,7 @@ pub mod native {
                 items,
                 inputs,
                 NativePrimaryPublication::Deferred,
+                None,
             )?;
             let pending = candidate
                 .pending_primary(&probe, std::slice::from_ref(&accepted), items)?

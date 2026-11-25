@@ -405,6 +405,17 @@ pub enum ChatStateCommand {
             >,
         >,
     },
+    AdmitProducingOrigin {
+        request: String,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        origin: serde_json::Value,
+        reply: oneshot::Sender<
+            Result<
+                (),
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
     AppendNativeEvidence {
         request: String,
         lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
