@@ -1501,3 +1501,39 @@ async fn human_reparented_nested_child_is_addressable_from_spawner_and_root() {
         response_outcome(foreign).await
     );
 }
+
+#[tokio::test]
+async fn steer_slots_full_maps_saturation_and_releases_accounting() {
+    let (mut coordinator, command_tx, admission_tx, mut admissions) = fixture();
+    insert_child(&mut coordinator, admission_tx, "full-slots", "parent");
+    let (respond_to, response) = oneshot::channel();
+    command_tx.try_send_active_message(SubagentActiveMessageRequest {
+        request: ActiveAgentMessageRequest::try_new_with_operation(
+            "full-slots", "follow up", ActiveAgentMessageOperation::Steer,
+        ).unwrap(),
+        parent_session_id: "parent".to_owned(),
+        respond_to,
+    }).expect("H6_Q3_STEER_INGRESS");
+    let ingress = coordinator.active_message_ingress.as_mut()
+        .expect("H6_Q3_STEER_INGRESS").try_recv().expect("H6_Q3_STEER_INGRESS");
+    coordinator.handle_send_active_message(ingress);
+    let call = recv_with_timeout(&mut admissions).await;
+    assert_eq!(call.late_delivery.operation(), ActiveAgentMessageOperation::Steer, "H6_Q3_STEER_INGRESS");
+    let (finalize_tx, finalize_rx) = oneshot::channel();
+    coordinator.handle_active_message_finalizing("full-slots".to_owned(), finalize_tx);
+    release_admission(
+        &mut coordinator,
+        call,
+        ActiveMessageAdmission::SteerSlotsFull { max_slots: 32 },
+    )
+    .await;
+    assert_eq!(
+        response_outcome(response).await,
+        ActiveAgentMessageOutcome::Saturated { max_in_flight: 32 },
+        "H6_Q3_FULL_SLOT_MAPPING",
+    );
+    assert!(
+        finalization_outcome(finalize_rx).await,
+        "H6_Q3_FULL_SLOT_ACCOUNTING_RELEASED",
+    );
+}

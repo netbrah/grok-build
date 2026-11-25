@@ -78,6 +78,14 @@ impl<E> EventQueue<E> {
         self.lock().push(Slot::new(event));
     }
 
+    /// Push an event and return its arrival key.
+    pub fn push_with_occurrence(&self, event: E) -> Occurrence {
+        let slot = Slot::new(event);
+        let occurrence = slot.occ;
+        self.lock().push(slot);
+        occurrence
+    }
+
     /// Push, then retain at most `max` unpinned events; pins are never victims.
     pub fn push_capped(&self, event: E, max: usize) {
         let mut q = self.lock();
@@ -279,6 +287,16 @@ impl<E> EventReleaseView<'_, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyed_push_returns_exact_occurrence() {
+        let queue = EventQueue::new();
+        let first = queue.push_with_occurrence("first");
+        let second = queue.push_with_occurrence("second");
+        assert!(first < second, "H6_N11_PEER_KEY_FIFO");
+        assert_eq!(queue.drain_all_with_occurrences(), vec![(first, "first"), (second, "second")],
+            "H6_N11_PEER_KEY_EXACT");
+    }
 
     #[test]
     fn push_and_len() {

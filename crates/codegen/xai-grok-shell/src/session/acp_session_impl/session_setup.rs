@@ -430,6 +430,48 @@ impl SessionActor {
     }
     #[tracing::instrument(level = "debug", skip_all)]
     pub(super) async fn flush_pending_skill_reminders(&self) {
+        let retaining = {
+            let mut state = self.state.lock().await;
+            let ledger = &state.message_delivery.held_input;
+            if ledger.terminal {
+                return;
+            }
+            let retaining = ledger.retaining();
+            let custody = if !retaining {
+                false
+            } else if !ledger.entries.is_empty() {
+                true
+            } else {
+                let parents = ledger.latch.as_ref().zip(ledger.latch_meta.as_ref())
+                    .map(|(latch, meta)| (latch.binding.clone(), meta.clone()));
+                let pin_owner = ledger.pin_owner;
+                let pinned = pin_owner.zip(ledger.pinned_in.as_ref()).is_some_and(|(owner, buffer)| {
+                    buffer.release_view(owner, |_| false).iter().next().is_some()
+                });
+                let pending_parent = parents.is_some_and(|(binding, meta)| {
+                    !self.held_parent_views(&state, &binding, &meta).is_empty()
+                        || !self.held_projecting_parent_views(&mut state, &binding, &meta).is_empty()
+                });
+                pending_parent || pinned
+                    || !self.pending_interjections.is_empty()
+                    || !self.pending_skill_reminders.lock().is_empty()
+                    || self.plan_mode.lock().has_pending_activation()
+                    || self.tool_context.monitor_event_buffer.as_ref().is_some_and(|buffer| {
+                        let owner = pin_owner.unwrap_or_else(xai_interjection_core::events::next_occurrence);
+                        buffer.release_view(owner, |event| {
+                            event.owned_by_session(Some(self.session_info.id.0.as_ref()))
+                        }).iter().next().is_some()
+                    })
+            };
+            if retaining && custody {
+                return;
+            }
+            retaining
+        };
+        if retaining {
+            self.flush_native_agent_messages().await;
+            return;
+        }
         self.flush_native_agent_messages().await;
         let activation = self.plan_mode.lock().take_pending_activation();
         if let Some(text) = activation {

@@ -868,11 +868,7 @@ pub(super) async fn run_session(
                                     .and_then(|guard| guard.clone())
                                     .is_some();
                                 if running {
-                                    if let Ok(mut buffered) =
-                                        session.pending_native_agent_messages.lock()
-                                    {
-                                        buffered.push(item);
-                                    }
+                                    session.queue_active_native_peer(item).await;
                                     continue;
                                 }
                                 session.chat_state_handle.push_tool_result(item);
@@ -902,17 +898,13 @@ pub(super) async fn run_session(
                                 .and_then(|guard| guard.clone())
                                 .is_some();
                             if turn_running {
-                                session.pending_interjections.push(
-                                    PendingInterjection {
-                                        text,
-                                        attachments: Vec::new(),
-                                    },
-                                );
-                                tracing::info!(
-                                    message_id = %message.message_id,
-                                    sender = %message.from_agent_id,
-                                    "Queued peer-agent follow-up at the active turn boundary"
-                                );
+                                if session.queue_active_peer_text(text).await {
+                                    tracing::info!(
+                                        message_id = %message.message_id,
+                                        sender = %message.from_agent_id,
+                                        "Queued peer-agent follow-up at the active turn boundary"
+                                    );
+                                }
                             } else {
                                 let (respond_to, _) = tokio::sync::oneshot::channel();
                                 {

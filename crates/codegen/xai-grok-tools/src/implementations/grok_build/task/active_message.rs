@@ -214,6 +214,9 @@ pub enum ActiveMessageAdmission {
     Unsupported,
     ChannelClosed,
     Rejected,
+    SteerSlotsFull {
+        max_slots: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,7 +276,8 @@ impl ActiveMessageAdmissionLease {
             ActiveMessageAdmission::Admitted => state == ActiveMessageLeaseState::Committed as u8,
             ActiveMessageAdmission::Unsupported
             | ActiveMessageAdmission::ChannelClosed
-            | ActiveMessageAdmission::Rejected => match state {
+            | ActiveMessageAdmission::Rejected
+            | ActiveMessageAdmission::SteerSlotsFull { .. } => match state {
                 value if value == ActiveMessageLeaseState::Open as u8 => self
                     .state
                     .compare_exchange(

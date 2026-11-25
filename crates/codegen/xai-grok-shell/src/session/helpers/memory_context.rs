@@ -20,6 +20,18 @@ pub fn conversation_has_memory_context(items: &[ConversationItem]) -> bool {
     )
 }
 
+/// Detects a single-part runtime memory item with the exact reminder wrapper.
+pub fn conversation_has_memory_reminder_item(items: &[ConversationItem], tag: &str) -> bool {
+    let prefix = format!("<{tag}>\n{MEMORY_CONTEXT_OPEN_TAG}");
+    let suffix = format!("{MEMORY_CONTEXT_CLOSE_TAG}\n</{tag}>");
+    items.iter().any(|item| {
+        matches!(item, ConversationItem::User(user)
+            if user.synthetic_reason == Some(xai_grok_sampling_types::SyntheticReason::SystemReminder)
+                && matches!(user.content.as_slice(), [xai_grok_sampling_types::ContentPart::Text { text }]
+                    if text.starts_with(&prefix) && text.ends_with(&suffix)))
+    })
+}
+
 /// Format memory search results as a markdown section for system-reminder injection.
 /// Each result is formatted with score, source, file path, line range, and the snippet in a fenced code block (preserving newlines/markdown).
 /// Returns `None` if results are empty.
@@ -412,5 +424,50 @@ mod tests {
             reminder.is_some(),
             "non-empty results must produce Some(_) — injection_count SHOULD increment"
         );
+    }
+
+    #[test]
+    fn memory_reminder_item_detector_shape() {
+        let tag = xai_grok_tools::reminders::DEFAULT_REMINDER_TAG;
+        let results = vec![MemorySearchResult {
+            chunk_id: "u6b-t4:0".into(), path: "MEMORY.md".into(), start_line: 1, end_line: 3,
+            score: 0.9, snippet: "T4 V1 formatted memory".into(), source: "workspace".into(),
+            created_at: None,
+        }];
+        let v1 = format_memory_reminder(&results).unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let cwd = temp.path().join("workspace");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let root = temp.path().join("memory-v2");
+        let storage = crate::session::memory::MemoryStorage::new_for_mode(
+            &cwd, Some(&root), crate::config::MemoryMode::V2,
+        );
+        storage.ensure_initialized().unwrap();
+        let v2 = format_v2_memory_context(&storage).unwrap();
+        let wrap = |text: &str| xai_grok_tools::reminders::wrap_reminder_with_tag(text, tag);
+        let wrapped = wrap(&v1);
+        let mut two_parts = ConversationItem::system_reminder(&wrapped);
+        let ConversationItem::User(user) = &mut two_parts else {
+            panic!("H6_L15M_DETECTOR_USER_PRECONDITION");
+        };
+        user.content.push(xai_grok_sampling_types::ContentPart::Text {
+            text: std::sync::Arc::from("second text part"),
+        });
+        let recovered_sections = [format_memory_reminder(&results).unwrap()];
+        let recovered = ConversationItem::system_reminder(wrap(&recovered_sections.join("\n\n")));
+        let cases = [
+            ConversationItem::system_reminder(&wrapped),
+            ConversationItem::system_reminder(wrap(&v2)),
+            ConversationItem::system(&v1),
+            ConversationItem::user(&wrapped),
+            ConversationItem::system_reminder(format!("monitor note before the block\n{wrapped}")),
+            ConversationItem::agent_message(&wrapped),
+            two_parts,
+            recovered,
+        ];
+        let actual: Vec<_> = cases.iter().map(|item|
+            conversation_has_memory_reminder_item(std::slice::from_ref(item), tag)).collect();
+        assert_eq!(actual, vec![true, true, false, false, false, false, false, true],
+            "H6_L15M_DETECTOR_EXACT_SHAPE");
     }
 }

@@ -86,6 +86,9 @@ impl SessionActor {
     /// Convert interjections that missed their turn's final drain into queued prompt turns, front of the queue in original order.
     /// Returns the count.
     pub(super) async fn flush_stranded_interjections(&self) -> usize {
+        if self.retain_stranded_interjections_for_next_turn().await {
+            return 0;
+        }
         let stranded = self.pending_interjections.drain_all();
         let count = stranded.len();
         // Reversed push_fronts keep entry 0 front-most.
@@ -308,6 +311,7 @@ impl SessionActor {
             state.message_delivery.held_input.retaining()
         };
         let drained_human = self.drain_pending_interjections().await;
+        self.state.lock().await.message_delivery.held_input.peer_origins.clear();
         if merging {
             return drained_human;
         }
@@ -455,11 +459,7 @@ impl Drop for RestoreOnCancel {
         );
     }
 }
-const HELD_INPUT_ENTRIES: usize = 128;
-const HELD_INPUT_BYTES: u32 = 262_144;
-const HELD_ENTRY_BYTES: u32 = 32_768;
-const HELD_PARENT_STAMPS: usize = 32;
-const HELD_STAMP_ID_JSON_BYTES: usize = 128;
+const HELD_MACHINE_ENTRIES: usize = 128;
 
 type HeldTurnBinding = xai_message_delivery_core::TurnBinding<String, TurnEpoch>;
 
@@ -482,6 +482,10 @@ pub(super) enum HeldSource {
     StationarityReminder,
     SkillReminder,
     PlanActivation,
+    PeerAgent,
+    MediaResample,
+    ToolFreeLength,
+    LengthReminder,
 }
 
 impl HeldSource {
@@ -494,26 +498,42 @@ impl HeldSource {
             Self::StationarityReminder => "stationarity_reminder",
             Self::SkillReminder => "skill_reminder",
             Self::PlanActivation => "plan_activation",
+            Self::PeerAgent => "peer_agent",
+            Self::MediaResample => "media_resample",
+            Self::ToolFreeLength => "tool_free_length",
+            Self::LengthReminder => "length_reminder",
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HoldRefusalReason {
-    Records,
-    EntryBytes,
-    TotalBytes,
-    Accounting,
+    SteerSlotsFull,
+    MonitorBandFull,
+    DeferredBandFull,
+    StationarityBandFull,
+    SkillBandFull,
+    PlanSlot,
     Terminal,
+    PeerBandFull,
+    MediaResampleBandFull,
+    ToolFreeLengthBandFull,
+    LengthReminderBandFull,
 }
 
 impl HoldRefusalReason {
     fn tag(self) -> &'static str {
         match self {
-            Self::Records => "records",
-            Self::EntryBytes => "entry_bytes",
-            Self::TotalBytes => "total_bytes",
-            Self::Accounting => "accounting",
+            Self::SteerSlotsFull => "steer_slots_full",
+            Self::MonitorBandFull => "monitor_band_full",
+            Self::DeferredBandFull => "deferred_band_full",
+            Self::StationarityBandFull => "stationarity_band_full",
+            Self::SkillBandFull => "skill_band_full",
+            Self::PlanSlot => "plan_slot",
+            Self::PeerBandFull => "peer_band_full",
+            Self::MediaResampleBandFull => "media_resample_band_full",
+            Self::ToolFreeLengthBandFull => "tool_free_length_band_full",
+            Self::LengthReminderBandFull => "length_reminder_band_full",
             Self::Terminal => "terminal",
         }
     }
@@ -545,16 +565,32 @@ pub(super) struct HeldEntry {
     pub(super) source: HeldSource,
     pub(super) body: HeldBody,
     pub(super) meta: serde_json::Value,
-    pub(super) charged: u32,
-    pub(super) prepared_charge: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
+    pub(super) preparing: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct HeldOccupancy {
-    pub(super) records: usize,
-    pub(super) header_bytes: u32,
-    pub(super) entry_bytes: u32,
-    pub(super) reserve_bytes: u32,
+pub(super) struct HeldBand {
+    pub(super) held: usize,
+    pub(super) limit: Option<usize>,
+    pub(super) refused_total: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HeldBands {
+    pub(super) human: HeldBand,
+    pub(super) steer: HeldBand,
+    pub(super) monitor: HeldBand,
+    pub(super) deferred: HeldBand,
+    pub(super) stationarity: HeldBand,
+    pub(super) skill: HeldBand,
+    pub(super) plan: HeldBand,
+    pub(super) peer: HeldBand,
+    pub(super) media_resample: HeldBand,
+    pub(super) tool_free_length: HeldBand,
+    pub(super) length_reminder: HeldBand,
+    pub(super) parent_stamps: usize,
+    pub(super) refused_by_reason: [u64; 11],
+    pub(super) observed_payload_bytes: [Option<u64>; 11],
 }
 
 pub(super) struct HeldInputLedger {
@@ -570,14 +606,13 @@ pub(super) struct HeldInputLedger {
         Option<xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventBuffer>,
     pub(super) terminal: bool,
     pub(super) refusal: Option<HoldRefusal>,
-    header_bytes: u32,
-    entry_bytes: u32,
-    reserve_bytes: u32,
+    pub(super) peer_origins: std::collections::BTreeSet<Occurrence>,
+    refused_totals: [u64; 11],
 }
 
 impl Default for HeldInputLedger {
     fn default() -> Self {
-        let mut ledger = Self {
+        Self {
             latch: None,
             latch_meta: None,
             entries: Default::default(),
@@ -589,12 +624,9 @@ impl Default for HeldInputLedger {
             pinned_in: None,
             terminal: false,
             refusal: None,
-            header_bytes: 0,
-            entry_bytes: 0,
-            reserve_bytes: held_refusal_reserve(),
-        };
-        ledger.refresh_header();
-        ledger
+            peer_origins: Default::default(),
+            refused_totals: [0; 11],
+        }
     }
 }
 
@@ -606,160 +638,52 @@ impl Drop for HeldInputLedger {
     }
 }
 
-fn held_compact_bytes(value: &serde_json::Value) -> u32 {
-    u32::try_from(value.to_string().len()).unwrap_or(u32::MAX)
-}
-
-fn held_refusal_reserve() -> u32 {
-    let sources = [
-        HeldSource::HumanInterjection,
-        HeldSource::ParentSteer,
-        HeldSource::MonitorEvent,
-        HeldSource::DeferredFollowUp,
-        HeldSource::StationarityReminder,
-        HeldSource::SkillReminder,
-        HeldSource::PlanActivation,
-    ];
-    let reasons = [
-        HoldRefusalReason::Records,
-        HoldRefusalReason::EntryBytes,
-        HoldRefusalReason::TotalBytes,
-        HoldRefusalReason::Accounting,
-        HoldRefusalReason::Terminal,
-    ];
-    sources
-        .into_iter()
-        .flat_map(|source| {
-            reasons.into_iter().map(move |reason| {
-                held_compact_bytes(
-                    &HoldRefusal {
-                        source,
-                        reason,
-                        key: u64::MAX,
-                        observed_len: u64::MAX,
-                    }
-                    .record(),
-                )
-            })
-        })
-        .max()
-        .unwrap_or(0)
-}
-
-fn held_binding_record(meta: Option<&HeldBindingMeta>) -> serde_json::Value {
-    meta.map_or(
-        serde_json::Value::Null,
-        |meta| serde_json::json!({"prompt_id":meta.prompt_id,"epoch":meta.epoch}),
-    )
-}
-
-fn held_stamp_reservation() -> u32 {
-    let slot =
-        serde_json::json!({"message_id":"x".repeat(HELD_STAMP_ID_JSON_BYTES - 2),"key":u64::MAX});
-    held_compact_bytes(&slot) * HELD_PARENT_STAMPS as u32
-        + HELD_PARENT_STAMPS.saturating_sub(1) as u32
-}
-
-fn held_reference(body: &HeldBody, key: Occurrence) -> serde_json::Value {
-    match body {
-        HeldBody::Human(_) | HeldBody::Owned(_) => serde_json::Value::Null,
-        HeldBody::Parent(message_id) => serde_json::json!({"message_id":message_id}),
-        HeldBody::Monitor => serde_json::json!({"occurrence":key.as_u64()}),
-        HeldBody::Plan => serde_json::json!({"activation_slot":1}),
-    }
-}
-
-fn held_entry_charge(
-    key: Occurrence,
-    source: HeldSource,
-    body: &HeldBody,
-    meta: &serde_json::Value,
-    payload: &serde_json::Value,
-) -> Result<u32, HoldRefusalReason> {
-    let mut charged = 0;
-    for _ in 0..12 {
-        let value = serde_json::json!({"key":key.as_u64(),"source":source.tag(),"ref":held_reference(body, key),
-            "meta":meta,"payload":payload,"preparation_control":if matches!(body, HeldBody::Human(_)) {
-                serde_json::json!({"key":key.as_u64(),"maximum_charge":u32::MAX})
-            } else { serde_json::Value::Null },"charged":charged});
-        let next = held_compact_bytes(&value);
-        if next == charged {
-            return Ok(charged);
-        }
-        if next == u32::MAX {
-            return Err(HoldRefusalReason::Accounting);
-        }
-        charged = next;
-    }
-    Err(HoldRefusalReason::Accounting)
-}
-
 impl HeldInputLedger {
-    pub(super) fn occupancy(&self) -> HeldOccupancy {
-        HeldOccupancy {
-            records: self.entries.len(),
-            header_bytes: self.header_bytes,
-            entry_bytes: self.entry_bytes.saturating_add(
-                self.entries
-                    .iter()
-                    .filter_map(|entry| entry.prepared_charge.as_ref())
-                    .fold(0u32, |sum, charge| {
-                        sum.saturating_add(charge.load(std::sync::atomic::Ordering::SeqCst))
-                    }),
-            ),
-            reserve_bytes: self.reserve_bytes,
+    pub(super) fn bands(&self, live_steer_slots: usize) -> HeldBands {
+        let band = |source, limit| {
+            let reason = match source {
+                HeldSource::HumanInterjection => None,
+                HeldSource::ParentSteer => Some(HoldRefusalReason::SteerSlotsFull),
+                HeldSource::MonitorEvent => Some(HoldRefusalReason::MonitorBandFull),
+                HeldSource::DeferredFollowUp => Some(HoldRefusalReason::DeferredBandFull),
+                HeldSource::StationarityReminder => Some(HoldRefusalReason::StationarityBandFull),
+                HeldSource::SkillReminder => Some(HoldRefusalReason::SkillBandFull),
+                HeldSource::PlanActivation => Some(HoldRefusalReason::PlanSlot),
+                HeldSource::PeerAgent => Some(HoldRefusalReason::PeerBandFull),
+                HeldSource::MediaResample => Some(HoldRefusalReason::MediaResampleBandFull),
+                HeldSource::ToolFreeLength => Some(HoldRefusalReason::ToolFreeLengthBandFull),
+                HeldSource::LengthReminder => Some(HoldRefusalReason::LengthReminderBandFull),
+            };
+            HeldBand {
+                held: self.entries.iter().filter(|entry| entry.source == source).count(),
+                limit,
+                refused_total: reason.map_or(0, |reason| self.refused_totals[reason as usize]),
+            }
+        };
+        let monitor_pins = match (self.pin_owner, self.pinned_in.as_ref()) {
+            (Some(owner), Some(buffer)) => buffer.release_view(owner, |_| false).iter().count(),
+            _ => 0,
+        };
+        HeldBands {
+            human: band(HeldSource::HumanInterjection, None),
+            steer: HeldBand { held: live_steer_slots, ..band(HeldSource::ParentSteer, Some(32)) },
+            monitor: HeldBand { held: monitor_pins, ..band(HeldSource::MonitorEvent, Some(128)) },
+            deferred: band(HeldSource::DeferredFollowUp, Some(128)),
+            stationarity: band(HeldSource::StationarityReminder, Some(128)),
+            skill: band(HeldSource::SkillReminder, Some(128)),
+            plan: band(HeldSource::PlanActivation, Some(1)),
+            peer: HeldBand { held: self.peer_count(0), ..band(HeldSource::PeerAgent, Some(50)) },
+            media_resample: band(HeldSource::MediaResample, Some(128)),
+            tool_free_length: band(HeldSource::ToolFreeLength, Some(128)),
+            length_reminder: band(HeldSource::LengthReminder, Some(128)),
+            parent_stamps: self.parent_stamps.len(),
+            refused_by_reason: self.refused_totals,
+            observed_payload_bytes: [None; 11],
         }
     }
 
-    fn header_charge(&self, pin_owner: Option<Occurrence>, pinned: bool) -> u32 {
-        self.header_charge_with_delivery(
-            pin_owner,
-            pinned,
-            self.parent_owner_meta.as_ref(),
-            self.parent_persisted,
-        )
-    }
-
-    fn header_charge_with_delivery(
-        &self,
-        pin_owner: Option<Occurrence>,
-        pinned: bool,
-        owner: Option<&HeldBindingMeta>,
-        persisted: u32,
-    ) -> u32 {
-        held_compact_bytes(&serde_json::json!({
-            "latch":held_binding_record(self.latch_meta.as_ref()),
-            "latch_metadata":held_binding_record(self.latch_meta.as_ref()),
-            "delivery_owner":held_binding_record(owner),
-            "delivery_owner_metadata":held_binding_record(owner),
-            "parent_persisted":persisted,
-            "pin_owner":pin_owner.map(Occurrence::as_u64),
-            "pin_handle":if pinned { serde_json::json!("monitor_event_buffer") } else { serde_json::Value::Null },
-            "terminal":u8::from(self.terminal),"parent_stamps":[],
-        })).saturating_add(held_stamp_reservation())
-    }
-
-    pub(super) fn refresh_header(&mut self) {
-        self.header_bytes = self.header_charge(self.pin_owner, self.pinned_in.is_some());
-    }
-
-    fn check_parent_header(&mut self, header_bytes: u32) -> Result<(), HeldCommitError> {
-        let occupancy = self.occupancy();
-        if u64::from(header_bytes)
-            + u64::from(occupancy.entry_bytes)
-            + u64::from(occupancy.reserve_bytes)
-            > u64::from(HELD_INPUT_BYTES)
-        {
-            self.refusal(
-                HeldSource::ParentSteer,
-                HoldRefusalReason::TotalBytes,
-                next_occurrence(),
-                header_bytes,
-            );
-            return Err(HeldCommitError::Capacity);
-        }
-        Ok(())
-    }
+    // The fixed parent-delivery caller still reaches this method.
+    pub(super) fn refresh_header(&mut self) {}
 
     pub(super) fn bind_parent_delivery(
         &mut self,
@@ -767,36 +691,21 @@ impl HeldInputLedger {
         meta: &HeldBindingMeta,
     ) -> Result<(), HeldCommitError> {
         if self.parent_owner.as_ref() != Some(binding) {
-            let header = self.header_charge_with_delivery(
-                self.pin_owner,
-                self.pinned_in.is_some(),
-                Some(meta),
-                0,
-            );
-            self.check_parent_header(header)?;
             self.parent_owner = Some(binding.clone());
             self.parent_owner_meta = Some(meta.clone());
             self.parent_persisted = 0;
-            self.header_bytes = header;
         }
         Ok(())
     }
 
-    pub(super) fn check_parent_progress(&mut self, persisted: u32) -> Result<(), HeldCommitError> {
-        let header = self.header_charge_with_delivery(
-            self.pin_owner,
-            self.pinned_in.is_some(),
-            self.parent_owner_meta.as_ref(),
-            persisted,
-        );
-        self.check_parent_header(header)
+    pub(super) fn check_parent_progress(&mut self, _persisted: u32) -> Result<(), HeldCommitError> {
+        Ok(())
     }
 
     pub(super) fn clear_parent_delivery(&mut self) {
         self.parent_owner = None;
         self.parent_owner_meta = None;
         self.parent_persisted = 0;
-        self.refresh_header();
     }
 
     pub(super) fn retaining(&self) -> bool {
@@ -805,9 +714,7 @@ impl HeldInputLedger {
 
     pub(super) fn stamp_parent(&mut self, message_id: &str) {
         if self.terminal
-            || self.parent_stamps.len() >= HELD_PARENT_STAMPS
             || self.parent_stamps.iter().any(|(id, _)| id == message_id)
-            || serde_json::json!(message_id).to_string().len() > HELD_STAMP_ID_JSON_BYTES
         {
             return;
         }
@@ -825,23 +732,24 @@ impl HeldInputLedger {
         self.entries.iter().any(|entry| entry.key == key)
     }
 
-    fn refusal(
+    pub(super) fn refusal(
         &mut self,
         source: HeldSource,
         reason: HoldRefusalReason,
         key: Occurrence,
-        observed_len: u32,
+        observed_len: usize,
     ) {
+        self.refused_totals[reason as usize] = self.refused_totals[reason as usize].saturating_add(1);
         self.refusal = Some(HoldRefusal {
             source,
             reason,
             key: key.as_u64(),
-            observed_len: u64::from(observed_len),
+            observed_len: observed_len as u64,
         });
         tracing::warn!(
             source = source.tag(),
             reason = reason.tag(),
-            "native held input refused before growth"
+            "native held input refused at admission"
         );
     }
 
@@ -851,64 +759,47 @@ impl HeldInputLedger {
         source: HeldSource,
         body: HeldBody,
         meta: serde_json::Value,
-        payload: serde_json::Value,
-        proposed_header: u32,
     ) -> Result<(), (HoldRefusalReason, HeldBody)> {
         if self.has_key(key) {
             return Ok(());
         }
-        let charged = match held_entry_charge(key, source, &body, &meta, &payload) {
-            Ok(charged) => charged,
-            Err(reason) => {
-                self.refusal(source, reason, key, u32::MAX);
-                return Err((reason, body));
-            }
-        };
-        let occupancy = self.occupancy();
+        let held = self.entries.iter().filter(|entry| entry.source == source).count();
         let reason = if self.terminal {
             Some(HoldRefusalReason::Terminal)
-        } else if occupancy.records + 1 > HELD_INPUT_ENTRIES {
-            Some(HoldRefusalReason::Records)
-        } else if charged > HELD_ENTRY_BYTES {
-            Some(HoldRefusalReason::EntryBytes)
-        } else if u64::from(proposed_header)
-            + u64::from(occupancy.entry_bytes)
-            + u64::from(charged)
-            + u64::from(occupancy.reserve_bytes)
-            > u64::from(HELD_INPUT_BYTES)
-        {
-            Some(HoldRefusalReason::TotalBytes)
         } else {
-            None
+            match source {
+                HeldSource::HumanInterjection | HeldSource::ParentSteer => None,
+                HeldSource::MonitorEvent if held >= HELD_MACHINE_ENTRIES => Some(HoldRefusalReason::MonitorBandFull),
+                HeldSource::DeferredFollowUp if held >= HELD_MACHINE_ENTRIES => Some(HoldRefusalReason::DeferredBandFull),
+                HeldSource::StationarityReminder if held >= HELD_MACHINE_ENTRIES => Some(HoldRefusalReason::StationarityBandFull),
+                HeldSource::SkillReminder if held >= HELD_MACHINE_ENTRIES => Some(HoldRefusalReason::SkillBandFull),
+                HeldSource::PlanActivation if held >= 1 => Some(HoldRefusalReason::PlanSlot),
+                HeldSource::PeerAgent if held >= 50 => Some(HoldRefusalReason::PeerBandFull),
+                HeldSource::MediaResample if held >= HELD_MACHINE_ENTRIES => Some(HoldRefusalReason::MediaResampleBandFull),
+                HeldSource::ToolFreeLength if held >= HELD_MACHINE_ENTRIES => Some(HoldRefusalReason::ToolFreeLengthBandFull),
+                HeldSource::LengthReminder if held >= HELD_MACHINE_ENTRIES => Some(HoldRefusalReason::LengthReminderBandFull),
+                HeldSource::MonitorEvent | HeldSource::DeferredFollowUp | HeldSource::StationarityReminder
+                | HeldSource::SkillReminder | HeldSource::PlanActivation | HeldSource::PeerAgent
+                | HeldSource::MediaResample | HeldSource::ToolFreeLength | HeldSource::LengthReminder => None,
+            }
         };
         if let Some(reason) = reason {
-            self.refusal(source, reason, key, charged);
+            self.refusal(source, reason, key, held);
             return Err((reason, body));
         }
-        self.header_bytes = proposed_header;
-        self.entry_bytes += charged;
-        let prepared_charge = matches!(&body, HeldBody::Human(_))
-            .then(|| std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)));
-        self.entries.push_back(HeldEntry {
-            key,
-            source,
-            body,
-            meta,
-            charged,
-            prepared_charge,
-        });
+        let preparing = matches!(&body, HeldBody::Human(_))
+            .then(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        self.entries.push_back(HeldEntry { key, source, body, meta, preparing });
         Ok(())
     }
 
     pub(super) fn commit_keys(&mut self, submitted: &[Occurrence]) {
         self.entries.retain(|entry| !submitted.contains(&entry.key));
-        self.entry_bytes = self.entries.iter().map(|entry| entry.charged).sum();
     }
 
     fn clear_latch(&mut self) {
         self.latch = None;
         self.latch_meta = None;
-        self.refresh_header();
     }
 }
 
@@ -920,8 +811,8 @@ pub(super) struct HeldParentView {
 }
 
 impl HeldParentView {
-    pub(super) fn release_key(&self) -> Occurrence {
-        self.key.unwrap_or_else(next_occurrence)
+    pub(super) fn release_key(&self) -> Result<Occurrence, HeldCommitError> {
+        self.key.ok_or(HeldCommitError::MissingParentStamp)
     }
 }
 
@@ -936,6 +827,7 @@ pub(super) enum HeldCommitError {
     ChatStateUnavailable,
     Terminal,
     Capacity,
+    MissingParentStamp,
 }
 
 struct PreparedHeldHuman {
@@ -969,6 +861,10 @@ impl SessionActor {
             != xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected {
             return None;
         }
+        self.latched_native_observation().await
+    }
+
+    async fn latched_native_observation(&self) -> Option<HeldNativeObservation> {
         let read = self.chat_state_handle.read_native_history().await;
         let live = read.as_ref().is_ok_and(|read| {
             read.checkpoint.as_ref().is_some_and(|checkpoint| {
@@ -1014,6 +910,12 @@ impl SessionActor {
         }) && (observation.live || (observation.unavailable && !observation.chat_closed))
     }
 
+    pub(super) async fn native_inputs_held(&self) -> bool {
+        let observation = self.held_native_observation().await;
+        let state = self.state.lock().await;
+        Self::held_matches(&state, observation.as_ref())
+    }
+
     pub(super) async fn hold_or_push_user_item(
         &self,
         item: ConversationItem,
@@ -1027,25 +929,13 @@ impl SessionActor {
             return Ok(());
         }
         let key = next_occurrence();
-        let payload = serde_json::to_value(&item).map_err(|_| {
-            crate::sampling::error::local_error(
-                "native_held_input_incomplete",
-                "held user input accounting failed",
-            )
-        })?;
         let meta = serde_json::json!({"owner_session_id":self.session_info.id.0.as_ref(),"content_references":1});
-        let ledger = &mut state.message_delivery.held_input;
-        let header = ledger.header_bytes;
-        ledger
-            .admit(key, source, HeldBody::Owned(item), meta, payload, header)
+        state.message_delivery.held_input
+            .admit(key, source, HeldBody::Owned(item), meta)
             .map_err(|(reason, _)| {
                 crate::sampling::error::local_error(
                     "native_held_input_incomplete",
-                    format!(
-                        "held {} refused: {}; accepted prefix retained",
-                        source.tag(),
-                        reason.tag()
-                    ),
+                    format!("held {} refused: {}; accepted prefix retained", source.tag(), reason.tag()),
                 )
             })
     }
@@ -1057,9 +947,7 @@ impl SessionActor {
         #[cfg(test)]
         super::native_messages_replay_tests::u6_record_native_safe_point(
             "held admission",
-            observation
-                .as_ref()
-                .map(|value| (value.live, value.unavailable, value.chat_closed)),
+            observation.as_ref().map(|value| (value.live, value.unavailable, value.chat_closed)),
             holding,
             state.message_delivery.held_input.retaining(),
         );
@@ -1072,8 +960,7 @@ impl SessionActor {
         let Some(task) = state.running_task.as_ref() else {
             return true;
         };
-        let binding =
-            xai_message_delivery_core::TurnBinding::new(task.prompt_id.clone(), task.epoch);
+        let binding = xai_message_delivery_core::TurnBinding::new(task.prompt_id.clone(), task.epoch);
         let binding_meta = HeldBindingMeta {
             prompt_id: task.prompt_id.clone(),
             epoch: format!("{:?}", task.epoch),
@@ -1088,55 +975,40 @@ impl SessionActor {
                 continue;
             }
             let meta = serde_json::json!({"owner_session_id":self.session_info.id.0.as_ref(),"resident_reference":1});
-            let _ = ledger.admit(
-                key,
-                HeldSource::ParentSteer,
-                HeldBody::Parent(parent.message_id),
-                meta,
-                parent.payload,
-                ledger.header_bytes,
-            );
+            let _ = ledger.admit(key, HeldSource::ParentSteer, HeldBody::Parent(parent.message_id), meta);
         }
-        let mut residents = self
-            .pending_interjections
-            .drain_all_with_occurrences()
-            .into_iter();
+        let peer_origins = std::mem::take(&mut state.message_delivery.held_input.peer_origins);
+        let mut residents = self.pending_interjections.drain_all_with_occurrences().into_iter();
         while let Some((key, resident)) = residents.next() {
-            let payload =
-                serde_json::json!({"text":resident.text,"attachments":resident.attachments});
+            let source = if peer_origins.contains(&key) { HeldSource::PeerAgent } else { HeldSource::HumanInterjection };
             let body = HeldBody::Human(std::sync::Arc::new(resident));
             let meta = serde_json::json!({"owner_session_id":self.session_info.id.0.as_ref(),"raw_references":1});
             let ledger = &mut state.message_delivery.held_input;
-            if let Err((_, HeldBody::Human(resident))) = ledger.admit(
-                key,
-                HeldSource::HumanInterjection,
-                body,
-                meta,
-                payload,
-                ledger.header_bytes,
-            ) {
+            if let Err((_, HeldBody::Human(resident))) = ledger.admit(key, source, body, meta) {
                 let resident = std::sync::Arc::try_unwrap(resident)
                     .unwrap_or_else(|_| unreachable!("refused raw resident has one owner"));
                 let mut refused = vec![(key, resident)];
                 refused.extend(residents);
-                self.pending_interjections
-                    .restore_front_with_occurrences(refused);
+                ledger.peer_origins.extend(refused.iter().map(|(key, _)| *key).filter(|key| peer_origins.contains(key)));
+                self.pending_interjections.restore_front_with_occurrences(refused);
                 break;
             }
         }
         if let Some(buffer) = self.tool_context.monitor_event_buffer.as_ref() {
             let ledger = &mut state.message_delivery.held_input;
             let owner = ledger.pin_owner.unwrap_or_else(next_occurrence);
-            let header = ledger.header_charge(Some(owner), true);
+            let pins = buffer.release_view(owner, |_| false).iter().map(|(key, _)| key).collect::<Vec<_>>();
+            ledger.entries.retain(|entry| entry.source != HeldSource::MonitorEvent || pins.contains(&entry.key));
             let session_id = self.session_info.id.0.as_ref();
             buffer.pin_matching(owner, |event| event.owner_session_id.as_deref().is_none_or(|id| id == session_id), |key, event| {
                 let meta = serde_json::json!({"owner_session_id":event.owner_session_id,"task_id":event.task_id,"pin_owner":owner.as_u64()});
-                let payload = serde_json::json!({"owner_session_id":event.owner_session_id,"task_id":event.task_id,"event_text":event.event_text,"slot_pin":owner.as_u64()});
-                if ledger.admit(key, HeldSource::MonitorEvent, HeldBody::Monitor, meta, payload, header).is_ok() {
+                if ledger.admit(key, HeldSource::MonitorEvent, HeldBody::Monitor, meta).is_ok() {
                     ledger.pin_owner = Some(owner);
                     ledger.pinned_in = Some(buffer.clone());
                     true
-                } else { false }
+                } else {
+                    false
+                }
             });
         }
         true
@@ -1153,22 +1025,9 @@ impl SessionActor {
             let mut accepted = 0;
             for item in reminders.iter() {
                 let key = next_occurrence();
-                let Ok(payload) = serde_json::to_value(item) else {
-                    break;
-                };
                 let ledger = &mut state.message_delivery.held_input;
                 let meta = serde_json::json!({"owner_session_id":self.session_info.id.0.as_ref(),"content_references":1});
-                if ledger
-                    .admit(
-                        key,
-                        HeldSource::SkillReminder,
-                        HeldBody::Owned(item.clone()),
-                        meta,
-                        payload,
-                        ledger.header_bytes,
-                    )
-                    .is_err()
-                {
+                if ledger.admit(key, HeldSource::SkillReminder, HeldBody::Owned(item.clone()), meta).is_err() {
                     break;
                 }
                 accepted += 1;
@@ -1176,31 +1035,15 @@ impl SessionActor {
             reminders.drain(..accepted);
             let plan = self.plan_mode.lock();
             let ledger = &mut state.message_delivery.held_input;
-            if let Some(text) = plan.pending_activation_text() {
-                if !ledger
-                    .entries
-                    .iter()
-                    .any(|entry| matches!(entry.body, HeldBody::Plan))
-                {
+            if plan.pending_activation_text().is_some() {
+                if !ledger.entries.iter().any(|entry| matches!(entry.body, HeldBody::Plan)) {
                     let key = next_occurrence();
-                    let payload = serde_json::json!({"text":text,"prior_state_bits":1});
                     let meta = serde_json::json!({"owner_session_id":self.session_info.id.0.as_ref(),"resident_reference":1});
-                    let _ = ledger.admit(
-                        key,
-                        HeldSource::PlanActivation,
-                        HeldBody::Plan,
-                        meta,
-                        payload,
-                        ledger.header_bytes,
-                    );
+                    let _ = ledger.admit(key, HeldSource::PlanActivation, HeldBody::Plan, meta);
                 }
             } else {
-                let keys: Vec<_> = ledger
-                    .entries
-                    .iter()
-                    .filter(|entry| matches!(entry.body, HeldBody::Plan))
-                    .map(|entry| entry.key)
-                    .collect();
+                let keys: Vec<_> = ledger.entries.iter()
+                    .filter(|entry| matches!(entry.body, HeldBody::Plan)).map(|entry| entry.key).collect();
                 ledger.commit_keys(&keys);
             }
             return;
@@ -1276,30 +1119,8 @@ impl SessionActor {
             let typed = crate::session::placeholder_images::strip_paths_from_image_placeholders(
                 raw.text.clone(),
             );
-            let owned = custody.entries.iter().any(|entry| entry.key == key);
-            if owned
-                && !self
-                    .price_held_preparation(
-                        key,
-                        serde_json::json!({"key":key.as_u64(),"typed":typed}),
-                    )
-                    .await
-            {
-                return false;
-            }
             let skill = self.interjection_skill_information(&typed).await;
             let mut wrapped = format_interjection(typed.clone());
-            if owned
-                && !self
-                    .price_held_preparation(
-                        key,
-                        serde_json::json!({"key":key.as_u64(),"typed":typed,
-                "wrapped":wrapped,"skill":skill,"input_images":raw.attachments}),
-                    )
-                    .await
-            {
-                return false;
-            }
             let images = self
                 .prepare_interjection_images(&mut wrapped, raw.attachments.clone())
                 .await;
@@ -1308,17 +1129,6 @@ impl SessionActor {
             let mut item = ConversationItem::interjection(model_text);
             for image in &images {
                 item.add_image(pick_user_image_url(image));
-            }
-            if owned
-                && !self
-                    .price_held_preparation(
-                        key,
-                        serde_json::json!({"key":key.as_u64(),"wrapped":wrapped,
-                "typed":typed,"images":images,"item":item}),
-                    )
-                    .await
-            {
-                return false;
             }
             prepared.push(PreparedHeldHuman {
                 key,
@@ -1347,6 +1157,7 @@ impl SessionActor {
         let mut submitted = Vec::new();
         let mut delivered_skill = false;
         let mut delivered_plan = false;
+        let mut missing_stamp_report = None;
         let committed = {
             let mut state = self.state.lock().await;
             let current = state.running_task.as_ref().map(|task| {
@@ -1377,13 +1188,27 @@ impl SessionActor {
                     cutoff = Some(cutoff.map_or(entry.key, |key| key.min(entry.key)));
                 }
             }
-            let pending_parents = self.held_parent_views(&state, &binding, &binding_meta);
-            let parent_selection = if cutoff.is_some_and(|limit| {
-                pending_parents
-                    .iter()
-                    .any(|parent| parent.key.is_some_and(|key| key >= limit))
+            let expired_parent_identities = state.message_delivery.held_input.entries.iter()
+                .filter_map(|entry| match &entry.body {
+                    HeldBody::Parent(identity) if !self.parent_identity_is_live(&state, identity) => Some(identity.clone()),
+                    _ => None,
+                }).collect::<Vec<_>>();
+            let mut parents = self.held_parent_views(&state, &binding, &binding_meta);
+            parents.extend(self.held_projecting_parent_views(&mut state, &binding, &binding_meta));
+            let missing_parent_stamps = parents.iter().filter(|parent| parent.key.is_none()).count();
+            if missing_parent_stamps > 0 {
+                let mut record = HeldInputHostRecord {
+                    reason: "missing_parent_stamp",
+                    bands: self.held_input_bands(&state),
+                    held_human: Vec::new(),
+                }.record();
+                record["missing_parent_stamps"] = serde_json::json!(missing_parent_stamps);
+                missing_stamp_report = Some(record);
+            }
+            let parent_selection = if parents.iter().any(|parent| {
+                parent.key.is_none_or(|key| cutoff.is_some_and(|limit| key >= limit))
             }) {
-                if let Some(first) = pending_parents.iter().filter_map(|parent| parent.key).min() {
+                if let Some(first) = parents.iter().filter_map(|parent| parent.key).min() {
                     cutoff = Some(cutoff.map_or(first, |key| key.min(first)));
                 }
                 HeldParentSelection::None
@@ -1417,7 +1242,10 @@ impl SessionActor {
                 }
                 for entry in &ledger.entries {
                     match &entry.body {
-                        HeldBody::Human(_) | HeldBody::Parent(_) => {}
+                        HeldBody::Human(_) => {}
+                        HeldBody::Parent(identity) => {
+                            if expired_parent_identities.contains(identity) { expired.push(entry.key); }
+                        }
                         HeldBody::Owned(item) => items.push(HeldReleaseItem { key: entry.key, source: entry.source,
                             content: HeldReleaseContent::Item(item.clone()) }),
                         HeldBody::Monitor => {
@@ -1434,7 +1262,7 @@ impl SessionActor {
                     }
                 }
                 for parent in parents {
-                    items.push(HeldReleaseItem { key: parent.release_key(), source: HeldSource::ParentSteer,
+                    items.push(HeldReleaseItem { key: parent.release_key()?, source: HeldSource::ParentSteer,
                         content: HeldReleaseContent::Item(ConversationItem::agent_message(parent.text.to_string())) });
                 }
                 if let Some(view) = &view {
@@ -1478,7 +1306,7 @@ impl SessionActor {
                 }
                 if batch.is_empty() {
                     ledger.commit_keys(&expired);
-                    if cutoff.is_none() { ledger.clear_latch(); }
+                    if cutoff.is_none() && missing_parent_stamps == 0 { ledger.clear_latch(); }
                     return Ok(());
                 }
                 Self::persist_held_parent_prefix(parents, ledger, |parent| {
@@ -1497,12 +1325,15 @@ impl SessionActor {
                 skills.drain(..skill_count);
                 let mut removed = submitted.clone(); removed.extend(expired);
                 ledger.commit_keys(&removed);
-                if cutoff.is_none() { ledger.clear_latch(); }
+                if cutoff.is_none() && missing_parent_stamps == 0 { ledger.clear_latch(); }
                 Ok(())
             })
         };
         #[cfg(test)]
         super::native_messages_replay_tests::u6_record_release_outcome(committed.is_ok());
+        if let Some(record) = missing_stamp_report {
+            self.send_hook_annotation(&record.to_string()).await;
+        }
         if committed.is_err() {
             tracing::warn!(
                 "native held release incomplete: downstream commit unavailable; custody retained"
@@ -1510,6 +1341,8 @@ impl SessionActor {
             return false;
         }
         guard.defuse_occurrences(&submitted);
+        drop(guard);
+        let persisted_humans = prepared.iter().any(|human| submitted.contains(&human.key));
         for human in prepared {
             if submitted.contains(&human.key) {
                 self.persist_synthetic_user_message_with_model(
@@ -1518,6 +1351,20 @@ impl SessionActor {
                     &human.images,
                     &model_id,
                 );
+            }
+        }
+        if persisted_humans {
+            // Fence the queued chat batch before flushing its persisted updates.
+            let accepted = self.chat_state_handle.push_user_messages_batch_and_ack(Vec::new()).await;
+            let (respond_to, persisted) = oneshot::channel();
+            if accepted.is_none()
+                || self.notifications.persistence_tx.send(PersistenceMsg::FlushAndAck { respond_to }).is_err()
+                || !matches!(persisted.await, Ok(Ok(())))
+            {
+                tracing::warn!("native held user updates could not be flushed after submission");
+            }
+            if self.state.lock().await.message_delivery.held_input.terminal {
+                return false;
             }
         }
         if delivered_plan {
@@ -1534,7 +1381,7 @@ impl SessionActor {
 struct HeldPreparationEntry {
     key: Occurrence,
     raw: std::sync::Arc<PendingInterjection>,
-    charge: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    preparing: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -1545,100 +1392,233 @@ struct HeldPreparation {
 impl Drop for HeldPreparation {
     fn drop(&mut self) {
         for entry in &self.entries {
-            entry.charge.store(0, std::sync::atomic::Ordering::SeqCst);
+            entry.preparing.store(false, std::sync::atomic::Ordering::Release);
         }
     }
-}
-
-fn held_preparation_charge(key: Occurrence, payload: &serde_json::Value) -> u32 {
-    let mut charged = 0;
-    for _ in 0..12 {
-        let record = serde_json::json!({"key":key.as_u64(),"raw_reference":key.as_u64(),
-            "charge_reference":key.as_u64(),"prepared":payload,"charged":charged});
-        let next = held_compact_bytes(&record);
-        if next == charged {
-            return charged;
-        }
-        if next == u32::MAX {
-            return u32::MAX;
-        }
-        charged = next;
-    }
-    u32::MAX
 }
 
 impl HeldInputLedger {
     fn begin_preparation(&mut self) -> Result<HeldPreparation, ()> {
         let mut preparation = HeldPreparation::default();
-        for index in 0..self.entries.len() {
-            let entry = &self.entries[index];
+        for entry in &self.entries {
             let HeldBody::Human(raw) = &entry.body else {
                 continue;
             };
-            let key = entry.key;
-            let Some(charge) = &entry.prepared_charge else {
+            let Some(preparing) = &entry.preparing else {
                 return Err(());
             };
-            if charge.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            // A raw entry has one preparation owner, independently of its size.
+            if preparing.swap(true, std::sync::atomic::Ordering::AcqRel) {
                 return Err(());
             }
-            let bytes = held_preparation_charge(key, &serde_json::Value::Null);
-            let occupancy = self.occupancy();
-            if u64::from(occupancy.header_bytes)
-                + u64::from(occupancy.entry_bytes)
-                + u64::from(bytes)
-                + u64::from(occupancy.reserve_bytes)
-                > u64::from(HELD_INPUT_BYTES)
-            {
-                self.refusal(
-                    HeldSource::HumanInterjection,
-                    HoldRefusalReason::TotalBytes,
-                    key,
-                    bytes,
-                );
-                return Err(());
-            }
-            charge.store(bytes, std::sync::atomic::Ordering::SeqCst);
             preparation.entries.push(HeldPreparationEntry {
-                key,
+                key: entry.key,
                 raw: raw.clone(),
-                charge: charge.clone(),
+                preparing: preparing.clone(),
             });
         }
         Ok(preparation)
     }
 }
 
+#[derive(serde::Serialize)]
+struct HeldHumanAtClose {
+    key: u64,
+    text: String,
+    attachment_count: usize,
+}
+
+struct HeldInputHostRecord {
+    reason: &'static str,
+    bands: HeldBands,
+    held_human: Vec<HeldHumanAtClose>,
+}
+
+impl HeldInputHostRecord {
+    fn record(&self) -> serde_json::Value {
+        let mut record = serde_json::json!({
+            "kind": "held_input_host_record",
+            "reason": self.reason,
+            "bands": {
+                "human_interjection": self.bands.human.held,
+                "parent_steer": self.bands.steer.held,
+                "monitor_event": self.bands.monitor.held,
+                "deferred_followup": self.bands.deferred.held,
+                "stationarity_reminder": self.bands.stationarity.held,
+                "skill_reminder": self.bands.skill.held,
+                "plan_activation": self.bands.plan.held,
+                "peer_agent": self.bands.peer.held,
+                "media_resample": self.bands.media_resample.held,
+                "tool_free_length": self.bands.tool_free_length.held,
+                "length_reminder": self.bands.length_reminder.held,
+            },
+        });
+        if !self.held_human.is_empty() {
+            record["held_human"] = serde_json::json!(self.held_human);
+        }
+        record
+    }
+}
+
 impl SessionActor {
-    async fn price_held_preparation(&self, key: Occurrence, payload: serde_json::Value) -> bool {
-        let bytes = held_preparation_charge(key, &payload);
-        let mut state = self.state.lock().await;
-        let ledger = &mut state.message_delivery.held_input;
-        let Some(charge) = ledger
-            .entries
-            .iter()
-            .find(|entry| entry.key == key)
-            .and_then(|entry| entry.prepared_charge.as_ref())
-        else {
-            return false;
-        };
-        let previous = charge.load(std::sync::atomic::Ordering::SeqCst);
-        let occupancy = ledger.occupancy();
-        if u64::from(occupancy.header_bytes) + u64::from(occupancy.entry_bytes)
-            - u64::from(previous)
-            + u64::from(bytes)
-            + u64::from(occupancy.reserve_bytes)
-            > u64::from(HELD_INPUT_BYTES)
-        {
-            ledger.refusal(
-                HeldSource::HumanInterjection,
-                HoldRefusalReason::TotalBytes,
-                key,
-                bytes,
-            );
+    async fn retain_stranded_interjections_for_next_turn(&self) -> bool {
+        let retaining = self.state.lock().await.message_delivery.held_input.retaining();
+        if !retaining {
             return false;
         }
-        charge.store(bytes, std::sync::atomic::Ordering::SeqCst);
+        // Custody outlives the turn's native-selection context.
+        let read = self.chat_state_handle.read_native_history().await;
+        let unavailable = read.as_ref().map_or(true, |read| read.checkpoint.is_none());
+        let chat_closed = read.is_err()
+            && self.chat_state_handle.get_sampling_config().await.is_none();
+        let report = {
+            let mut state = self.state.lock().await;
+            if !state.message_delivery.held_input.retaining() {
+                return false;
+            }
+            if state.message_delivery.held_input.terminal {
+                return true;
+            }
+            let peer_origins = std::mem::take(&mut state.message_delivery.held_input.peer_origins);
+            let mut refused = Vec::new();
+            for (key, resident) in self.pending_interjections.drain_all_with_occurrences() {
+                let source = if peer_origins.contains(&key) { HeldSource::PeerAgent } else { HeldSource::HumanInterjection };
+                let meta = serde_json::json!({
+                    "owner_session_id": self.session_info.id.0.as_ref(),
+                    "resident_reference": 1,
+                });
+                if let Err((_, HeldBody::Human(resident))) = state.message_delivery.held_input.admit(
+                    key, source, HeldBody::Human(std::sync::Arc::new(resident)), meta,
+                ) {
+                    let resident = std::sync::Arc::try_unwrap(resident)
+                        .unwrap_or_else(|_| unreachable!("refused raw resident has one owner"));
+                    refused.push((key, resident));
+                }
+            }
+            state.message_delivery.held_input.peer_origins.extend(refused.iter().map(|(key, _)| *key).filter(|key| peer_origins.contains(key)));
+            self.pending_interjections.restore_front_with_occurrences(refused);
+            if chat_closed {
+                self.settle_held_inputs_terminal(&mut state)
+            } else {
+                unavailable.then(|| {
+                    let record = HeldInputHostRecord {
+                        reason: "retained_view_unavailable",
+                        bands: self.held_input_bands(&state),
+                        held_human: Vec::new(),
+                    };
+                    tracing::warn!(reason = record.reason, bands = ?record.bands, "Held input retained at turn end");
+                    record.record()
+                })
+            }
+        };
+        if let Some(record) = report {
+            self.send_hook_annotation(&record.to_string()).await;
+        }
         true
+    }
+}
+
+impl SessionActor {
+    pub(super) fn settle_held_inputs_terminal(&self, state: &mut State) -> Option<serde_json::Value> {
+        let bands = self.held_input_bands(state);
+        let ledger = &mut state.message_delivery.held_input;
+        if ledger.terminal {
+            return None;
+        }
+        ledger.terminal = true;
+        let record = ledger.retaining().then(|| {
+            let mut held_human = ledger.entries.iter().filter_map(|entry| {
+                if entry.source != HeldSource::HumanInterjection { return None; }
+                let HeldBody::Human(human) = &entry.body else {
+                    return None;
+                };
+                Some(HeldHumanAtClose {
+                    key: entry.key.as_u64(),
+                    text: human.text.clone(),
+                    attachment_count: human.attachments.len(),
+                })
+            }).collect::<Vec<_>>();
+            held_human.sort_by_key(|human| human.key);
+            HeldInputHostRecord {
+                reason: "settled_at_chat_close",
+                bands,
+                held_human,
+            }
+        });
+        if let (Some(owner), Some(buffer)) = (ledger.pin_owner, ledger.pinned_in.as_ref()) {
+            buffer.unpin_all(owner);
+        }
+        ledger.entries.clear();
+        ledger.peer_origins.clear();
+        ledger.parent_stamps.clear();
+        ledger.clear_parent_delivery();
+        ledger.clear_latch();
+        ledger.pin_owner = None;
+        ledger.pinned_in = None;
+        record.map(|record| {
+            tracing::warn!(reason = record.reason, bands = ?record.bands, "Held input settled at logical end");
+            record.record()
+        })
+    }
+}
+
+impl HeldInputLedger {
+    fn peer_count(&self, native_residents: usize) -> usize {
+        self.entries.iter().filter(|entry| entry.source == HeldSource::PeerAgent).count()
+            + self.peer_origins.len() + native_residents
+    }
+
+    fn peer_band_available(&mut self, native_residents: usize) -> bool {
+        let count = self.peer_count(native_residents);
+        let reason = if self.terminal {
+            Some(HoldRefusalReason::Terminal)
+        } else if count >= 50 {
+            Some(HoldRefusalReason::PeerBandFull)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            self.refusal(HeldSource::PeerAgent, reason, next_occurrence(), count);
+            return false;
+        }
+        true
+    }
+}
+
+impl SessionActor {
+    pub(super) async fn queue_active_peer_text(&self, text: String) -> bool {
+        let observation = self.latched_native_observation().await;
+        let mut state = self.state.lock().await;
+        let holding = Self::held_matches(&state, observation.as_ref());
+        let entry = PendingInterjection { text, attachments: Vec::new() };
+        if holding {
+            let native_residents = self.pending_native_agent_messages.lock().map_or(0, |items| items.len());
+            let ledger = &mut state.message_delivery.held_input;
+            if !ledger.peer_band_available(native_residents) {
+                return false;
+            }
+            let key = self.pending_interjections.push_with_occurrence(entry);
+            ledger.peer_origins.insert(key);
+        } else {
+            self.pending_interjections.push(entry);
+        }
+        true
+    }
+
+    pub(super) async fn queue_active_native_peer(&self, item: ConversationItem) {
+        let observation = self.latched_native_observation().await;
+        let mut state = self.state.lock().await;
+        let holding = Self::held_matches(&state, observation.as_ref());
+        if let Ok(mut buffered) = self.pending_native_agent_messages.lock()
+            && (!holding || state.message_delivery.held_input.peer_band_available(buffered.len()))
+        {
+            buffered.push(item);
+        }
+    }
+
+    fn held_input_bands(&self, state: &State) -> HeldBands {
+        let mut bands = state.message_delivery.held_input.bands(self.live_parent_steer_slots(state));
+        bands.peer.held += self.pending_native_agent_messages.lock().map_or(0, |items| items.len());
+        bands
     }
 }

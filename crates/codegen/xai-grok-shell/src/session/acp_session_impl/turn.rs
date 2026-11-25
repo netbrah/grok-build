@@ -2357,6 +2357,58 @@ impl SessionActor {
         );
         crate::session::helpers::memory_context::format_memory_reminder(&inject_results)
     }
+
+    /// `Some(None)` delivers an appended item; `Some(Some(text))` uses the System head.
+    async fn memory_for_build(&self, awaiting_continuation: bool) -> Option<Option<String>> {
+        if self
+            .memory
+            .context_injected
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return None;
+        }
+        if !self.memory.is_enabled() {
+            return self.first_turn_memory_reminder().await.map(Some);
+        }
+        let covered = self.native_checkpoint_covers_history().await;
+        if covered && awaiting_continuation {
+            return None;
+        }
+        if (covered || super::switch_projection::select_native_history()
+            == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected)
+            && crate::session::helpers::memory_context::conversation_has_memory_reminder_item(
+                &self.chat_state_handle.get_conversation().await,
+                self.reminder_wrapper_tag(),
+            )
+        {
+            self.memory.context_injected.store(true, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        }
+        if !covered {
+            return self.first_turn_memory_reminder().await.map(Some);
+        }
+        let text = self.first_turn_memory_reminder().await?;
+        self.push_system_reminder_with_tag(&text, self.reminder_wrapper_tag());
+        Some(None)
+    }
+
+    async fn native_checkpoint_covers_history(&self) -> bool {
+        if super::switch_projection::select_native_history()
+            != xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
+        {
+            return false;
+        }
+        self.chat_state_handle
+            .read_native_history()
+            .await
+            .as_ref()
+            .is_ok_and(|read| {
+                read.checkpoint
+                    .as_ref()
+                    .is_some_and(|checkpoint| checkpoint.record.history_boundary.items > 0)
+            })
+    }
+
     /// Inspect `tool_calls` for a `StructuredOutput` call and decide the turn's next step, pushing the call's `tool_result` as a side effect.
     /// The pushed result is a correction, a retry error, or the terminal answer.
     /// Validates the args against `validator` and bumps `retries` on a non-conforming retry.
@@ -2854,7 +2906,12 @@ impl SessionActor {
                 self.flush_skills_at_native_safe_point().await;
                 self.inject_pending_monitor_events().await;
             }
-            let memory_reminder = self.first_turn_memory_reminder().await;
+            let native_inputs_held = self.native_inputs_held().await;
+            let memory_reminder = if native_inputs_held {
+                None
+            } else {
+                self.memory_for_build(salvage.awaiting_continuation()).await
+            };
             if memory_reminder.is_some() {
                 self.memory
                     .injection_count
@@ -2864,7 +2921,8 @@ impl SessionActor {
                     "MEMORY_INJECT: first-turn memory context injected"
                 );
             }
-            if !salvage.awaiting_continuation() {
+            let memory_reminder = memory_reminder.flatten();
+            if !native_inputs_held && !salvage.awaiting_continuation() {
                 self.maybe_inject_mcp_reminder().await;
             }
             let turn_parked = if self.uncharged_401_park_enabled && auth_retry_schedule.is_parked()
@@ -3523,7 +3581,11 @@ impl SessionActor {
                     xai_chat_state::persistence::native::NativePrimaryDecision::Rejected,
                 )
                 .await;
-                self.push_system_reminder(&reminder);
+                self.hold_or_push_user_item(
+                    super::reminders::wrap_in_reminder_tag(&reminder, "system-reminder"),
+                    super::interjection::HeldSource::MediaResample,
+                )
+                .await?;
                 self.turn_phases.discard_uncommitted_first_token();
                 self.turn_phases.discard_uncommitted_first_meaningful();
                 continue;
@@ -3685,12 +3747,23 @@ impl SessionActor {
             record_response_span.close();
             if inject_length_reminder {
                 // Flush after tool results so the reminder cannot split their pairing run.
-                self.pending_skill_reminders
-                    .lock()
-                    .push(super::reminders::wrap_in_reminder_tag(
-                        OUTPUT_TOKEN_LIMIT_REMINDER,
-                        "system-reminder",
-                    ));
+                if self.native_inputs_held().await {
+                    self.hold_or_push_user_item(
+                        super::reminders::wrap_in_reminder_tag(
+                            OUTPUT_TOKEN_LIMIT_REMINDER,
+                            "system-reminder",
+                        ),
+                        super::interjection::HeldSource::LengthReminder,
+                    )
+                    .await?;
+                } else {
+                    self.pending_skill_reminders
+                        .lock()
+                        .push(super::reminders::wrap_in_reminder_tag(
+                            OUTPUT_TOKEN_LIMIT_REMINDER,
+                            "system-reminder",
+                        ));
+                }
             }
             answered_discovery_call_ids.extend(answered_in_response);
             // Pair committed client calls before Length retry or ordinary-tool dispatch.
@@ -3812,12 +3885,14 @@ impl SessionActor {
                     super::length_salvage::SalvageStep::Continue { inject_reminder } => {
                         if inject_reminder {
                             let tag = self.reminder_wrapper_tag();
-                            self.chat_state_handle.push_user_message(
+                            self.hold_or_push_user_item(
                                 ConversationItem::length_continue_reminder(format!(
                                     "<{tag}>{}</{tag}>",
                                     super::length_salvage::LENGTH_CONTINUE_REMINDER_BODY
                                 )),
-                            );
+                                super::interjection::HeldSource::ToolFreeLength,
+                            )
+                            .await?;
                         }
                         tracing::warn!(
                             session_id = %self.session_info.id,

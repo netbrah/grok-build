@@ -79,3 +79,27 @@ fn try_new_defaults_to_queue_and_preserves_explicit_operation() {
     .unwrap();
     assert_eq!(steered.operation(), ActiveAgentMessageOperation::Steer);
 }
+
+#[test]
+fn steer_slots_full_settlement_is_rejected_equivalent() {
+    use ActiveMessageLeaseState::{Claimed, Committed, Open, Revoked};
+    for (state, expected) in [
+        (Open, (true, Revoked)),
+        (Revoked, (true, Revoked)),
+        (Claimed, (false, Claimed)),
+        (Committed, (false, Committed)),
+    ] {
+        let full = ActiveMessageAdmissionLease::from_state(state);
+        let rejected = ActiveMessageAdmissionLease::from_state(state);
+        let actual = (
+            full.settle(ActiveMessageAdmission::SteerSlotsFull { max_slots: 32 }),
+            full.state(),
+        );
+        let rejection = (
+            rejected.settle(ActiveMessageAdmission::Rejected),
+            rejected.state(),
+        );
+        assert_eq!(actual, expected, "H6_Q3_FULL_SLOT_SETTLEMENT");
+        assert_eq!(actual, rejection, "H6_Q3_FULL_SLOT_SETTLEMENT");
+    }
+}
