@@ -304,6 +304,40 @@ impl SessionActor {
     }
 }
 
+/// Send one auxiliary collect. A Selected entry must already carry a plan
+/// that matches this request. A missing or stale plan returns before HTTP.
+/// Inactive production sends keep the existing collect path.
+pub(crate) async fn dispatch_auxiliary_collect(
+    client: &xai_grok_sampler::SamplingClient,
+    entry: &xai_chat_state::NativeHistoryEntry,
+    request: xai_grok_sampling_types::ConversationRequest,
+) -> Result<
+    xai_grok_sampling_types::ConversationResponse,
+    xai_grok_sampling_types::SamplingError,
+> {
+        use xai_grok_sampling_types::conversation::native_search_history::{
+            NativeHistoryRequirement, NativePlanRefusal,
+        };
+        use xai_grok_sampling_types::request_validation::{
+            RequestValidationError, check_native_history_request,
+        };
+        if entry.requirement() == NativeHistoryRequirement::Selected {
+            let native = request.native_history.as_ref().ok_or_else(|| {
+                xai_grok_sampling_types::SamplingError::from(RequestValidationError::NativeHistory {
+                    reason: NativePlanRefusal::MissingPlan,
+                })
+            })?;
+            check_native_history_request(&request, native.context(), native.plan()).map_err(
+                |reason| {
+                    xai_grok_sampling_types::SamplingError::from(RequestValidationError::NativeHistory {
+                        reason,
+                    })
+                },
+            )?;
+        }
+        client.conversation_collect(request).await
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::super::support;
