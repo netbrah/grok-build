@@ -15140,3 +15140,37 @@ async fn native_history_auxiliary_send_body_uses_neutral_f() {
 async fn native_history_auxiliary_requests_never_commit_disposition() {
     auxiliary_neutral_f_body().await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_history_u9_u10_all_send_stays_inactive() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    assert_eq!(
+        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        NativeHistoryRequirement::Inactive,
+        "S5-H all-send acceptance does not switch native search on"
+    );
+    assert_eq!(
+        super::switch_projection::select_native_history(),
+        NativeHistoryRequirement::Inactive
+    );
+    auxiliary_neutral_f_body().await;
+    tokio::task::LocalSet::new().run_until(async {
+        let server = MockInferenceServer::start().await.unwrap();
+        server.enqueue_response("/v1/messages", native_history_script(native_history_frames()));
+        let session = NativeHistorySession::new(&server).await;
+        session.sample().await;
+        let setup = super::switch_projection::HISTORY_S3_TEST_REQUIREMENT
+            .scope(NativeHistoryRequirement::Selected, session.actor.prepare_side_call())
+            .await
+            .expect("a forced Selected auxiliary setup is prepared");
+        assert_eq!(
+            setup.history_entry().requirement(),
+            NativeHistoryRequirement::Selected
+        );
+    }).await;
+    assert_eq!(
+        super::switch_projection::select_native_history(),
+        NativeHistoryRequirement::Inactive,
+        "leaving the test scope restores the inactive production mode"
+    );
+}
