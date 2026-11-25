@@ -1073,20 +1073,106 @@ async fn test_idle_flush_timeout_from_config() {
         .await;
 }
 
-#[test]
-fn memory_flush_outgoing_request_is_text_only() {
+#[tokio::test(flavor = "current_thread")]
+async fn memory_flush_outgoing_request_is_text_only() {
     use xai_grok_sampling_types::ConversationItem;
-    let raw = serde_json::json!({
-        "type":"server_tool_use","id":"srvtoolu_flush","name":"tool_search_tool_regex","input":{"query":"flush query"}
-    });
-    let discovery = ConversationItem::Discovery {
-        item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(raw).unwrap(),
-    };
-    let stored = vec![ConversationItem::user("remember this"), discovery.clone()];
-    let view = xai_chat_state::compaction_utils::prepare_conversation_for_summarization(stored.clone());
-    assert!(matches!(stored[1], ConversationItem::Discovery { .. }), "the stored discovery is unchanged");
-    let rendered = serde_json::to_string(&view).unwrap();
-    assert!(!rendered.contains("server_tool_use"));
-    assert!(rendered.contains("[tool_search]"));
-    assert!(view.iter().all(|item| !matches!(item, ConversationItem::Discovery { .. })));
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("loopback inference");
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("stored memory"),
+            );
+            let mut config = crate::config::MemoryConfig::default();
+            config.enabled = true;
+            let (gateway_tx, _) = mpsc::unbounded_channel();
+            let (persistence_tx, _) = mpsc::unbounded_channel();
+            let actor = create_test_actor_with_memory(
+                0,
+                100_000,
+                85,
+                gateway_tx,
+                persistence_tx,
+                Some(config),
+            )
+            .await;
+            assert!(actor.memory.uses_legacy_pipeline());
+            let mut sampling = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("memory fixture publishes a sampling config");
+            sampling.base_url = server.url();
+            sampling.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+            sampling.model = "offline-flush".into();
+            actor.chat_state_handle.update_sampling_config(sampling);
+            let mut credentials = actor.chat_state_handle.get_credentials().await;
+            credentials.api_key = Some("test-key".into());
+            actor.chat_state_handle.update_credentials(credentials);
+            let discoveries = [
+                serde_json::json!({"type":"tool_search_call","id":"tsc_flush","call_id":"call_flush","status":"completed","arguments":{"query":"call-kind query"}}),
+                serde_json::json!({"type":"tool_search_output","call_id":"call_flush","status":"completed","tools":[{"type":"function","name":"warehouse_lookup"}]}),
+                serde_json::json!({"type":"server_tool_use","id":"srvtoolu_flush","name":"tool_search_tool_regex","input":{"query":"server-kind query"}}),
+                serde_json::json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_flush","status":"completed","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"warehouse_lookup"}]}}),
+            ];
+            actor
+                .chat_state_handle
+                .push_user_message_and_ack(ConversationItem::user("remember the four searches"))
+                .await
+                .expect("user history is committed");
+            for raw in discoveries {
+                let item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(raw)
+                    .expect("discovery wire");
+                actor
+                    .chat_state_handle
+                    .push_model_output(ConversationItem::Discovery { item });
+            }
+            let stored = actor.chat_state_handle.get_conversation().await;
+            let stored_discoveries = stored
+                .iter()
+                .filter(|item| matches!(item, ConversationItem::Discovery { .. }))
+                .count();
+            assert_eq!(stored_discoveries, 4, "all four discovery kinds are committed");
+            let flushed = tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                actor.run_memory_flush("user_requested", None),
+            )
+            .await
+            .expect("memory flush reaches the loopback body");
+            assert!(flushed, "the legacy flush sends");
+            assert_eq!(server.messages_request_count(), 1);
+            let body = server.request_bodies()[0].to_string();
+            assert!(body.contains("[tool_search]"));
+            assert!(body.contains("call-kind query"));
+            assert!(body.contains("server-kind query"));
+            assert!(body.contains("[tool_search results]"));
+            for carrier in [
+                "server_tool_use",
+                "tool_search_call",
+                "tool_search_output",
+                "tool_search_tool_result",
+            ] {
+                assert!(
+                    !body.contains(carrier),
+                    "the flush wire keeps the summary view and drops {carrier}"
+                );
+            }
+            let after = actor.chat_state_handle.get_conversation().await;
+            assert_eq!(
+                after
+                    .iter()
+                    .filter(|item| matches!(item, ConversationItem::Discovery { .. }))
+                    .count(),
+                4,
+                "the stored discovery kinds stay intact"
+            );
+            assert_eq!(
+                crate::session::acp_session::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+                xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive
+            );
+            eprintln!("W16_WIRE messages=1 text_only=true native_search=off");
+        })
+        .await;
 }

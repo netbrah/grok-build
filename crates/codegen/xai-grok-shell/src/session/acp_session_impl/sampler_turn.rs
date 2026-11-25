@@ -472,6 +472,17 @@ impl SessionActor {
         let admitted = request
             .search_admission
             .is_some_and(xai_grok_sampling_types::SearchAdmission::admitted);
+        // Selected is the only mode that projects history groups. Inactive
+        // production turns keep the declaration filter below and do not rewrite
+        // stored discovery.
+        if super::switch_projection::select_native_history()
+            == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
+        {
+            let bridge_present = *backend == xai_grok_sampling_types::ApiBackend::Responses && admitted;
+            if !bridge_present {
+                project_absent_bridge_group(request)?;
+            }
+        }
         if *backend == xai_grok_sampling_types::ApiBackend::ChatCompletions && admitted {
             tracing::debug!(
                 "Chat Completions native admission is unsupported; bridge declarations retained"
@@ -546,6 +557,57 @@ impl SessionActor {
             .map(std::sync::Arc::new);
         Ok(())
     }
+}
+
+/// Bridge-absent Selected history. A query-bearing summary is not neutral F.
+/// A real discovery group becomes one neutral sentence and drops the query.
+fn project_absent_bridge_group(
+    request: &mut ConversationRequest,
+) -> Result<(), crate::sampling::error::SamplingError> {
+    let query_summary = request.items.iter().any(|item| {
+        matches!(
+            item,
+            ConversationItem::Assistant(assistant)
+                if assistant.content.contains("[tool_search]")
+        )
+    });
+    let discovery = request.items.iter().find_map(|item| match item {
+        ConversationItem::Discovery { item } => Some(item.raw().clone()),
+        _ => None,
+    });
+    if query_summary && discovery.is_none() {
+        return Err(crate::sampling::error::SamplingError::InvalidConfiguration(
+            "bridge-absent query-bearing summary is rejected as F",
+        ));
+    }
+    let Some(raw) = discovery else {
+        return Ok(());
+    };
+    let neutral =
+        xai_grok_sampling_types::conversation::projection::send_only_neutral_text(&raw);
+    let mut projected = Vec::with_capacity(request.items.len());
+    let mut emitted = false;
+    for item in std::mem::take(&mut request.items) {
+        match item {
+            ConversationItem::Discovery { .. } => {
+                if !emitted {
+                    projected.push(ConversationItem::assistant(neutral.clone()));
+                    emitted = true;
+                }
+            }
+            ConversationItem::Assistant(assistant)
+                if assistant.content.contains("[tool_search]") =>
+            {
+                if !emitted {
+                    projected.push(ConversationItem::assistant(neutral.clone()));
+                    emitted = true;
+                }
+            }
+            other => projected.push(other),
+        }
+    }
+    request.items = projected;
+    Ok(())
 }
 
 impl SessionActor {

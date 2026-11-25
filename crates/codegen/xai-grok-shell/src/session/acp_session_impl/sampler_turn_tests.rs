@@ -10294,45 +10294,134 @@ async fn native_history_identity_invalidates_loaded_authority() {
     }).await;
 }
 
-#[test]
-fn native_history_bridge_r11_uses_neutral_group_projection() {
-    use xai_grok_sampling_types::conversation::projection::send_only_neutral_text;
-    use xai_grok_sampling_types::{ConversationItem, ConversationRequest};
-    let discovery = serde_json::json!({
-        "type":"server_tool_use","id":"srvtoolu_bridge","name":"tool_search_tool_regex","input":{"query":"bridge query"}
-    });
-    let item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(discovery.clone()).unwrap();
-    let summary = xai_chat_state::compaction_utils::prepare_conversation_for_summarization(vec![
-        ConversationItem::Discovery { item: item.clone() },
-    ]);
-    let summary_text = serde_json::to_string(&summary).unwrap();
-    assert!(summary_text.contains("[tool_search]"));
-    assert!(!summary_text.contains("server_tool_use"), "the query summary is not a native keep");
-    let neutral = send_only_neutral_text(&discovery);
-    assert!(neutral.contains("Historical search recorded"));
-    assert!(!neutral.contains("bridge query"));
-    let mut paired = ConversationItem::assistant("checking");
-    if let ConversationItem::Assistant(assistant) = &mut paired {
-        assistant.tool_calls.push(xai_grok_sampling_types::ToolCall {
-            id: "client_bridge".into(),
-            name: "lookup".into(),
-            arguments: "{}".into(),
+#[tokio::test(flavor = "current_thread")]
+async fn native_history_bridge_r11_uses_neutral_group_projection() {
+    tokio::task::LocalSet::new().run_until(async {
+        let wire = ParentGoldenWire::start().await;
+        let fixture = a2_projection_fixture(
+            &ApiBackend::Responses,
+            true,
+            "xai",
+            A2Inventory::BridgeOnly,
+            &wire,
+        )
+        .await;
+        let actor = &fixture.actor;
+        let (prepared, _) = actor.prepare_native_tool_candidates_timed().await;
+        let bundle = actor.prepared_tool_bundle(&prepared);
+        let projection = super::BridgeDeclarationProjection::prepared(
+            bundle,
+            prepared.mcp_specs.iter().map(|spec| spec.name.clone()).collect(),
+        );
+        let (mut present, binding) = a2_build_projection_request(actor, &projection).await;
+        present.search_admission = Some(xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: true,
         });
-    }
-    let request = ConversationRequest {
-        items: vec![
-            paired,
-            ConversationItem::tool_result("client_bridge", "found"),
-        ],
-        model: Some("offline".into()),
-        max_output_tokens: Some(64),
-        ..Default::default()
-    };
-    let body = serde_json::to_value(xai_grok_sampling_types::build_messages_request(&request)).unwrap();
-    let rendered = body.to_string();
-    assert!(rendered.contains("client_bridge"), "an ordinary client pair stays on the bridge");
-    assert_eq!(
-        crate::session::acp_session::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
-        xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive
-    );
+        present.items.push(ConversationItem::Discovery {
+            item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(serde_json::json!({
+                "type":"server_tool_use",
+                "id":"srvtoolu_bridge",
+                "name":"tool_search_tool_regex",
+                "input":{"query":"bridge query"}
+            }))
+            .unwrap(),
+        });
+        assert!(
+            present.tools.iter().any(|spec| spec.name == "bridge__discover"),
+            "the fixture starts with the bridge declaration"
+        );
+        crate::session::acp_session::switch_projection::HISTORY_S3_TEST_REQUIREMENT
+            .scope(
+                xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected,
+                async {
+                    actor
+                        .project_bound_bridge_declarations(&mut present, &binding, &projection)
+                        .unwrap();
+                },
+            )
+            .await;
+        assert!(
+            present
+                .tools
+                .iter()
+                .all(|spec| spec.name != "bridge__discover" && spec.name != "bridge__invoke"),
+            "bridge-present D2 removes the bridge declarations"
+        );
+        let present_items = serde_json::to_string(&present.items).unwrap();
+        assert!(
+            present_items.contains("bridge query"),
+            "frozen D2 keeps the discovery group"
+        );
+        assert!(
+            !present_items.contains("Historical search recorded"),
+            "bridge-present D2 does not demote the group to neutral F"
+        );
+
+        let absent_projection = super::BridgeDeclarationProjection::prepared(
+            super::ToolSpecBundle::default(),
+            Default::default(),
+        );
+        let mut rejected = ConversationRequest {
+            items: vec![ConversationItem::assistant("[tool_search] \"bridge query\"")],
+            ..Default::default()
+        };
+        let rejected_summary = crate::session::acp_session::switch_projection::HISTORY_S3_TEST_REQUIREMENT
+            .scope(
+                xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected,
+                async {
+                    actor.project_bridge_declarations(
+                        &mut rejected,
+                        &ApiBackend::Messages,
+                        &absent_projection,
+                    )
+                },
+            )
+            .await;
+        assert!(
+            rejected_summary.is_err(),
+            "a bridge-absent query-bearing summary is rejected as F"
+        );
+
+        let mut neutral = ConversationRequest {
+            items: vec![ConversationItem::Discovery {
+                item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(serde_json::json!({
+                    "type":"server_tool_use",
+                    "id":"srvtoolu_neutral",
+                    "name":"tool_search_tool_regex",
+                    "input":{"query":"bridge query"}
+                }))
+                .unwrap(),
+            }],
+            ..Default::default()
+        };
+        crate::session::acp_session::switch_projection::HISTORY_S3_TEST_REQUIREMENT
+            .scope(
+                xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected,
+                async {
+                    actor
+                        .project_bridge_declarations(
+                            &mut neutral,
+                            &ApiBackend::Messages,
+                            &absent_projection,
+                        )
+                        .unwrap();
+                },
+            )
+            .await;
+        let neutral_items = serde_json::to_string(&neutral.items).unwrap();
+        assert!(
+            neutral_items.contains("Historical search recorded"),
+            "bridge-absent discovery becomes one neutral group"
+        );
+        assert!(
+            !neutral_items.contains("bridge query"),
+            "neutral F drops the discovery query"
+        );
+        assert_eq!(
+            crate::session::acp_session::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+            xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive,
+            "S5 does not switch native search on"
+        );
+    }).await;
 }

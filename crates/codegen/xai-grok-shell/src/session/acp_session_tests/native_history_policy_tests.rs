@@ -15022,6 +15022,53 @@ fn native_history_paused_a_binding_and_fresh_b_policy() {
                 NativeHistoryRequirement::Inactive,
                 "the pause result does not switch native search on"
             );
+            let projection = super::BridgeDeclarationProjection::prepared(
+                super::ToolSpecBundle::default(),
+                Default::default(),
+            );
+            let mut fresh_b = xai_grok_sampling_types::ConversationRequest {
+                items: vec![ConversationItem::Discovery {
+                    item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(
+                        serde_json::json!({
+                            "type":"server_tool_use",
+                            "id":"srvtoolu_fresh_b",
+                            "name":"tool_search_tool_regex",
+                            "input":{"query":"fresh-b query"}
+                        }),
+                    )
+                    .unwrap(),
+                }],
+                ..Default::default()
+            };
+            super::switch_projection::HISTORY_S3_TEST_REQUIREMENT
+                .scope(NativeHistoryRequirement::Selected, async {
+                    actor
+                        .project_bridge_declarations(
+                            &mut fresh_b,
+                            &xai_grok_sampling_types::ApiBackend::Messages,
+                            &projection,
+                        )
+                        .unwrap();
+                })
+                .await;
+            let fresh_b_body = serde_json::to_string(&fresh_b.items).unwrap();
+            assert!(
+                fresh_b_body.contains("Historical search recorded"),
+                "the first fresh owning-primary B applies neutral policy before send"
+            );
+            assert!(
+                !fresh_b_body.contains("fresh-b query"),
+                "fresh B does not keep the discovery query"
+            );
+            assert_eq!(
+                server.messages_request_count(),
+                1,
+                "paused A stays the only send; B does not resubmit it"
+            );
+            assert!(
+                body.contains("write out the numbers"),
+                "authoritative A body is unchanged"
+            );
         });
     });
 }
