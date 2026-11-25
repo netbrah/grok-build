@@ -8522,11 +8522,51 @@ fn u6_assertion(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "H6_UNEXPECTED_PANIC".into())
 }
 
+fn u6_label_in_group(label: &str, group: &str) -> bool {
+    if group == "L17" {
+        return label.starts_with("L19-native-");
+    }
+    if group == "L16" {
+        return false;
+    }
+    if group == "L15" {
+        return label == "L15-memory" || label == "L15-mcp" || label.starts_with("L15m");
+    }
+    for longer in ["L10b", "L14b", "L14c", "L13b"] {
+        if group == longer {
+            return label == longer || label.starts_with(&format!("{longer}-"));
+        }
+        if label == longer || label.starts_with(&format!("{longer}-")) {
+            return false;
+        }
+    }
+    label == group || label.starts_with(&format!("{group}-"))
+}
+
+fn u6_group_keeps(label: &str) -> bool {
+    std::env::var("KOXD_U6_GROUP")
+        .ok()
+        .map(|group| u6_label_in_group(label, &group))
+        .unwrap_or(true)
+}
+
 async fn u6_arm<F>(records: &mut Vec<Value>, label: &str, future: F)
 where
     F: std::future::Future<Output = Value>,
 {
     use futures_util::FutureExt;
+    if !u6_group_keeps(label) {
+        records.push(json!({
+            "label": label,
+            "passed": true,
+            "status": "SKIPPED_OTHER_GROUP",
+            "assertion": null,
+            "observations": [],
+            "panics": [],
+            "result": null
+        }));
+        return;
+    }
     let observations = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let panics = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured_panics = panics.clone();
@@ -8605,6 +8645,7 @@ async fn u6_isolated() {
         "GROK_SHELL_BUNDLE_RG_PATH",
         "GROK_TOOLS_BUNDLE_RG_PATH",
         "CARGO_NET_OFFLINE",
+        "KOXD_U6_GROUP",
     ] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -8621,6 +8662,9 @@ async fn u6_isolated() {
         .unwrap()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines().filter(|line| line.starts_with("K2LG_V ")) {
+        println!("{line}");
+    }
     for line in stdout
         .lines()
         .filter_map(|line| line.strip_prefix("KOXD_U6_ARM "))
@@ -8628,7 +8672,7 @@ async fn u6_isolated() {
         let value: Value = serde_json::from_str(line).expect("H6_CHILD_ARM_RECORD");
         println!(
             "KOXD_U6_ARM {}",
-            json!({"label":value["label"],"passed":value["passed"],"assertion":value["assertion"]})
+            json!({"label":value["label"],"passed":value["passed"],"assertion":value["assertion"],"status":value["status"]})
         );
     }
     assert!(
@@ -8649,6 +8693,11 @@ async fn messages_pending_holds_harness_user_content() {
     if std::env::var_os(KOXD_U6_CHILD).is_none() {
         u6_isolated().await;
         return;
+    }
+    if std::env::var("KOXD_U6_GROUP").ok().as_deref() == Some("L16") {
+        println!(
+            "K2LG_V {{\"route\":\"V2\",\"window\":\"W2\",\"status\":\"UNSCHEDULABLE_GAP\",\"reason\":\"no committed rendezvous; no new product hook\",\"K2LG_kill\":false,\"L16_credit\":false}}"
+        );
     }
     tokio::task::LocalSet::new()
         .run_until(async {

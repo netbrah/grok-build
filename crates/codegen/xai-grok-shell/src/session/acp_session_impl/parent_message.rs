@@ -621,7 +621,11 @@ impl SessionActor {
             (completions, held_notice)
         };
         if let Some(record) = held_notice {
-            self.send_hook_annotation(&record.to_string()).await;
+            // Live notice only. A durable append would change the child summary a rejected start must restore.
+            self.send_xai_notification_transient(XaiSessionUpdate::HookAnnotation {
+                message: record.to_string(),
+                kind: HookAnnotationKind::Note,
+            });
         }
         let result = Err(acp::Error::internal_error()
             .data("active-message owner ended before delivery completed"));
