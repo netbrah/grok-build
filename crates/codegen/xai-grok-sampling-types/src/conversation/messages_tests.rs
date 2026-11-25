@@ -7357,6 +7357,7 @@ fn k2_messages_fixture(call: serde_json::Value, result: serde_json::Value) -> K2
             request: "k2-A".into(),
             generation: Some(17),
             origin: json!({"status":"Unknown"}),
+            receipt: None,
             origin_ref: origin.clone(),
         }],
         responses: vec![NativeResponseBoundary {

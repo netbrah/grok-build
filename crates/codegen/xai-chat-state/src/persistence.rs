@@ -1534,6 +1534,14 @@ pub mod native {
         }
     }
 
+    pub(crate) fn approved_receipt_id(receipt: &str) -> Result<(), NativeUnavailable> {
+        // Offline catalog entry. A nonempty id is not approval.
+        if receipt != "offline-approved" {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        Ok(())
+    }
+
     pub(crate) fn known_producing_origin(origin: &serde_json::Value) -> Result<(), NativeUnavailable> {
         let object = origin.as_object().ok_or(NativeUnavailable::InvalidReference)?;
         if object.len() != 5 {
@@ -1562,6 +1570,7 @@ pub mod native {
         pub primary_pending: Option<NativePrimaryPending>,
         pub primary_decision: Option<NativePrimaryDecision>,
         pub origin: Option<serde_json::Value>,
+        pub receipt: Option<String>,
     }
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum NativePrimaryPublication {
@@ -3147,6 +3156,7 @@ pub mod native {
                 inputs,
                 NativePrimaryPublication::Legacy,
                 None,
+                None,
             )
         }
 
@@ -3158,6 +3168,7 @@ pub mod native {
             inputs: Option<&NativeEligibleInputs>,
             publication: NativePrimaryPublication,
             origin: Option<&serde_json::Value>,
+            receipt: Option<&str>,
         ) -> Result<Self, NativeUnavailable> {
             let generation = previous
                 .map_or(0, |p| p.record.generation)
@@ -3319,7 +3330,17 @@ pub mod native {
                 None => serde_json::json!({"status":"Unknown","reason":"producing identity unavailable before U3"}),
             };
             let binding_generation = origin.map(|_| lease.ordinal());
-            let descriptor = serde_json::json!({"request":lease.request(),"generation":binding_generation,"origin":stored_origin});
+            let stored_receipt = match receipt {
+                Some(receipt) => {
+                    approved_receipt_id(receipt)?;
+                    Some(receipt.to_owned())
+                }
+                None => None,
+            };
+            let mut descriptor = serde_json::json!({"request":lease.request(),"generation":binding_generation,"origin":stored_origin.clone()});
+            if let Some(receipt) = &stored_receipt {
+                descriptor["receipt_id"] = serde_json::json!(receipt);
+            }
             let origin_ref = add_json(
                 &mut blobs,
                 &mut blob_kinds,
@@ -3336,6 +3357,7 @@ pub mod native {
                     request: lease.request().into(),
                     generation: binding_generation,
                     origin: stored_origin,
+                    receipt: stored_receipt,
                     origin_ref: origin_ref.clone(),
                 });
             }
@@ -4233,9 +4255,12 @@ pub mod native {
                 let descriptor: serde_json::Value =
                     serde_json::from_slice(value(&binding.origin_ref)?)
                         .map_err(|_| NativeUnavailable::InvalidReference)?;
-                if descriptor
-                    != serde_json::json!({"request":binding.request,"generation":binding.generation,"origin":binding.origin})
-                {
+                let mut expected = serde_json::json!({"request":binding.request,"generation":binding.generation,"origin":binding.origin});
+                if let Some(receipt) = &binding.receipt {
+                    approved_receipt_id(receipt)?;
+                    expected["receipt_id"] = serde_json::json!(receipt);
+                }
+                if descriptor != expected {
                     return Err(NativeUnavailable::InvalidReference);
                 }
                 match binding.origin.get("status").and_then(serde_json::Value::as_str) {
@@ -4890,6 +4915,7 @@ pub mod native {
                 items,
                 inputs,
                 NativePrimaryPublication::Deferred,
+                None,
                 None,
             )?;
             let pending = candidate

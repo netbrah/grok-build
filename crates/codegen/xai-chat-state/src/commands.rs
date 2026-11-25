@@ -405,6 +405,17 @@ pub enum ChatStateCommand {
             >,
         >,
     },
+    AdmitQualificationReceipt {
+        request: String,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        receipt: String,
+        reply: oneshot::Sender<
+            Result<
+                (),
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
     AdmitProducingOrigin {
         request: String,
         lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,

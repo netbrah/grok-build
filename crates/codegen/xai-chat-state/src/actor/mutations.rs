@@ -294,6 +294,7 @@ impl ChatStateActor {
                 primary_pending: None,
                 primary_decision: None,
                 origin: None,
+                receipt: None,
             },
         );
         Ok(lease)
@@ -323,6 +324,33 @@ impl ChatStateActor {
             return Err(NativeUnavailable::ConflictingObservation);
         }
         owner.origin = Some(origin);
+        Ok(())
+    }
+
+    pub(super) fn admit_qualification_receipt(
+        &mut self,
+        request: &str,
+        lease: &xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        receipt: String,
+    ) -> Result<
+        (),
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        crate::persistence::native::approved_receipt_id(&receipt)?;
+        let owner = self
+            .state
+            .native
+            .leases
+            .get_mut(&lease.ordinal())
+            .ok_or(NativeUnavailable::StaleHistory)?;
+        if request != lease.request() || !owner.capability.same_lease(lease) {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if owner.receipt.is_some() {
+            return Err(NativeUnavailable::ConflictingObservation);
+        }
+        owner.receipt = Some(receipt);
         Ok(())
     }
 
@@ -423,6 +451,7 @@ impl ChatStateActor {
             owner.inputs.clone()
         };
         let producing_origin = owner.origin.clone();
+        let producing_receipt = owner.receipt.clone();
         let candidate = match NativeCheckpoint::append_with_publication(
             self.state.native.checkpoint.as_deref(),
             &lease,
@@ -431,6 +460,7 @@ impl ChatStateActor {
             inputs.as_deref(),
             owner.publication,
             producing_origin.as_ref(),
+            producing_receipt.as_deref(),
         ) {
             Ok(candidate) => {
                 owner.admitted = true;

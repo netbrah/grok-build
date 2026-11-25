@@ -2254,6 +2254,7 @@ fn k1_prepare(
             request: "k1-issued-A".into(),
             generation: Some(17),
             origin: json!({"status":"Unknown"}),
+            receipt: None,
             origin_ref: origin.clone(),
         }],
         responses: vec![NativeResponseBoundary {

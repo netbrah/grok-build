@@ -480,6 +480,15 @@ impl ChatStateActor {
                     self.state.native.leases.remove(&lease.ordinal());
                 }
             }
+            ChatStateCommand::AdmitQualificationReceipt {
+                request,
+                lease,
+                receipt,
+                reply,
+            } => {
+                let result = self.admit_qualification_receipt(&request, &lease, receipt);
+                let _ = reply.send(result);
+            }
             ChatStateCommand::AdmitProducingOrigin {
                 request,
                 lease,

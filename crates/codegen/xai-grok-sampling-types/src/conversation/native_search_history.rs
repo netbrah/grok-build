@@ -103,6 +103,8 @@ pub struct NativeProducingBinding {
     pub request: String,
     pub generation: Option<u64>,
     pub origin: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<String>,
     pub origin_ref: NativeBlobRef,
 }
 
@@ -6626,6 +6628,7 @@ mod tests {
                 request: "issued-A".into(),
                 generation: Some(17),
                 origin: json!({"status":"Unknown"}),
+                receipt: None,
                 origin_ref: origin.clone(),
             }],
             responses: vec![NativeResponseBoundary {
@@ -7931,6 +7934,7 @@ mod tests {
             request: request.into(),
             generation: Some(1),
             origin: json!({"status":"Unknown"}),
+            receipt: None,
             origin_ref: NativeBlobRef {
                 kind: "producing_binding".into(),
                 byte_len: request.len() as u64,
@@ -8174,6 +8178,7 @@ mod tests {
                 request: "s3f-issued".into(),
                 generation: Some(1),
                 origin: json!({"status":"Unknown"}),
+                receipt: None,
                 origin_ref: origin.clone(),
             }],
             responses: vec![NativeResponseBoundary {
@@ -8524,6 +8529,7 @@ mod tests {
             request: coordinate.producing_binding.clone(),
             generation: Some(1),
             origin: json!({"status":"Unknown"}),
+            receipt: None,
             origin_ref: record.origin_ref.clone(),
         };
         let source = NativeSource {

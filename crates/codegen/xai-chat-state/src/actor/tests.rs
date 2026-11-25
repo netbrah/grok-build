@@ -7833,6 +7833,77 @@ async fn known_producing_origin_is_retained_on_readback() {
     assert_eq!(binding.generation, Some(ordinal));
 }
 
+#[tokio::test]
+async fn approved_receipt_is_retained_on_readback() {
+    let h = TestHarness::new();
+    let raw = serde_json::json!({
+        "type":"server_tool_use","id":"srvtoolu_receipt","name":"tool_search_tool_regex",
+        "input":{"query":"account"}
+    });
+    let item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(raw.clone()).unwrap();
+    let output = ConversationItem::Discovery { item };
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = h
+        .handle
+        .begin_native_capture("mock".into(), "receipt-ingress".into(), 1)
+        .await
+        .unwrap();
+    assert!(
+        h.handle
+            .admit_qualification_receipt("receipt-ingress".into(), lease.clone(), "positive".into())
+            .await
+            .is_err(),
+        "a nonempty id is not approval"
+    );
+    h.handle
+        .admit_qualification_receipt(
+            "receipt-ingress".into(),
+            lease.clone(),
+            "offline-approved".into(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        h.handle
+            .admit_qualification_receipt(
+                "receipt-ingress".into(),
+                lease.clone(),
+                "offline-approved".into(),
+            )
+            .await,
+        Err(NativeUnavailable::ConflictingObservation)
+    ));
+    let captured = NativeAttemptEvidence {
+        attempt: 1, admitted: true, response_started: true,
+        provider_response_id: Some(serde_json::json!("msg_receipt")), source_stop_reason: Some("end_turn".into()),
+        stream_complete: true, status: NativeResponseStatus::Accepted,
+        blocks: vec![NativeCapturedBlock {
+            wire_index: 0, arrival_ordinal: 0, raw: raw.to_string(), partial_json: None, state: NativeBlockState::ClosedFaithful,
+        }],
+        usage: std::collections::BTreeMap::from([("input_tokens".into(), serde_json::json!(10))]),
+        messages_metadata: NativeMessagesCapture::CompatibilityUnrecorded,
+        latency_ms: Some(1), http_dispatches: 1, observed_bytes: 100, failed_block: None,
+        view_roles: vec![Some((0, "Discovery".into()))],
+        view_digests: vec![crate::persistence::native::history_boundary(std::slice::from_ref(&output)).unwrap().digest],
+    };
+    h.handle
+        .append_native_evidence(
+            "receipt-ingress".into(),
+            lease,
+            NativeEvidenceEvent::Attempt(std::sync::Arc::new(captured)),
+        )
+        .await
+        .unwrap();
+    h.handle.push_model_output(output);
+    h.handle.get_conversation().await;
+    let stored = h.handle.read_native_history().await.unwrap().checkpoint.unwrap();
+    assert_eq!(
+        stored.source.producing_bindings[0].receipt.as_deref(),
+        Some("offline-approved")
+    );
+    assert_eq!(stored.source.producing_bindings[0].origin["status"], "Unknown");
+}
+
 fn u2_native_attempt(
     attempt: u64,
     payload: String,
@@ -9859,6 +9930,7 @@ fn native_identity_links_reject_invalid_coordinates_and_charge_each_member() {
                     request: "foreign-request".into(),
                     generation: None,
                     origin: descriptor["origin"].clone(),
+                    receipt: None,
                     origin_ref: reference.clone(),
                 });
                 snapshot["binding"] = serde_json::to_value(reference).unwrap();
@@ -10464,6 +10536,7 @@ fn u5a_primary_capacity_controls() {
                 inputs.as_deref(),
                 NativePrimaryPublication::Deferred,
                 None,
+                None,
             )
             .unwrap();
             assert!(pending.active.view_links.is_empty());
@@ -10547,6 +10620,7 @@ fn u5a_primary_capacity_controls() {
                     &[],
                     inputs.as_deref(),
                     NativePrimaryPublication::Deferred,
+                    None,
                     None,
                 );
                 assert_eq!(
@@ -11857,6 +11931,7 @@ fn s3l_base(
         None,
         S3lPublication::Legacy,
         None,
+        None,
     )
     .unwrap();
     let mut items = s3l_output_items(&attempt);
@@ -11890,6 +11965,7 @@ fn s3l_capture(
         items,
         None,
         publication,
+        None,
         None,
     )
 }
@@ -12064,6 +12140,7 @@ fn native_capture_joins_continuation_result_to_live_group() {
             None,
             Deferred,
             None,
+            None,
         )
         .unwrap();
         let intent = pending
@@ -12097,6 +12174,7 @@ fn native_capture_joins_continuation_result_to_live_group() {
             &[],
             None,
             Legacy,
+            None,
             None,
         )
         .unwrap();
@@ -12232,6 +12310,7 @@ fn native_continuation_join_preflight_matches_capture_at_last_fit() {
         &[],
         None,
         Legacy,
+        None,
         None,
     )
     .unwrap();

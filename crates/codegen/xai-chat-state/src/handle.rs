@@ -898,6 +898,28 @@ impl ChatStateHandle {
             .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
             .and_then(|mut reply| reply.lease.take().ok_or(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Indeterminate))
     }
+    pub async fn admit_qualification_receipt(
+        &self,
+        request: String,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        receipt: String,
+    ) -> Result<
+        (),
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.query("AdmitQualificationReceipt", |reply| {
+            ChatStateCommand::AdmitQualificationReceipt {
+                request,
+                lease,
+                receipt,
+                reply,
+            }
+        })
+        .await
+        .unwrap_or(Err(
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence,
+        ))
+    }
     pub async fn admit_producing_origin(
         &self,
         request: String,
