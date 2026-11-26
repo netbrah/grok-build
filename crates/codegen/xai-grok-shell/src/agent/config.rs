@@ -4955,7 +4955,7 @@ pub(crate) fn entry_config_from_default_row(
             .max_completion_tokens
             .or_else(|| row.max_output_tokens.and_then(|v| u32::try_from(v).ok())),
         api_backend: row.api_backend.clone().unwrap_or_default(),
-        auth_scheme: None,
+        auth_scheme: row.auth_scheme,
         agent_type: default_agent_type(),
         inference_idle_timeout_secs: None,
         max_retries: None,

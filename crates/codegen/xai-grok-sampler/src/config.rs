@@ -15,29 +15,7 @@ use xai_grok_sampling_types::{
 use crate::attribution::SharedAttributionCallback;
 use crate::retry::{DEFAULT_MAX_RETRIES, RATE_LIMIT_RETRY_THRESHOLD};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthScheme {
-    /// `Authorization: Bearer <token>` (default; also Vertex AI with an OAuth access token).
-    #[default]
-    Bearer,
-    /// `x-api-key: <key>` (Anthropic Messages API).
-    XApiKey,
-    /// `x-goog-api-key: <key>` (Google Gemini Developer API).
-    XGoogApiKey,
-}
-
-impl AuthScheme {
-    /// Header the credential rides on when it is sent as a bare key rather than
-    /// a bearer token; `None` for [`AuthScheme::Bearer`].
-    pub fn key_header_name(self) -> Option<&'static str> {
-        match self {
-            Self::Bearer => None,
-            Self::XApiKey => Some("x-api-key"),
-            Self::XGoogApiKey => Some("x-goog-api-key"),
-        }
-    }
-}
+pub use xai_grok_sampling_types::AuthScheme;
 
 /// All knobs that control a single sampling request.
 /// Auth is selected separately via `auth_scheme`, while `api_backend` controls only the request/response protocol shape.

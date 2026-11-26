@@ -12,7 +12,7 @@ use std::num::NonZeroU64;
 use std::sync::LazyLock;
 
 use xai_grok_sampling_types::{
-    ApiBackend, CompactionAtTokens, CompactionsRemaining, ReasoningEffort, ReasoningEffortOption,
+    ApiBackend, AuthScheme, CompactionAtTokens, CompactionsRemaining, ReasoningEffort, ReasoningEffortOption,
 };
 
 /// The raw JSON, embedded at compile time.
@@ -77,6 +77,7 @@ pub struct DefaultModelEntry {
     /// shell fold drops values above u32::MAX.
     pub max_output_tokens: Option<u64>,
     pub api_backend: Option<ApiBackend>,
+    pub auth_scheme: Option<AuthScheme>,
     pub supports_backend_search: Option<bool>,
     pub system_prompt_label: Option<String>,
     pub supports_reasoning_effort: Option<bool>,

@@ -83,9 +83,12 @@ pub const SCHEMA_ONLY_ALLOWED: &[&str] = &[
 /// - `description`: free-form prose, explicitly optional in curation;
 /// - `context_window` / `max_completion_tokens`: C-class generated caps —
 ///   the proxy is truth (the Python gate forbids them on on-proxy overlay
-///   rows, `FORBIDDEN_OVERLAY_FIELDS`).
-pub const CATALOG_REQUIRED_EXCLUDES: &[&str] =
-    &["model", "description", "context_window", "max_completion_tokens"];
+///   rows, `FORBIDDEN_OVERLAY_FIELDS`);
+/// - `auth_scheme`: optional credential transport; absent preserves the
+///   resolver's bearer default without a catalog-wide null field.
+pub const CATALOG_REQUIRED_EXCLUDES: &[&str] = &[
+    "model", "description", "context_window", "max_completion_tokens", "auth_scheme",
+];
 
 /// Outcome of a gate run: every drift error (empty = pass) + the derived
 /// constants (single source of truth = the schema, no hardcoded copies).

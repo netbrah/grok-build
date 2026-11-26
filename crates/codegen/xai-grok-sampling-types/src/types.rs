@@ -1010,6 +1010,30 @@ pub fn reasoning_efforts_meta_value(opts: &[ReasoningEffortOption]) -> serde_jso
     serde_json::to_value(opts).unwrap_or_else(|_| serde_json::Value::Array(Vec::new()))
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthScheme {
+    /// `Authorization: Bearer <token>` (default; also Vertex AI with an OAuth access token).
+    #[default]
+    Bearer,
+    /// `x-api-key: <key>` (Anthropic Messages API).
+    XApiKey,
+    /// `x-goog-api-key: <key>` (Google Gemini Developer API).
+    XGoogApiKey,
+}
+
+impl AuthScheme {
+    /// Header the credential rides on when it is sent as a bare key rather than
+    /// a bearer token; `None` for [`AuthScheme::Bearer`].
+    pub fn key_header_name(self) -> Option<&'static str> {
+        match self {
+            Self::Bearer => None,
+            Self::XApiKey => Some("x-api-key"),
+            Self::XGoogApiKey => Some("x-goog-api-key"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiBackend {

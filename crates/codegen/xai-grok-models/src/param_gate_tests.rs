@@ -44,10 +44,14 @@ fn selftest_happy_path_passes() {
     assert!(report.required_fields.contains(&"reasoning_efforts".to_string()));
     assert!(!report.required_fields.contains(&"model".to_string()));
     assert!(!report.required_fields.contains(&"context_window".to_string()));
-    assert_eq!(report.schema_properties.len(), 51); // S3a T2 +1 deferred_tools (apex-waj.86, config-only)
+    assert_eq!(report.schema_properties.len(), 52); // + optional auth_scheme
     assert!(report.schema_properties.contains(&"api_backend".to_string()));
     assert!(report.schema_properties.contains(&"temperature".to_string()));
-    assert_eq!(report.struct_fields.len(), 24); // S3a T2: + supports_search_tool / use_responses_lite
+    assert_eq!(report.struct_fields.len(), 25); // + optional auth_scheme
+    assert!(report.struct_fields.contains(&"auth_scheme".to_string()));
+    assert!(report.schema_properties.contains(&"auth_scheme".to_string()));
+    assert!(!gate::SCHEMA_ONLY_ALLOWED.contains(&"auth_scheme"));
+    assert!(!report.required_fields.contains(&"auth_scheme".to_string()));
     assert_eq!(
         report.struct_fields.first().map(String::as_str),
         Some("id")
@@ -176,7 +180,7 @@ fn selftest_baked_row_key_drift_fails() {
 fn selftest_struct_field_parser_sanity() {
     let (_schema, lib, _baked) = real_inputs();
     let fields = gate::parse_struct_fields(&lib).expect("parse DefaultModelEntry fields");
-    assert_eq!(fields.len(), 24); // S3a T2: + supports_search_tool / use_responses_lite
+    assert_eq!(fields.len(), 25); // + optional auth_scheme
     assert_eq!(fields[0], "id");
     assert_eq!(fields[1], "model");
     assert_eq!(fields.last().map(String::as_str), Some("extra_headers"));

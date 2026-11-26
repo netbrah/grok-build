@@ -1770,6 +1770,31 @@ async fn gemini_toml_auth_scheme_reaches_outbound_header() {
 }
 
 #[test]
+fn default_model_row_auth_scheme_reaches_model_info() {
+    for (wire_scheme, expected) in [
+        ("bearer", AuthScheme::Bearer),
+        ("x_api_key", AuthScheme::XApiKey),
+        ("x_goog_api_key", AuthScheme::XGoogApiKey),
+    ] {
+        let row: crate::models::DefaultModelEntry = serde_json::from_value(serde_json::json!({
+            "model": "custom",
+            "auth_scheme": wire_scheme,
+        }))
+        .unwrap();
+        let config = entry_config_from_default_row(&row, &EndpointsConfig::default());
+        assert_eq!(config.auth_scheme, Some(expected));
+        let info = ModelInfo::from_config(&config);
+        assert_eq!(info.auth_scheme, expected);
+    }
+    let row: crate::models::DefaultModelEntry =
+        serde_json::from_value(serde_json::json!({"model": "custom"})).unwrap();
+    let config = entry_config_from_default_row(&row, &EndpointsConfig::default());
+    assert_eq!(config.auth_scheme, None);
+    let info = ModelInfo::from_config(&config);
+    assert_eq!(info.auth_scheme, AuthScheme::Bearer);
+}
+
+#[test]
 fn auth_scheme_override_absent_preserves_prefetched_scheme() {
     let mut model = test_model_entry("custom", "https://example.test/v1", None, None, None);
     model.info.auth_scheme = AuthScheme::XApiKey;
