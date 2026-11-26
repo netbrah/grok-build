@@ -15670,6 +15670,9 @@ fn messages_discovery_history_sends_without_stale_history() {
         super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::ChatCompletions, true, true),
         NativeHistoryRequirement::Inactive
     );
+    eprintln!(
+        "criterion 5: Selected is Messages and supports_search_tool and searchable tools. The xAI conjunct is not in this cutover."
+    );
     super::length_salvage_tests::block_on_session(|| {
         super::length_salvage_tests::current_thread_local(async {
             let server = xai_grok_test_support::MockInferenceServer::start()
@@ -15822,6 +15825,24 @@ fn messages_discovery_history_sends_without_stale_history() {
     });
 }
 
+fn body_has_raw_server_tool_use(body: &str) -> bool {
+    fn walk(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.get("type").and_then(serde_json::Value::as_str) == Some("server_tool_use")
+                    || map.values().any(walk)
+            }
+            serde_json::Value::Array(items) => items.iter().any(walk),
+            _ => false,
+        }
+    }
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .is_some_and(|value| walk(&value))
+        || body.contains("\"type\":\"server_tool_use\"")
+        || body.contains("\"type\": \"server_tool_use\"")
+}
+
 #[test]
 fn inactive_messages_discovery_does_not_send_raw_server_tool_use() {
     super::length_salvage_tests::block_on_session(|| {
@@ -15920,12 +15941,12 @@ fn inactive_messages_discovery_does_not_send_raw_server_tool_use() {
                 "Inactive Messages sent nothing: {err}"
             );
             assert!(
-                !body.contains("\"type\":\"server_tool_use\"")
-                    && !body.contains("\"type\": \"server_tool_use\""),
+                !body_has_raw_server_tool_use(&body),
                 "A green policy test and a proxied pass do not close D-1 or D-2. D-1 is closed only by Inactive non-Messages sends. D-2 is closed only when an admitted Messages first turn sends and the continuation still carries server_tool_use. A non-admitted Messages row sent a raw server_tool_use block: {body}"
             );
             eprintln!(
-                "criterion 4: a non-admitted Messages row with discovery in history did not send a raw server_tool_use block"
+                "criterion 4: a non-admitted Messages row with discovery in history did not send a raw server_tool_use block; lowered_tool_use={}",
+                body.contains("\"type\":\"tool_use\"")
             );
         });
     });
@@ -16035,6 +16056,9 @@ fn stale_history_race_rebuilds_from_actor_memory() {
                 !err.contains("native_history_stale_durable"),
                 "a race does not reload disk: {err}"
             );
+            eprintln!(
+                "criterion 5: StaleHistoryRace rebuilds from actor memory and does not reload disk"
+            );
         });
     });
 }
@@ -16093,6 +16117,9 @@ fn stale_history_durable_reloads_disk_before_rebuild() {
             assert!(
                 sent,
                 "rebuilding from the diverged memory checkpoint would not send"
+            );
+            eprintln!(
+                "criterion 5: StaleHistoryDurable reloads the disk checkpoint before rebuild"
             );
         });
     });
@@ -16188,6 +16215,9 @@ fn local_tool_search_guard_refuses_orphan_before_send() {
                             .contains("orphan guard prompt")
                 });
             assert!(!sent, "inference did not start after the local refusal");
+            eprintln!(
+                "criterion 5: the local pre-send guard refuses OrphanOutput and does not send"
+            );
         });
     });
 }
