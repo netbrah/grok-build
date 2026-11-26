@@ -753,6 +753,9 @@ pub(super) mod tests {
             xai_grok_sampling_types::ApiBackend::Messages => "/v1/messages",
             xai_grok_sampling_types::ApiBackend::Responses => "/v1/responses",
             xai_grok_sampling_types::ApiBackend::ChatCompletions => "/v1/chat/completions",
+            xai_grok_sampling_types::ApiBackend::GenerateContent => {
+                unreachable!("fixture backends are path-only (no GenerateContent row)")
+            }
         };
         assert_eq!(request.path, expected_path);
         assert_eq!(request.authorization.as_deref(), Some("Bearer u6-a-key"));
@@ -1086,6 +1089,10 @@ pub(super) mod tests {
             ApiBackend::ChatCompletions => {
                 serde_json::to_value(ChatCompletionRequest::from(request.clone())).unwrap()
             }
+            ApiBackend::GenerateContent => serde_json::to_value(
+                xai_grok_sampling_types::conversation::build_generate_content_request(request),
+            )
+            .unwrap(),
         }
     }
 
@@ -1791,6 +1798,9 @@ pub(super) mod tests {
             xai_grok_sampling_types::ApiBackend::Messages => "/v1/messages",
             xai_grok_sampling_types::ApiBackend::Responses => "/v1/responses",
             xai_grok_sampling_types::ApiBackend::ChatCompletions => "/v1/chat/completions",
+            xai_grok_sampling_types::ApiBackend::GenerateContent => {
+                unreachable!("fixture backends are path-only (no GenerateContent row)")
+            }
         };
         assert_eq!(exchange.path, expected_path);
         assert_eq!(exchange.parsed_body["model"], fixture.binding.config.model);

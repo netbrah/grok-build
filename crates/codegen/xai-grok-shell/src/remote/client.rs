@@ -793,6 +793,7 @@ pub(crate) fn parse_remote_model_value(
             "responses" => Some(crate::sampling::ApiBackend::Responses),
             "chat_completions" => Some(crate::sampling::ApiBackend::ChatCompletions),
             "messages" => Some(crate::sampling::ApiBackend::Messages),
+            "generate_content" => Some(crate::sampling::ApiBackend::GenerateContent),
             _ => None,
         });
     let api_backend = feed_api_backend.clone().unwrap_or_default();
