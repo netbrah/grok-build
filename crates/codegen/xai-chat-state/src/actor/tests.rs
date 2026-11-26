@@ -7465,7 +7465,23 @@ fn bound_candidate_body(
         ApiBackend::ChatCompletions => {
             serde_json::to_value(ChatCompletionRequest::from(request.clone())).unwrap()
         }
+        ApiBackend::GenerateContent => serde_json::to_value(
+            xai_grok_sampling_types::conversation::build_generate_content_request(request),
+        )
+        .unwrap(),
     }
+}
+
+#[test]
+fn bound_candidate_body_supports_gemini_without_search() {
+    use xai_grok_sampling_types::{ApiBackend, ConversationItem, ConversationRequest};
+    let request = ConversationRequest::from_items(vec![ConversationItem::user("hello")])
+        .with_model("gemini-3.8-flash");
+    let body = bound_candidate_body(&request, &ApiBackend::GenerateContent);
+    assert_eq!(body["contents"], serde_json::json!([
+        {"role": "user", "parts": [{"text": "hello"}]}
+    ]));
+    assert!(body.get("tools").is_none());
 }
 
 #[tokio::test]

@@ -139,7 +139,9 @@ pub(crate) fn build_title_request(
     let tool_choice = match backend {
         ApiBackend::Messages => ConversationToolChoice::Auto,
         ApiBackend::Responses => ConversationToolChoice::Required,
-        ApiBackend::ChatCompletions => ConversationToolChoice::Function("session_title".to_owned()),
+        ApiBackend::ChatCompletions | ApiBackend::GenerateContent => {
+            ConversationToolChoice::Function("session_title".to_owned())
+        }
     };
     let request = ConversationRequest::from_items(vec![
         ConversationItem::system(
@@ -486,6 +488,24 @@ mod tests {
             },
             "chat-completions wire must keep the forced-function tool_choice; got {:?}",
             chat_wire.tool_choice
+        );
+    }
+
+    #[test]
+    fn title_request_gemini_wire_keeps_named_forced_function() {
+        let request = super::build_title_request(
+            "build a mario game",
+            "gemini-3.8-flash",
+            crate::sampling::ApiBackend::GenerateContent,
+        );
+        let wire = xai_grok_sampling_types::conversation::build_generate_content_request(&request);
+        let body = serde_json::to_value(wire).unwrap();
+        assert_eq!(
+            body["toolConfig"]["functionCallingConfig"],
+            serde_json::json!({
+                "mode": "ANY",
+                "allowedFunctionNames": ["session_title"],
+            })
         );
     }
 

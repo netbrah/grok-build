@@ -3781,7 +3781,7 @@ impl NativeFinalizationEvidence {
             crate::ApiBackend::Responses => serde_json::to_value(
                 async_openai::types::responses::CreateResponse::from(request),
             ),
-            crate::ApiBackend::ChatCompletions => {
+            crate::ApiBackend::ChatCompletions | crate::ApiBackend::GenerateContent => {
                 return Err(NativePlanRefusal::InvalidQualification);
             }
         }
@@ -5799,6 +5799,7 @@ pub enum NativeDomainBackend {
     Responses,
     Messages,
     ChatCompletions,
+    GenerateContent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -5842,6 +5843,7 @@ impl From<&NativeReplayDomain> for NativeProjectionDomain {
                 crate::ApiBackend::Responses => NativeDomainBackend::Responses,
                 crate::ApiBackend::Messages => NativeDomainBackend::Messages,
                 crate::ApiBackend::ChatCompletions => NativeDomainBackend::ChatCompletions,
+                crate::ApiBackend::GenerateContent => NativeDomainBackend::GenerateContent,
             },
             dialect: match &domain.dialect {
                 NativeReplayDialect::Messages => NativeDomainDialect::Messages,
@@ -5871,6 +5873,7 @@ impl NativeProjectionDomain {
                 NativeDomainBackend::Responses => crate::ApiBackend::Responses,
                 NativeDomainBackend::Messages => crate::ApiBackend::Messages,
                 NativeDomainBackend::ChatCompletions => crate::ApiBackend::ChatCompletions,
+                NativeDomainBackend::GenerateContent => crate::ApiBackend::GenerateContent,
             },
             dialect: match self.dialect {
                 NativeDomainDialect::Messages => NativeReplayDialect::Messages,
@@ -6428,6 +6431,34 @@ impl NativeBoundPreparation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_history_gemini_domain_round_trips_without_search_qualification() {
+        let domain = NativeReplayDomain {
+            backend: crate::ApiBackend::GenerateContent,
+            dialect: NativeReplayDialect::Responses(crate::ResponsesReplayDialect::Other),
+            model: "gemini-3.8-flash".into(),
+            row: "native-gemini".into(),
+            provider: "google".into(),
+            deployment: "proxy".into(),
+            deployment_revision: "1".into(),
+            endpoint: "https://example.test/gemini/v1beta".into(),
+            principal: "test-principal".into(),
+        };
+        let stored = NativeProjectionDomain::from(&domain);
+        let json = serde_json::to_value(&stored).unwrap();
+        assert_eq!(json["backend"], "generate_content");
+        let restored: NativeProjectionDomain = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.domain(), domain);
+        assert!(!restored.domain().complete());
+        assert_eq!(
+            NativeFinalizationEvidence::request_digest(
+                &crate::ConversationRequest::from_items(vec![crate::ConversationItem::user("test")]),
+                &crate::ApiBackend::GenerateContent,
+            ),
+            Err(NativePlanRefusal::InvalidQualification),
+        );
+    }
 
     #[test]
     fn native_history_owner_seals_cannot_cross_issuers_or_survive_release() {
