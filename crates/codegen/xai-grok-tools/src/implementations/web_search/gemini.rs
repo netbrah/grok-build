@@ -189,12 +189,13 @@ impl GeminiUtilityResult {
     }
 }
 
-/// Normalize a session base_url to the Gemini API root (SDD §4.1, normative
-/// order): trim trailing slashes → strip ONE trailing `/v1` if present → trim
-/// trailing slashes again.
+/// Normalize a Responses or native Gemini versioned base to its API root.
 pub fn url_root(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
-    let stripped = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+    let stripped = trimmed
+        .strip_suffix("/v1beta")
+        .or_else(|| trimmed.strip_suffix("/v1"))
+        .unwrap_or(trimmed);
     stripped.trim_end_matches('/').to_string()
 }
 

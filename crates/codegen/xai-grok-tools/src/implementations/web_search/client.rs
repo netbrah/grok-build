@@ -1235,6 +1235,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gemini_versioned_bases_use_one_version_and_proxy_bearer() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        for suffix in ["/v1beta", "/v1beta/", "/v1", "/v1/"] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(T3_PATH))
+                .and(header("authorization", "Bearer test-key"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(t3_fixture_body("P3a__resp.json")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let config = WebSearchConfig::Enabled {
+                api_key: "test-key".to_owned(),
+                base_url: format!("{}{suffix}", server.uri()),
+                model: T3_MODEL.to_owned(),
+                extra_headers: IndexMap::new(),
+                alpha_test_key: None,
+                allowed_domains: None,
+                excluded_domains: None,
+            };
+            let client = WebSearchClient::new(&config, None).unwrap();
+            let (_, citations) = client.search("latest Linux kernel", None).await.unwrap();
+            assert!(!citations.is_empty());
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].url.path(), T3_PATH);
+            assert!(!requests[0].headers.contains_key("x-goog-api-key"));
+            assert!(!requests[0].headers.contains_key("x-api-key"));
+        }
+    }
+
+    #[tokio::test]
     async fn t3_not_grounded_retries_once_with_the_forcing_instruction() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer};
