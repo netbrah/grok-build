@@ -11,7 +11,10 @@
 //!    (`messages::clean_orphaned_items`): an unpaired `functionCall` /
 //!    `functionResponse` is unsendable on this wire too.
 //! 2. Item → content translation with same-role merge: consecutive
-//!    user-side items (`User`, `ToolResult`) become ONE `user` content;
+//!    user-side items (`User`, `ToolResult`) accumulate together, then split
+//!    into a response-only `user` content followed by a separate `user`
+//!    content for any remaining text/media. This avoids LiteLLM-to-Vertex
+//!    rejecting responses followed by text in the same content;
 //!    consecutive model-side items (`Assistant`, its `Reasoning` sibling,
 //!    degraded backend/discovery items) become ONE `model` content. The
 //!    wire tolerates non-alternating roles, but every `functionResponse`
@@ -413,7 +416,8 @@ impl ModelBuffer<'_> {
 /// cannot disambiguate those calls by name alone. Reordering also keeps the
 /// replayed history byte-stable for the implicit cache. Responses for names
 /// the model never called keep their relative order after the matched ones
-/// (the orphan cleanup makes that a non-case).
+/// (the orphan cleanup makes that a non-case). Remaining text/media is sent
+/// in a separate user content to preserve the trailing user turn on Vertex.
 fn flush_user(pending: &mut Vec<Part>, contents: &mut Vec<Content>) {
     if pending.is_empty() {
         return;
@@ -431,6 +435,11 @@ fn flush_user(pending: &mut Vec<Part>, contents: &mut Vec<Content>) {
         .unwrap_or_default();
     if parts.iter().any(|p| p.function_response.is_some()) {
         parts = order_function_responses(parts, &calls);
+        if let Some(first_other) = parts.iter().position(|p| p.function_response.is_none()) {
+            let others = parts.split_off(first_other);
+            contents.push(Content::user(parts));
+            parts = others;
+        }
     }
     contents.push(Content::user(parts));
 }

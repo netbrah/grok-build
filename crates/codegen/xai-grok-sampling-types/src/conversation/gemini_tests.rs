@@ -115,6 +115,87 @@ fn tool_round_trip_has_function_call_then_function_response_in_user_content() {
 }
 
 #[test]
+fn pending_tool_results_and_user_text_are_separate_user_contents() {
+    for calls in [
+        vec![("call_1", "read_file")],
+        vec![("call_1", "read_file"), ("call_2", "grep")],
+    ] {
+        for model in [MODEL, "gemini-2.5-pro"] {
+            let mut items = vec![
+                ConversationItem::user("go"),
+                assistant_calls_with_model(&calls, Some(model)),
+            ];
+            items.extend(
+                calls
+                    .iter()
+                    .rev()
+                    .map(|(id, _)| ConversationItem::tool_result(*id, *id)),
+            );
+            items.push(ConversationItem::user("send now"));
+            items.push(ConversationItem::user("keep going"));
+            let b = body(&ConversationRequest::from_items(items).with_model(model));
+            assert_eq!(b["contents"].as_array().unwrap().len(), 4, "{b:#}");
+            assert_eq!(role(&b, 1), "model");
+            let expected: Vec<serde_json::Value> = calls
+                .iter()
+                .map(|(id, name)| {
+                    let mut response = serde_json::json!({
+                        "name": name,
+                        "response": { "output": id }
+                    });
+                    if model == MODEL {
+                        response["id"] = serde_json::json!(id);
+                    }
+                    serde_json::json!({ "functionResponse": response })
+                })
+                .collect();
+            assert_eq!(
+                b["contents"][2],
+                serde_json::json!({ "role": "user", "parts": expected })
+            );
+            assert_eq!(
+                b["contents"][3],
+                serde_json::json!({
+                    "role": "user",
+                    "parts": [{ "text": "send now" }, { "text": "keep going" }]
+                })
+            );
+            for (call, response) in parts(&b, 1).iter().zip(parts(&b, 2)) {
+                assert_eq!(
+                    call["functionCall"]["id"],
+                    response["functionResponse"]["id"]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn pending_tool_results_without_user_text_stay_in_one_user_content() {
+    let b = body(&gemini_request(vec![
+        ConversationItem::user("go"),
+        assistant_with_calls(&[("call_1", "read_file"), ("call_2", "read_file")]),
+        ConversationItem::tool_result("call_2", "second"),
+        ConversationItem::tool_result("call_1", "first"),
+    ]));
+    assert_eq!(b["contents"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        b["contents"][2],
+        serde_json::json!({
+            "role": "user",
+            "parts": [
+                { "functionResponse": {
+                    "id": "call_1", "name": "read_file", "response": { "output": "first" }
+                } },
+                { "functionResponse": {
+                    "id": "call_2", "name": "read_file", "response": { "output": "second" }
+                } }
+            ]
+        })
+    );
+}
+
+#[test]
 fn error_tool_result_uses_error_key_and_object_results_pass_through() {
     let req = gemini_request(vec![
         ConversationItem::user("go"),
@@ -676,7 +757,8 @@ fn tool_result_images_nest_under_function_response_parts() {
     ]);
     let b = body(&req);
     let p = parts(&b, 2);
-    assert_eq!(p.len(), 3, "response + two text fallbacks: {p:#?}");
+    assert_eq!(p.len(), 1, "response stays in its own content: {p:#?}");
+    assert_eq!(b["contents"].as_array().unwrap().len(), 4);
     let fr = &p[0]["functionResponse"];
     assert_eq!(fr["name"], "screenshot");
     assert_eq!(fr["response"], serde_json::json!({ "output": "captured" }));
@@ -690,8 +772,16 @@ fn tool_result_images_nest_under_function_response_parts() {
     );
     assert_eq!(nested[1]["fileData"]["mimeType"], "image/png");
     assert!(p[0].get("inlineData").is_none(), "no sibling media parts");
-    assert_eq!(p[1]["text"], "[image: https://example.com/opaque]");
-    assert_eq!(p[2]["text"], "[invalid image: file:///tmp/x.png]");
+    assert_eq!(
+        b["contents"][3],
+        serde_json::json!({
+            "role": "user",
+            "parts": [
+                { "text": "[image: https://example.com/opaque]" },
+                { "text": "[invalid image: file:///tmp/x.png]" }
+            ]
+        })
+    );
 
     // No media ⇒ `parts` is omitted entirely.
     let req = gemini_request(vec![
@@ -705,8 +795,7 @@ fn tool_result_images_nest_under_function_response_parts() {
 
 #[test]
 fn function_responses_are_hoisted_and_ordered_to_the_call_order() {
-    // Two parallel calls to the same tool whose results arrive reversed,
-    // with a user message interleaved in the same user content.
+    // Parallel same-name calls arrive reversed, with a user message interleaved.
     let req = gemini_request(vec![
         ConversationItem::user("go"),
         assistant_with_calls(&[
@@ -721,8 +810,9 @@ fn function_responses_are_hoisted_and_ordered_to_the_call_order() {
     ]);
     let b = body(&req);
     let p = parts(&b, 2);
-    assert_eq!(p.len(), 4, "{p:#?}");
-    let outputs: Vec<&str> = p[..3]
+    assert_eq!(b["contents"].as_array().unwrap().len(), 4);
+    assert_eq!(p.len(), 3, "{p:#?}");
+    let outputs: Vec<&str> = p
         .iter()
         .map(|part| {
             part["functionResponse"]["response"]["output"]
@@ -734,7 +824,10 @@ fn function_responses_are_hoisted_and_ordered_to_the_call_order() {
     assert_eq!(p[0]["functionResponse"]["name"], "read_file");
     assert_eq!(p[1]["functionResponse"]["name"], "grep");
     assert_eq!(p[2]["functionResponse"]["name"], "read_file");
-    assert_eq!(p[3]["text"], "fyi", "text is hoisted behind the responses");
+    assert_eq!(
+        b["contents"][3],
+        serde_json::json!({ "role": "user", "parts": [{ "text": "fyi" }] })
+    );
 
     // A user content with no preceding model calls is left untouched.
     let req = gemini_request(vec![
