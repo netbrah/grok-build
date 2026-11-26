@@ -2374,7 +2374,7 @@ impl SessionActor {
         if covered && awaiting_continuation {
             return None;
         }
-        if (covered || super::switch_projection::select_native_history()
+        if (covered || self.current_row_native_history().await
             == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected)
             && crate::session::helpers::memory_context::conversation_has_memory_reminder_item(
                 &self.chat_state_handle.get_conversation().await,
@@ -2393,7 +2393,7 @@ impl SessionActor {
     }
 
     async fn native_checkpoint_covers_history(&self) -> bool {
-        if super::switch_projection::select_native_history()
+        if self.current_row_native_history().await
             != xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
         {
             return false;
@@ -2770,6 +2770,9 @@ impl SessionActor {
         let mut tool_turn_count: usize = 1;
         let mut loop_index: u32 = 0;
         let mut stale_history_retries: u32 = 0;
+        let mut stored_native_requirement: Option<
+            xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement,
+        > = None;
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut todo_gate_fires: u32 = 0;
         let mut discovery_searches_this_turn: u32 = 0;
@@ -2983,7 +2986,30 @@ impl SessionActor {
             // waj2-U8: one capture per fresh bound request, from the single
             // production selector, attached AFTER the transforms so a fork
             // replacement or appended structured output can never drop it.
-            let native_requirement = super::switch_projection::select_native_history();
+            // A StaleHistory retry reuses this value. It does not call the selector again.
+            let native_requirement = if let Some(stored) = stored_native_requirement {
+                stored
+            } else {
+                let backend = sampling_config.as_ref().map_or(
+                    xai_grok_sampling_types::ApiBackend::ChatCompletions,
+                    |cfg| cfg.api_backend.clone(),
+                );
+                let supports_search_tool = sampling_config
+                    .as_ref()
+                    .is_some_and(|cfg| cfg.supports_search_tool);
+                let has_searchable_tools = xai_grok_sampling_types::SearchAdmission::for_row(
+                    supports_search_tool,
+                    effective_tools.specs(),
+                )
+                .has_searchable_tools;
+                let requirement = super::switch_projection::select_native_history(
+                    backend,
+                    supports_search_tool,
+                    has_searchable_tools,
+                );
+                stored_native_requirement = Some(requirement);
+                requirement
+            };
             let native_entry = match native_requirement {
                 xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive => {
                     // Explicit Inactive needs no owner wait; the caller keeps this
@@ -3172,15 +3198,50 @@ impl SessionActor {
                 request.length_policy = xai_grok_sampling_types::LengthPolicy::CompletePartial;
             }
             if native_requirement == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected {
+                #[cfg(test)]
+                if let Ok(Some(action)) = super::switch_projection::NATIVE_HISTORY_BEFORE_FINALIZE
+                    .try_with(|slot| slot.borrow_mut().take())
+                {
+                    use super::switch_projection::NativeHistoryBeforeFinalize;
+                    match action {
+                        NativeHistoryBeforeFinalize::AppendUser(text) => {
+                            self.chat_state_handle
+                                .push_user_message_and_ack(ConversationItem::user(text))
+                                .await;
+                        }
+                        NativeHistoryBeforeFinalize::DivergeCheckpoint => {
+                            let _ = self
+                                .chat_state_handle
+                                .diverge_native_checkpoint_from_disk()
+                                .await;
+                        }
+                    }
+                }
                 match self.finalize_native_history_primary(request, &mut binding).await {
                     Ok(finalized) => request = finalized,
                     Err(error)
-                        if format!("{error}").contains("StaleHistory")
+                        if crate::sampling::error::error_code_from_data(&error)
+                            == Some("native_history_stale_race")
                             && stale_history_retries < 2 =>
                     {
-                        // A tool result or discovery item can land between the
-                        // bound snapshot and the commit. Rebuild once from the
-                        // history that is now durable.
+                        // The request moved after the seal, or another writer appended.
+                        // Rebuild from the actor's current history. The mode stays stored.
+                        stale_history_retries += 1;
+                        continue;
+                    }
+                    Err(error)
+                        if crate::sampling::error::error_code_from_data(&error)
+                            == Some("native_history_stale_durable")
+                            && stale_history_retries < 2 =>
+                    {
+                        let reloaded = self
+                            .chat_state_handle
+                            .reload_native_history_from_disk()
+                            .await
+                            .unwrap_or(false);
+                        if !reloaded {
+                            return Err(error);
+                        }
                         stale_history_retries += 1;
                         continue;
                     }
@@ -3188,6 +3249,15 @@ impl SessionActor {
                 }
                 stale_history_retries = 0;
                 self.publish_bound_projection(&request, &binding, selected_functions).await;
+            }
+            if let Err(block) = xai_grok_sampling_types::conversation::local_tool_search_guard::local_tool_search_guard(
+                &request,
+                crate::util::is_xai_api_url(&binding.config.base_url),
+            ) {
+                return Err(crate::sampling::error::local_error(
+                    "local_tool_search_refused",
+                    format!("local tool search guard refused: {block:?}"),
+                ));
             }
             self.emit_event(crate::session::events::Event::PhaseChanged {
                 phase: crate::session::events::Phase::WaitingForModel,
@@ -4966,13 +5036,6 @@ impl SessionActor {
     ) -> Result<ConversationRequest, acp::Error> {
         use xai_grok_sampling_types::conversation::native_search_history::*;
         use xai_grok_sampling_types::conversation::projection::{TargetRoute, model_boundary_class};
-        // Messages is the only wire with a native-history plan. Responses and
-        // Chat Completions keep the request the ordinary encoder already sends:
-        // tool search, deferral, and store=false live there. Refusing them
-        // before HTTP drops the primary turn.
-        if binding.config.api_backend != xai_grok_sampling_types::ApiBackend::Messages {
-            return Ok(request);
-        }
         let preparation = request.native_bound_preparation.clone().ok_or_else(|| {
             crate::sampling::error::local_error(
                 "native_history_preparation_missing",
@@ -4995,8 +5058,13 @@ impl SessionActor {
             .commit_native_history_projection(preparation, request.clone(), route)
             .await
             .map_err(|reason| {
+                let code = match reason {
+                    NativeUnavailable::StaleHistoryRace => "native_history_stale_race",
+                    NativeUnavailable::StaleHistoryDurable => "native_history_stale_durable",
+                    _ => "native_history_compound_refused",
+                };
                 crate::sampling::error::local_error(
-                    "native_history_compound_refused",
+                    code,
                     format!("native compound projection refused: {reason:?}"),
                 )
             })?;

@@ -1169,7 +1169,11 @@ async fn memory_flush_outgoing_request_is_text_only() {
                 "the stored discovery kinds stay intact"
             );
             assert_eq!(
-                crate::session::acp_session::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+                crate::session::acp_session::switch_projection::select_native_history(
+                    xai_grok_sampling_types::ApiBackend::Messages,
+                    false,
+                    false,
+                ),
                 xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Inactive
             );
             eprintln!("W16_WIRE messages=1 text_only=true native_search=off");

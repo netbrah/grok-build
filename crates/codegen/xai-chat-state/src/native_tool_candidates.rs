@@ -20,6 +20,12 @@ pub struct NativeToolCandidates {
 }
 
 impl NativeToolCandidates {
+    /// The specs this build will declare. The native-history predicate reads this
+    /// list once, through `has_searchable_tools`, and does not invent a second surface.
+    pub fn specs(&self) -> &[ToolSpec] {
+        &self.specs
+    }
+
     /// Preserve prepared builtin specs without adding MCP membership.
     pub fn builtins_only(specs: Vec<ToolSpec>) -> Self {
         Self {

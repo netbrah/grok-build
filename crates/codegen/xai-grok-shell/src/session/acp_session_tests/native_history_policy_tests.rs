@@ -14941,7 +14941,7 @@ async fn native_history_ordered_checkpoint_emits_each_block_once() {
         assert!(seen.insert(raw.clone()), "each source block is stored once");
     }
     assert_eq!(
-        super::switch_projection::select_native_history(),
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected,
         "ordered fidelity keeps the production selector that K5 switched on"
     );
@@ -14952,11 +14952,11 @@ async fn native_history_ordered_checkpoint_emits_each_block_once() {
 async fn native_history_actual_outgoing_bytes_require_plan() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
-        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected
     );
     assert_eq!(
-        super::switch_projection::select_native_history(),
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected,
         "a fresh production request selects native search"
     );
@@ -14973,7 +14973,7 @@ async fn native_history_actual_outgoing_bytes_require_plan() {
 async fn native_history_pending_input_and_compaction_respect_lifecycle() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
-        super::switch_projection::select_native_history(),
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected
     );
     tokio::task::LocalSet::new()
@@ -15024,7 +15024,7 @@ fn native_history_paused_a_binding_and_fresh_b_policy() {
             let body = server.request_bodies()[0].to_string();
             assert!(body.contains("write out the numbers"));
             assert_eq!(
-                super::switch_projection::select_native_history(),
+                super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
                 NativeHistoryRequirement::Selected,
                 "the pause result keeps the production selector that K5 switched on"
             );
@@ -15052,6 +15052,7 @@ fn native_history_paused_a_binding_and_fresh_b_policy() {
                         .project_bridge_declarations(
                             &mut fresh_b,
                             &xai_grok_sampling_types::ApiBackend::Messages,
+                            true,
                             &projection,
                         )
                         .unwrap();
@@ -15151,12 +15152,12 @@ async fn native_history_auxiliary_requests_never_commit_disposition() {
 async fn native_history_u9_u10_all_send_stays_inactive() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
-        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected,
         "K5 switches native search on"
     );
     assert_eq!(
-        super::switch_projection::select_native_history(),
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected
     );
     auxiliary_neutral_f_body().await;
@@ -15175,7 +15176,7 @@ async fn native_history_u9_u10_all_send_stays_inactive() {
         );
     }).await;
     assert_eq!(
-        super::switch_projection::select_native_history(),
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected,
         "leaving the test scope restores the selected production mode"
     );
@@ -15185,23 +15186,41 @@ async fn native_history_u9_u10_all_send_stays_inactive() {
 fn primary_rows_send_without_native_history_refusal() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
-        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected
     );
     super::length_salvage_tests::block_on_session(|| {
         super::length_salvage_tests::current_thread_local(async {
-            for (backend, path) in [
+            for (backend, path, search) in [
                 (
                     xai_grok_sampling_types::ApiBackend::Responses,
                     "/v1/responses",
+                    true,
+                ),
+                (
+                    xai_grok_sampling_types::ApiBackend::Responses,
+                    "/v1/responses",
+                    false,
                 ),
                 (
                     xai_grok_sampling_types::ApiBackend::ChatCompletions,
                     "/v1/chat/completions",
+                    true,
+                ),
+                (
+                    xai_grok_sampling_types::ApiBackend::ChatCompletions,
+                    "/v1/chat/completions",
+                    false,
                 ),
                 (
                     xai_grok_sampling_types::ApiBackend::Messages,
                     "/v1/messages",
+                    true,
+                ),
+                (
+                    xai_grok_sampling_types::ApiBackend::Messages,
+                    "/v1/messages",
+                    false,
                 ),
             ] {
                 let server = xai_grok_test_support::MockInferenceServer::start()
@@ -15215,13 +15234,9 @@ fn primary_rows_send_without_native_history_refusal() {
                 let actor = session.actor.clone();
                 let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
                 sampling.api_backend = backend.clone();
-                sampling.supports_search_tool = backend
-                    != xai_grok_sampling_types::ApiBackend::ChatCompletions;
+                sampling.supports_search_tool = search;
                 actor.chat_state_handle.update_sampling_config(sampling);
-                let mut entry = entry_with_search_flag(
-                    "test",
-                    backend != xai_grok_sampling_types::ApiBackend::ChatCompletions,
-                );
+                let mut entry = entry_with_search_flag("test", search);
                 entry.info.api_backend = backend.clone();
                 entry.api_base_url = Some(server.url());
                 entry.api_key = Some("test-key".into());
@@ -15283,6 +15298,18 @@ fn primary_rows_send_without_native_history_refusal() {
                 if backend == xai_grok_sampling_types::ApiBackend::Responses {
                     assert!(body.contains("\"store\":false") || body.contains("\"store\": false"));
                 }
+                if backend == xai_grok_sampling_types::ApiBackend::ChatCompletions {
+                    assert!(
+                        !body.contains("tool_search_tool_"),
+                        "{path} borrowed the Messages replay dialect: {body}"
+                    );
+                }
+                if backend == xai_grok_sampling_types::ApiBackend::Messages && !search {
+                    assert!(
+                        !body.contains("tool_search_tool_"),
+                        "a Messages row with supports_search_tool false entered the search finalizer: {body}"
+                    );
+                }
                 actor
                     .session_turn_active
                     .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -15295,7 +15322,7 @@ fn primary_rows_send_without_native_history_refusal() {
 fn messages_admitted_first_turn_sends_search_declaration() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
-        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected
     );
     super::length_salvage_tests::block_on_session(|| {
@@ -15421,7 +15448,7 @@ fn messages_admitted_first_turn_sends_search_declaration() {
 fn responses_admitted_first_turn_declares_deferred_mcp() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
-        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected
     );
     super::length_salvage_tests::block_on_session(|| {
@@ -15586,8 +15613,22 @@ fn messages_discovery_pair_sse(text: &str) -> ScriptedResponse {
 fn messages_discovery_history_sends_without_stale_history() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
-        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
-        NativeHistoryRequirement::Selected
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
+        NativeHistoryRequirement::Selected,
+        "Selected is Messages and supports_search_tool and searchable tools. The xAI conjunct is not in this cutover."
+    );
+    assert_eq!(
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, false),
+        NativeHistoryRequirement::Inactive,
+        "Messages with the search flag and no searchable tools stays Inactive"
+    );
+    assert_eq!(
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Responses, true, true),
+        NativeHistoryRequirement::Inactive
+    );
+    assert_eq!(
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::ChatCompletions, true, true),
+        NativeHistoryRequirement::Inactive
     );
     super::length_salvage_tests::block_on_session(|| {
         super::length_salvage_tests::current_thread_local(async {
@@ -15714,12 +15755,13 @@ fn messages_discovery_history_sends_without_stale_history() {
                 body.contains("discovery history turn"),
                 "discovery history sent nothing: {err}"
             );
-            // A just-recorded Messages search is not a qualified Keep receipt, so
-            // the production projection replays it as the neutral sentence. The
-            // following send must still happen, with the prior assistant text.
             assert!(
-                body.contains("searched the warehouse"),
-                "prior assistant text was dropped from the continuation: {body}"
+                body.contains("srvtoolu_live"),
+                "A green policy test and a proxied pass do not close D-1 or D-2. D-1 is closed only by Inactive non-Messages sends. D-2 is closed only when an admitted Messages first turn sends and the continuation still carries server_tool_use. body={body}"
+            );
+            assert!(
+                !body.contains("Historical search recorded; this history grants no current tool authority."),
+                "the neutral sentence is not a successful server_tool_use replay: {body}"
             );
             assert!(
                 body.contains("tool_search_tool_"),
@@ -15734,16 +15776,277 @@ fn messages_discovery_history_sends_without_stale_history() {
     });
 }
 
+fn stale_history_session(
+    server: &xai_grok_test_support::MockInferenceServer,
+) -> impl std::future::Future<Output = NativeHistorySession> + '_ {
+    async move {
+        let session = NativeHistorySession::new(server).await;
+        let actor = session.actor.clone();
+        actor.agent.replace(
+            super::support::test_agent_with_tools(vec![
+                xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                    xai_grok_tools::implementations::grok_build::read_file::ReadFileTool,
+                >()
+                .with_name("warehouse_lookup"),
+            ])
+            .await,
+        );
+        let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
+        sampling.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+        sampling.supports_search_tool = true;
+        actor.chat_state_handle.update_sampling_config(sampling);
+        let mut entry = super::support::entry_with_search_flag("test", true);
+        entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+        entry.api_base_url = Some(server.url());
+        entry.api_key = Some("test-key".into());
+        actor.models_manager.insert_test_entry("test", entry);
+        session
+    }
+}
+
+async fn run_native_history_prompt(
+    actor: &Arc<SessionActor>,
+    prompt: &'static str,
+    id: &'static str,
+) -> Result<super::types::TurnOutcome, acp::Error> {
+    actor
+        .session_turn_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user(prompt))
+        .await;
+    let mut prepare = |_request: &mut ConversationRequest,
+                       _: &xai_chat_state::RequestTransportBinding| { Ok(()) };
+    let mut salvage = super::length_salvage::LengthSalvage::new(None);
+    let mut sampling_totals = Default::default();
+    let outcome = actor
+        .process_conversation_turn_for_native_history_test(
+            id,
+            None,
+            None,
+            None,
+            &mut salvage,
+            &mut sampling_totals,
+            &mut prepare,
+        )
+        .await;
+    actor
+        .session_turn_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    outcome
+}
+
+#[test]
+fn stale_history_race_rebuilds_from_actor_memory() {
+    use super::switch_projection::{NativeHistoryBeforeFinalize, NATIVE_HISTORY_BEFORE_FINALIZE};
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("race sent"),
+            );
+            let session = stale_history_session(&server).await;
+            let actor = session.actor.clone();
+            let slot = std::rc::Rc::new(std::cell::RefCell::new(Some(
+                NativeHistoryBeforeFinalize::AppendUser("race append after seal"),
+            )));
+            let outcome = NATIVE_HISTORY_BEFORE_FINALIZE
+                .scope(slot, run_native_history_prompt(&actor, "race base", "stale-race"))
+                .await;
+            let err = outcome
+                .as_ref()
+                .err()
+                .map(|error| format!("{error}"))
+                .unwrap_or_default();
+            assert!(
+                outcome.is_ok(),
+                "a history race rebuilds from actor memory and sends: {err}"
+            );
+            let body = server
+                .requests()
+                .into_iter()
+                .filter_map(|request| serde_json::to_string(&request.body).ok())
+                .find(|body| body.contains("race append after seal"))
+                .unwrap_or_default();
+            assert!(
+                body.contains("race append after seal"),
+                "the retry sent the actor's appended history, not the sealed snapshot: {err}"
+            );
+            assert!(
+                !err.contains("native_history_stale_durable"),
+                "a race does not reload disk: {err}"
+            );
+        });
+    });
+}
+
+#[test]
+fn stale_history_durable_reloads_disk_before_rebuild() {
+    use super::switch_projection::{NativeHistoryBeforeFinalize, NATIVE_HISTORY_BEFORE_FINALIZE};
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("durable first"),
+            );
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("durable second"),
+            );
+            let session = stale_history_session(&server).await;
+            let actor = session.actor.clone();
+            let first = run_native_history_prompt(&actor, "durable base", "stale-durable-1").await;
+            let first_err = first
+                .as_ref()
+                .err()
+                .map(|error| format!("{error}"))
+                .unwrap_or_default();
+            assert!(
+                first.is_ok(),
+                "the turn that writes the disk checkpoint must complete: {first_err}"
+            );
+            let slot = std::rc::Rc::new(std::cell::RefCell::new(Some(
+                NativeHistoryBeforeFinalize::DivergeCheckpoint,
+            )));
+            let second = NATIVE_HISTORY_BEFORE_FINALIZE
+                .scope(
+                    slot,
+                    run_native_history_prompt(&actor, "durable reload", "stale-durable-2"),
+                )
+                .await;
+            let err = second
+                .as_ref()
+                .err()
+                .map(|error| format!("{error}"))
+                .unwrap_or_default();
+            assert!(
+                second.is_ok(),
+                "a durable stale checkpoint reloads from disk before rebuild: {err}"
+            );
+            let sent = server.requests().into_iter().any(|request| {
+                serde_json::to_string(&request.body)
+                    .unwrap_or_default()
+                    .contains("durable reload")
+            });
+            assert!(
+                sent,
+                "rebuilding from the diverged memory checkpoint would not send"
+            );
+        });
+    });
+}
+
+#[test]
+fn local_tool_search_guard_refuses_orphan_before_send() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+    assert_ne!(NativeUnavailable::StaleHistoryRace, NativeUnavailable::StaleHistory);
+    assert_ne!(
+        NativeUnavailable::StaleHistoryDurable,
+        NativeUnavailable::StaleHistory
+    );
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("must not be sent"),
+            );
+            let session = NativeHistorySession::new(&server).await;
+            let actor = session.actor.clone();
+            actor.agent.replace(
+                super::support::test_agent_with_tools(vec![
+                    xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                        xai_grok_tools::implementations::grok_build::read_file::ReadFileTool,
+                    >()
+                    .with_name("warehouse_lookup"),
+                ])
+                .await,
+            );
+            let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            sampling.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+            sampling.supports_search_tool = true;
+            actor.chat_state_handle.update_sampling_config(sampling);
+            let mut entry = super::support::entry_with_search_flag("test", true);
+            entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+            entry.api_base_url = Some(server.url());
+            entry.api_key = Some("test-key".into());
+            actor.models_manager.insert_test_entry("test", entry);
+            actor
+                .chat_state_handle
+                .push_user_message_and_ack(ConversationItem::user("orphan guard prompt"))
+                .await;
+            actor
+                .chat_state_handle
+                .push_user_message_and_ack(ConversationItem::tool_result(
+                    "call_without_a_parent",
+                    "orphan output",
+                ))
+                .await;
+            actor
+                .session_turn_active
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut prepare = |_request: &mut ConversationRequest,
+                               _: &xai_chat_state::RequestTransportBinding| { Ok(()) };
+            let mut salvage = super::length_salvage::LengthSalvage::new(None);
+            let mut sampling_totals = Default::default();
+            let outcome = actor
+                .process_conversation_turn_for_native_history_test(
+                    "orphan-guard",
+                    None,
+                    None,
+                    None,
+                    &mut salvage,
+                    &mut sampling_totals,
+                    &mut prepare,
+                )
+                .await;
+            actor
+                .session_turn_active
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            let error = outcome.as_ref().err().expect("an orphan tool output must not be sent");
+            let err = format!("{error}");
+            assert_eq!(
+                crate::sampling::error::error_code_from_data(error),
+                Some("local_tool_search_refused"),
+                "the pre-send guard refuses instead of repairing: {err}"
+            );
+            assert!(
+                err.contains("OrphanOutput"),
+                "the refusal names the orphan, and it does not repair the history: {err}"
+            );
+            let sent = server
+                .requests()
+                .into_iter()
+                .any(|request| {
+                    request.path == "/v1/messages"
+                        && serde_json::to_string(&request.body)
+                            .unwrap_or_default()
+                            .contains("orphan guard prompt")
+                });
+            assert!(!sent, "inference did not start after the local refusal");
+        });
+    });
+}
+
 #[test]
 fn native_history_production_selected_requires_valid_plan() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
     assert_eq!(
-        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected,
         "K5 switches native search on"
     );
     assert_eq!(
-        super::switch_projection::select_native_history(),
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected
     );
     super::length_salvage_tests::block_on_session(|| {

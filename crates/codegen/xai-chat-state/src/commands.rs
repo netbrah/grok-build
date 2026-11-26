@@ -456,6 +456,22 @@ pub enum ChatStateCommand {
             >,
         >,
     },
+    /// Read the checkpoint from disk and install it when one is present.
+    /// `Ok(false)` means the read succeeded and disk has no checkpoint.
+    /// Test stimulus: make the in-memory checkpoint disagree with the bytes on disk.
+    /// Production turns do not send this. The durable-stale test does, after a
+    /// preparation is sealed and before commit.
+    DivergeNativeCheckpointFromDisk {
+        reply: oneshot::Sender<bool>,
+    },
+    ReloadNativeHistoryFromDisk {
+        reply: oneshot::Sender<
+            Result<
+                bool,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
     /// True while a capture lease still holds attempt evidence that has not been
     /// written into the native checkpoint.
     NativeSourceUnretained { reply: oneshot::Sender<bool> },

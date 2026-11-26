@@ -22,6 +22,12 @@ pub enum NativeUnavailable {
     UnsupportedVersion,
     InvalidReference,
     StaleHistory,
+    /// The bound request moved after the seal, or another writer appended.
+    /// The turn rebuilds from the actor's current history. It does not reload disk.
+    StaleHistoryRace,
+    /// The persisted checkpoint is missing, mismatched, or behind the capture.
+    /// The turn reloads that checkpoint from disk before it rebuilds.
+    StaleHistoryDurable,
     ConflictingObservation,
     Persistence,
     Indeterminate,
@@ -4803,13 +4809,28 @@ impl NativeHistoryPlan {
                 }
             }
             if group.action == NativeHistoryAction::Keep {
-                if qualification.source.as_ref() != Some(&qualification.target)
-                    || !self.context.capture.original_admission.admitted()
-                    || !qualification.receipt.as_ref().is_some_and(|receipt| {
-                        receipt.target == qualification.target
-                            && receipt.shape == qualification.shape
-                            && !receipt.receipt_id.is_empty()
-                    })
+                let messages_server_keep = self.context.capture.original_admission.admitted()
+                    && qualification.shape.completed
+                    && matches!(
+                        (
+                            &qualification.target.dialect,
+                            qualification.shape.family,
+                            self.context.capture.execution
+                        ),
+                        (
+                            NativeReplayDialect::Messages,
+                            NativeReplayFamily::MessagesServer,
+                            NativeHistoryExecution::Server
+                        )
+                    );
+                if !messages_server_keep
+                    && (qualification.source.as_ref() != Some(&qualification.target)
+                        || !self.context.capture.original_admission.admitted()
+                        || !qualification.receipt.as_ref().is_some_and(|receipt| {
+                            receipt.target == qualification.target
+                                && receipt.shape == qualification.shape
+                                && !receipt.receipt_id.is_empty()
+                        }))
                 {
                     return Err(NativePlanRefusal::InvalidQualification);
                 }

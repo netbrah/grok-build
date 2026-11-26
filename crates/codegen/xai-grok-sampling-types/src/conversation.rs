@@ -5,6 +5,7 @@
 
 mod chat_completions;
 mod messages;
+pub mod local_tool_search_guard;
 pub mod native_search_history;
 pub mod outbound_lint;
 pub mod projection;

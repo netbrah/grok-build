@@ -866,6 +866,13 @@ pub(super) fn discovery_tier(
     {
         return DiscoveryTier::Refuse;
     }
+    if target.backend == ApiBackend::Messages
+        && target.admission.admitted()
+        && qualification.shape.family == NativeReplayFamily::MessagesServer
+        && qualification.shape.completed
+    {
+        return DiscoveryTier::Keep;
+    }
     if target.backend == ApiBackend::ChatCompletions
         || !target.admission.admitted()
         || (target.backend == ApiBackend::Responses && target.boundary == Boundary::Vertex)

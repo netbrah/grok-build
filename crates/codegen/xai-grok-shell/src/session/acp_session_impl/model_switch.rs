@@ -224,7 +224,7 @@ impl SessionActor {
         // XW-PROJECT-1 (apex-ayl.71): proactive switch-time projection for the
         // cross-wire switch; the actor no-ops (NoMatch) when the history is
         // already in the target form. Gated: real model-id change, no turn in flight.
-        let native_requirement = super::switch_projection::select_native_history();
+        let native_requirement = self.current_row_native_history().await;
         if !turn_in_flight && prev_model.as_deref() != Some(sampling_config.model.as_str()) {
             // XW-ENC-AFFINITY-1 (apex-mf6): the target row's affinity pin
             // (empty header = unpin → None) feeds the switch-time gate.

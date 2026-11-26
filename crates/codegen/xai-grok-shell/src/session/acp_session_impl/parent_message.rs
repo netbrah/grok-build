@@ -213,6 +213,8 @@ impl SessionActor {
             }
         };
         self.ensure_prefix_ready().await;
+        let parent_native_selected = self.current_row_native_history().await
+            == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected;
 
         let prompt_id = format!("parent-message-{}", message.message_id);
         let (turn_result_tx, turn_result_rx) = oneshot::channel();
@@ -235,8 +237,7 @@ impl SessionActor {
         if effective == ActiveAgentMessageOperation::Steer
             && state.message_delivery.lifecycle.len() >= MAX_PARENT_STEER_SLOTS
         {
-            if super::switch_projection::select_native_history()
-                == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
+            if parent_native_selected
             {
                 let observed = state.message_delivery.lifecycle.len();
                 state.message_delivery.held_input.refusal(

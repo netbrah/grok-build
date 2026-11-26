@@ -973,6 +973,31 @@ impl ChatStateHandle {
         .await
         .unwrap_or(true)
     }
+    /// Make the in-memory checkpoint's bytes differ from disk and clear its authority.
+    /// The next commit of a sealed preparation then returns `StaleHistoryDurable`
+    /// until `reload_native_history_from_disk` installs the disk checkpoint.
+    pub async fn diverge_native_checkpoint_from_disk(&self) -> bool {
+        self.query("DivergeNativeCheckpointFromDisk", |reply| {
+            ChatStateCommand::DivergeNativeCheckpointFromDisk { reply }
+        })
+        .await
+        .unwrap_or(false)
+    }
+    /// Install the on-disk checkpoint onto the actor when one exists.
+    /// `Ok(false)` is a successful read with nothing to install. The caller
+    /// does not retry a durable stale history in that case.
+    pub async fn reload_native_history_from_disk(
+        &self,
+    ) -> Result<bool, xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        self.query("ReloadNativeHistoryFromDisk", |reply| {
+            ChatStateCommand::ReloadNativeHistoryFromDisk { reply }
+        })
+        .await
+        .unwrap_or(Err(
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence,
+        ))
+    }
     pub async fn read_native_history(
         &self,
     ) -> Result<

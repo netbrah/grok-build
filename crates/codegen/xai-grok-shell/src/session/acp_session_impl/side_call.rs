@@ -196,7 +196,12 @@ impl SessionActor {
         #[cfg(test)]
         tests::record_auxiliary_build(&request);
         if let Err(error) =
-            self.project_bridge_declarations(&mut request, &call.backend, &projection)
+            self.project_bridge_declarations(
+                &mut request,
+                &call.backend,
+                call.supports_search_tool,
+                &projection,
+            )
         {
             tracing::error!(%error, "auxiliary bridge projection failed; retaining selected tools");
         }
@@ -222,7 +227,11 @@ impl SessionActor {
         // One capture per setup, from the same single production selector the
         // turn uses. Selected uses the send-only neutral body at the request
         // builder. Production stays Inactive until the K5 cutover.
-        let requirement = super::switch_projection::select_native_history();
+        let requirement = super::switch_projection::select_native_history(
+            binding.config.api_backend.clone(),
+            binding.config.supports_search_tool,
+            false,
+        );
         let history_entry = xai_chat_state::NativeHistoryEntry::send_only(requirement);
         Ok(SideCallSetup {
             binding,

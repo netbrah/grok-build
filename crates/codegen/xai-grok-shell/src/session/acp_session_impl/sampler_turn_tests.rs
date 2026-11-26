@@ -10373,6 +10373,7 @@ async fn native_history_bridge_r11_uses_neutral_group_projection() {
                     actor.project_bridge_declarations(
                         &mut rejected,
                         &ApiBackend::Messages,
+                        true,
                         &absent_projection,
                     )
                 },
@@ -10403,6 +10404,7 @@ async fn native_history_bridge_r11_uses_neutral_group_projection() {
                         .project_bridge_declarations(
                             &mut neutral,
                             &ApiBackend::Messages,
+                            true,
                             &absent_projection,
                         )
                         .unwrap();
@@ -10419,7 +10421,11 @@ async fn native_history_bridge_r11_uses_neutral_group_projection() {
             "neutral F drops the discovery query"
         );
         assert_eq!(
-            crate::session::acp_session::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+            crate::session::acp_session::switch_projection::select_native_history(
+                xai_grok_sampling_types::ApiBackend::Messages,
+                true,
+                true,
+            ),
             xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected,
             "K5 switches the production selector on"
         );

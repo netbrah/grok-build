@@ -3089,12 +3089,12 @@ async fn production_plan_case(case: &str) {
 #[tokio::test(flavor = "current_thread")]
 async fn messages_production_native_selection_requires_valid_replay_plan() {
     assert_eq!(
-        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected,
         "K5 switches native search on"
     );
     assert_eq!(
-        super::switch_projection::select_native_history(),
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true),
         NativeHistoryRequirement::Selected
     );
     tokio::task::LocalSet::new()
@@ -3205,9 +3205,9 @@ fn s5h_mutate(kind: &str, client: &SamplingClient, request: &mut ConversationReq
 
 async fn s5h_drive(kind: &str) {
     assert_eq!(
-        super::switch_projection::PRODUCTION_NATIVE_HISTORY_MODE,
+        super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::ChatCompletions, true, true),
         NativeHistoryRequirement::Inactive,
-        "S5-H acceptance keeps native search off"
+        "a Chat Completions row stays Inactive"
     );
     let (base_url, bodies, server) = k1_shell_http().await;
     let client = SamplingClient::new(k1_shell_config(&base_url)).unwrap();
@@ -18370,7 +18370,7 @@ async fn u6b_l15m_inactive_guard() -> Value {
     let server = MockInferenceServer::start().await.expect("H6_L15M_INACTIVE_GUARD_SERVER");
     let mut shell = K0Shell::new(&server, false).await;
     let _memory_directory = u6b_l15m_configure_inactive_v1(&mut shell, &server).await;
-    assert_eq!(super::switch_projection::select_native_history(), k2_history::NativeHistoryRequirement::Selected,
+    assert_eq!(super::switch_projection::select_native_history(xai_grok_sampling_types::ApiBackend::Messages, true, true), k2_history::NativeHistoryRequirement::Selected,
         "H6_L15M_PRODUCTION_SELECTOR_ON");
     assert!(shell.actor.memory.initial_injection_config.enabled && shell.actor.memory.backend_params.is_some(),
         "H6_L15M_INACTIVE_GUARD_INJECTION_PRECONDITION");

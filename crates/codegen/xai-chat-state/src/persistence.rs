@@ -601,17 +601,6 @@ pub mod native {
                 .source
                 .ordered_blocks
                 .iter()
-                .filter(|block| {
-                    !metadata
-                        .groups
-                        .iter()
-                        .filter(|transition| transition.to == "KEEP")
-                        .any(|transition| {
-                            previous.ledger.groups[transition.key as usize]
-                                .members
-                                .contains(&block.coordinates)
-                        })
-                })
                 .map(|block| block.coordinates.clone())
                 .collect();
             let authorship = previous
@@ -668,17 +657,24 @@ pub mod native {
                     .iter()
                     .find(|qualification| qualification.group == group.key)
                     .ok_or(NativeUnavailable::InvalidReference)?;
-                if qualification.shape.shape()? != shape.shape {
+                let stored_shape = qualification.shape.shape()?;
+                if stored_shape != shape.shape {
                     return Err(NativeUnavailable::InvalidReference);
                 }
                 if transition.to == "KEEP" {
-                    if !admission.admitted()
-                        || qualification.source.as_ref() != Some(&qualification.target)
-                        || qualification.receipt.as_ref().is_none_or(|receipt| {
-                            receipt.target != qualification.target
-                                || receipt.shape != qualification.shape
-                                || receipt.receipt_id.is_empty()
-                        })
+                    let messages_server_keep = admission.admitted()
+                        && domain.backend == xai_grok_sampling_types::ApiBackend::Messages
+                        && stored_shape.family
+                            == xai_grok_sampling_types::conversation::native_search_history::NativeReplayFamily::MessagesServer
+                        && stored_shape.completed;
+                    if !messages_server_keep
+                        && (!admission.admitted()
+                            || qualification.source.as_ref() != Some(&qualification.target)
+                            || qualification.receipt.as_ref().is_none_or(|receipt| {
+                                receipt.target != qualification.target
+                                    || receipt.shape != qualification.shape
+                                    || receipt.receipt_id.is_empty()
+                            }))
                     {
                         return Err(NativeUnavailable::InvalidReference);
                     }
@@ -688,11 +684,12 @@ pub mod native {
                         .iter()
                         .find(|binding| binding.origin_ref == group.origin_ref)
                         .ok_or(NativeUnavailable::InvalidReference)?;
-                    if origin
-                        .origin
-                        .get("status")
-                        .and_then(serde_json::Value::as_str)
-                        != Some("Known")
+                    if !messages_server_keep
+                        && origin
+                            .origin
+                            .get("status")
+                            .and_then(serde_json::Value::as_str)
+                            != Some("Known")
                     {
                         return Err(NativeUnavailable::UnknownIdentity);
                     }
@@ -1194,10 +1191,14 @@ pub mod native {
                     .ok_or(NativeUnavailable::Incomplete)?,
             )
             .map_err(|_| NativeUnavailable::Fidelity)?;
-            if history_boundary(&durable)? != *preparation.history()
-                || history_boundary(&request.items)? != *preparation.mapping().send()
-            {
+            if history_boundary(&durable)? != *preparation.history() {
+                // The preparation's own durable bytes do not match the seal.
+                // Rebuilding from actor memory does not repair that blob.
                 return Err(NativeUnavailable::StaleHistory);
+            }
+            if history_boundary(&request.items)? != *preparation.mapping().send() {
+                // The request was rewritten after the sealed mapping.
+                return Err(NativeUnavailable::StaleHistoryRace);
             }
             let mut durable_view = self.clone();
             let mut policy_input = durable.clone();

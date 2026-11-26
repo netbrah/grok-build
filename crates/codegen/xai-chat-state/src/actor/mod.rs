@@ -524,6 +524,14 @@ impl ChatStateActor {
                     .any(|lease| !lease.pending.is_empty());
                 let _ = reply.send(blocked);
             }
+            ChatStateCommand::DivergeNativeCheckpointFromDisk { reply } => {
+                let diverged = self.diverge_native_checkpoint_from_disk();
+                let _ = reply.send(diverged);
+            }
+            ChatStateCommand::ReloadNativeHistoryFromDisk { reply } => {
+                let result = self.reload_native_history_from_disk().await;
+                let _ = reply.send(result);
+            }
             ChatStateCommand::ReadNativeHistory { reply } => {
                 let result = if let Some(reason) = self.state.native.unavailable {
                     Err(reason)
@@ -1013,6 +1021,45 @@ impl ChatStateActor {
 }
 
 impl ChatStateActor {
+    fn diverge_native_checkpoint_from_disk(&mut self) -> bool {
+        let Some(slot) = self.state.native.checkpoint.as_mut() else {
+            return false;
+        };
+        let checkpoint = std::sync::Arc::make_mut(slot);
+        if checkpoint.record.generation == 0 {
+            checkpoint.record.generation = 1;
+        }
+        checkpoint.authority_digest = None;
+        let mut bytes = checkpoint.bytes.to_vec();
+        bytes.push(0xff);
+        checkpoint.bytes = bytes.into();
+        true
+    }
+
+    async fn reload_native_history_from_disk(
+        &mut self,
+    ) -> Result<
+        bool,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.persistence.read_native_history(),
+        )
+        .await
+        .map_err(|_| NativeUnavailable::Indeterminate)?
+        .map_err(|_| NativeUnavailable::Indeterminate)??;
+        match read.checkpoint {
+            Some(checkpoint) => {
+                self.state.native.lineage = Some(read.lineage);
+                self.state.native.checkpoint = Some(checkpoint);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     async fn register_native_history_owner(
         &mut self,
         key: xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRegistrationKey,
@@ -1184,13 +1231,13 @@ impl ChatStateActor {
                 current = self.state.native.history_revision,
                 "native commit stale: history revision"
             );
-            return Err(NativeUnavailable::StaleHistory);
+            return Err(NativeUnavailable::StaleHistoryRace);
         }
         if crate::persistence::native::history_boundary(&self.state.conversation)?
             != *preparation.history()
         {
             tracing::warn!("native commit stale: history boundary");
-            return Err(NativeUnavailable::StaleHistory);
+            return Err(NativeUnavailable::StaleHistoryRace);
         }
         let checkpoint = match self.state.native.checkpoint.clone() {
             Some(checkpoint) => checkpoint,
@@ -1214,7 +1261,7 @@ impl ChatStateActor {
                     Some(checkpoint) => checkpoint,
                     None => {
                         tracing::warn!("native commit stale: persisted checkpoint missing");
-                        return Err(NativeUnavailable::StaleHistory);
+                        return Err(NativeUnavailable::StaleHistoryDurable);
                     }
                 };
                 if read.lineage != token.lineage()
@@ -1222,7 +1269,7 @@ impl ChatStateActor {
                     || persisted.authority_digest.is_none()
                 {
                     tracing::warn!("native commit stale: persisted checkpoint mismatch");
-                    return Err(NativeUnavailable::StaleHistory);
+                    return Err(NativeUnavailable::StaleHistoryDurable);
                 }
                 self.state.native.checkpoint = Some(persisted.clone());
                 persisted
@@ -1240,7 +1287,7 @@ impl ChatStateActor {
                 capture_high_water = context.capture().high_water,
                 "native commit stale: checkpoint generation"
             );
-            return Err(NativeUnavailable::StaleHistory);
+            return Err(NativeUnavailable::StaleHistoryDurable);
         }
         let stage = checkpoint.prepare_projection(&preparation, &request, &route)?;
         self.commit_native_prepared_projection(preparation, stage)
@@ -1264,10 +1311,13 @@ impl ChatStateActor {
             .ok_or(NativeUnavailable::Incomplete)?;
         if !self.native_owner_is_current(&token)
             || self.state.native.issued.as_ref() != Some(&preparation)
-            || crate::persistence::native::history_boundary(&self.state.conversation)?
-                != *preparation.history()
         {
             return Err(NativeUnavailable::StaleHistory);
+        }
+        if crate::persistence::native::history_boundary(&self.state.conversation)?
+            != *preparation.history()
+        {
+            return Err(NativeUnavailable::StaleHistoryRace);
         }
         self.state.native.pending_projection =
             Some(crate::persistence::native::NativePendingProjection {

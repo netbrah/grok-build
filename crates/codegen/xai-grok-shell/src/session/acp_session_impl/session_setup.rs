@@ -351,7 +351,7 @@ impl SessionActor {
     /// native history never retains.
     pub(super) async fn flush_native_agent_messages(&self) -> bool {
         use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
-        if super::switch_projection::select_native_history() != NativeHistoryRequirement::Selected {
+        if self.current_row_native_history().await != NativeHistoryRequirement::Selected {
             let items = match self.pending_native_agent_messages.lock() {
                 Ok(mut buffered) => std::mem::take(&mut *buffered),
                 Err(_) => Vec::new(),

@@ -399,7 +399,7 @@ impl SessionActor {
         if let Some(cfg) = self.chat_state_handle.get_sampling_config().await {
             tracing::Span::current().record("model_id", cfg.model.as_str());
         }
-        let native_handoff = if super::switch_projection::select_native_history()
+        let native_handoff = if self.current_row_native_history().await
             == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
         {
             self.chat_state_handle

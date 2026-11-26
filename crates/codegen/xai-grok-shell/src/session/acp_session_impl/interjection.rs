@@ -879,7 +879,7 @@ struct HeldNativeObservation {
 
 impl SessionActor {
     async fn held_native_observation(&self) -> Option<HeldNativeObservation> {
-        if super::switch_projection::select_native_history()
+        if self.current_row_native_history().await
             != xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected {
             return None;
         }

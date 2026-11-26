@@ -2378,10 +2378,12 @@ pub(super) fn native_loaded_authority(
                 )?)
                 .map_err(|_| NativeUnavailable::InvalidReference)?;
                 let schema = native_policy_blob(history, &snapshot.schema, "eligible_schema")?;
-                let inputs = input
-                    .current
-                    .filter(|inputs| inputs.matches_specs(input.tools))
-                    .ok_or(NativeUnavailable::UnknownIdentity)?;
+                let Some(inputs) = input.current else {
+                    continue;
+                };
+                if !inputs.matches_specs(input.tools) {
+                    return Err(NativeUnavailable::UnknownIdentity);
+                }
                 let entries: Vec<_> = inputs
                     .entries()
                     .iter()

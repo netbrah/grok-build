@@ -479,13 +479,19 @@ impl SessionActor {
         binding: &xai_chat_state::RequestTransportBinding,
         projection: &BridgeDeclarationProjection,
     ) -> Result<(), crate::sampling::error::SamplingError> {
-        self.project_bridge_declarations(request, &binding.config.api_backend, projection)
+        self.project_bridge_declarations(
+            request,
+            &binding.config.api_backend,
+            binding.config.supports_search_tool,
+            projection,
+        )
     }
 
     pub(super) fn project_bridge_declarations(
         &self,
         request: &mut ConversationRequest,
         backend: &xai_grok_sampling_types::ApiBackend,
+        supports_search_tool: bool,
         projection: &BridgeDeclarationProjection,
     ) -> Result<(), crate::sampling::error::SamplingError> {
         let admitted = request
@@ -494,7 +500,12 @@ impl SessionActor {
         // Selected is the only mode that projects history groups. Inactive
         // production turns keep the declaration filter below and do not rewrite
         // stored discovery.
-        if super::switch_projection::select_native_history()
+        if super::switch_projection::select_native_history(
+            backend.clone(),
+            supports_search_tool,
+            xai_grok_sampling_types::SearchAdmission::for_row(supports_search_tool, &request.tools)
+                .has_searchable_tools,
+        )
             == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
         {
             // Responses keeps client tool_search discovery. Admitted Messages

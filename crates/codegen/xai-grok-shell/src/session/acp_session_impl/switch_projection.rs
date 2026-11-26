@@ -152,13 +152,10 @@ impl SessionActor {
     }
 }
 
-/// The single production selector for the native-history requirement (waj2-U8).
-///
-/// Exactly one place decides the mode for a fresh bound request. K5/S6 is the
-/// cutover: production is `Selected`. A missing or stale plan refuses the send.
-/// It does not fall back to the pre-cutover pin body.
-pub(crate) const PRODUCTION_NATIVE_HISTORY_MODE: NativeHistoryRequirement =
-    NativeHistoryRequirement::Selected;
+/// Row decision for native history. `Selected` only for Messages with the
+/// catalog search flag. Every other pair is `Inactive`. The searchable-tool
+/// and xAI conjuncts are not part of this function until the review report
+/// cites them. `HISTORY_S3_TEST_REQUIREMENT`, when set, still wins.
 
 /// Non-secret replay target for the configured sampling row.
 ///
@@ -181,7 +178,7 @@ pub(crate) fn production_native_replay_domain(
             ),
             "/responses",
         ),
-        ApiBackend::ChatCompletions => (NativeReplayDialect::Messages, "/chat/completions"),
+        ApiBackend::ChatCompletions => return None,
     };
     let domain = NativeReplayDomain {
         backend: config.api_backend.clone(),
@@ -200,17 +197,60 @@ pub(crate) fn production_native_replay_domain(
 /// Read the sole production mode. Crate-internal on purpose: tests drive the
 /// Selected arm through the same private path rather than a post-build callback.
 #[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NativeHistoryBeforeFinalize {
+    /// Append a user item after the preparation is sealed, so the commit sees a race.
+    AppendUser(&'static str),
+    /// Make the in-memory checkpoint disagree with disk, so the commit is durable-stale.
+    DivergeCheckpoint,
+}
+
+#[cfg(test)]
 tokio::task_local! {
     pub(crate) static HISTORY_S3_TEST_REQUIREMENT: NativeHistoryRequirement;
     pub(crate) static HISTORY_S3_TEST_DOMAIN: xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain;
+    pub(crate) static NATIVE_HISTORY_BEFORE_FINALIZE: std::rc::Rc<
+        std::cell::RefCell<Option<NativeHistoryBeforeFinalize>>,
+    >;
 }
 
-pub(crate) fn select_native_history() -> NativeHistoryRequirement {
+pub(crate) fn select_native_history(
+    backend: xai_grok_sampling_types::ApiBackend,
+    supports_search_tool: bool,
+    has_searchable_tools: bool,
+) -> NativeHistoryRequirement {
     #[cfg(test)]
     if let Ok(requirement) = HISTORY_S3_TEST_REQUIREMENT.try_with(|requirement| *requirement) {
         return requirement;
     }
-    PRODUCTION_NATIVE_HISTORY_MODE
+    // The xAI capability field is not on the row. Review finding design-1 says
+    // a base-URL check is not that field. Do not key this decision off the model name.
+    if backend == xai_grok_sampling_types::ApiBackend::Messages
+        && supports_search_tool
+        && has_searchable_tools
+    {
+        NativeHistoryRequirement::Selected
+    } else {
+        NativeHistoryRequirement::Inactive
+    }
+}
+
+impl SessionActor {
+    pub(super) async fn current_row_native_history(
+        &self,
+    ) -> NativeHistoryRequirement {
+        match self.chat_state_handle.get_sampling_config().await {
+            // Callers that do not hold the turn's tool list cannot prove the
+            // surface is searchable. The primary turn computes the bit from
+            // the candidates it is about to send and does not use this path.
+            Some(config) => select_native_history(
+                config.api_backend,
+                config.supports_search_tool,
+                false,
+            ),
+            None => NativeHistoryRequirement::Inactive,
+        }
+    }
 }
 
 /// Adapter for an explicitly captured entry whose build produced no native
