@@ -219,9 +219,9 @@ pub struct FileData {
 
 /// A model-predicted function call. `args` is a JSON object (or absent).
 ///
-/// `id` is optional on this wire and the standard API leaves it unset; this
-/// fork mints its own call ids locally and does NOT echo them back (an
-/// unsolicited `id` is not part of the model's own record of the turn).
+/// `id` is optional. Native IDs are preserved; missing or duplicate IDs are
+/// assigned local IDs. Gemini 3+ replay echoes paired call/response IDs and
+/// normalizes foreign IDs; earlier generations omit IDs on the wire.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FunctionCall {

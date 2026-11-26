@@ -408,12 +408,12 @@ impl ModelBuffer<'_> {
 /// content's function calls, its `functionResponse` parts are hoisted ahead
 /// of any other part and re-ordered to the call order. Google pairs a
 /// response with its call by `id` when both carry one (Gemini 3+, module
-/// docs step 2) and positionally by name otherwise, so a result stored out
-/// of call order (parallel tools finishing in any order) would answer the
-/// wrong call when names repeat; keeping the order right on every
-/// generation also keeps the replayed history byte-stable for the implicit
-/// cache. Responses for names the model never called keep their relative
-/// order after the matched ones (the orphan cleanup makes that a non-case).
+/// docs step 2) and positionally by name otherwise. Gemini 3+ IDs distinguish
+/// same-name calls whose results arrive out of order. Earlier generations
+/// cannot disambiguate those calls by name alone. Reordering also keeps the
+/// replayed history byte-stable for the implicit cache. Responses for names
+/// the model never called keep their relative order after the matched ones
+/// (the orphan cleanup makes that a non-case).
 fn flush_user(pending: &mut Vec<Part>, contents: &mut Vec<Content>) {
     if pending.is_empty() {
         return;
