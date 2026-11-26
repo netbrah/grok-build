@@ -118,6 +118,8 @@ impl SessionActor {
         requirement: NativeHistoryRequirement,
     ) {
         if requirement == NativeHistoryRequirement::Selected {
+            #[cfg(test)]
+            SWITCH_PROJECTION_ARM.with(|arm| arm.set(Some("native")));
             let result = self
                 .apply_native_switch_projection(target_model, target_pin, route)
                 .await;
@@ -130,6 +132,8 @@ impl SessionActor {
             );
             return;
         }
+        #[cfg(test)]
+        SWITCH_PROJECTION_ARM.with(|arm| arm.set(Some("inactive")));
         let outcome = self
             .chat_state_handle
             .project_switch_history(target_model, target_pin, route)
@@ -151,11 +155,6 @@ impl SessionActor {
         );
     }
 }
-
-/// Row decision for native history. `Selected` only for Messages with the
-/// catalog search flag. Every other pair is `Inactive`. The searchable-tool
-/// and xAI conjuncts are not part of this function until the review report
-/// cites them. `HISTORY_S3_TEST_REQUIREMENT`, when set, still wins.
 
 /// Non-secret replay target for the configured sampling row.
 ///
@@ -206,6 +205,12 @@ pub(crate) enum NativeHistoryBeforeFinalize {
 }
 
 #[cfg(test)]
+thread_local! {
+    pub(crate) static SWITCH_PROJECTION_ARM: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
 tokio::task_local! {
     pub(crate) static HISTORY_S3_TEST_REQUIREMENT: NativeHistoryRequirement;
     pub(crate) static HISTORY_S3_TEST_DOMAIN: xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain;
@@ -214,6 +219,11 @@ tokio::task_local! {
     >;
 }
 
+/// Row decision for native history. `Selected` only for Messages with the
+/// catalog search flag and a non-empty declared tool surface. Every other
+/// row is `Inactive`. The xAI capability field is not on the row, so this
+/// cutover does not consult a base URL. `HISTORY_S3_TEST_REQUIREMENT`, when
+/// set, still wins.
 pub(crate) fn select_native_history(
     backend: xai_grok_sampling_types::ApiBackend,
     supports_search_tool: bool,
@@ -239,17 +249,29 @@ impl SessionActor {
     pub(super) async fn current_row_native_history(
         &self,
     ) -> NativeHistoryRequirement {
-        match self.chat_state_handle.get_sampling_config().await {
-            // Callers that do not hold the turn's tool list cannot prove the
-            // surface is searchable. The primary turn computes the bit from
-            // the candidates it is about to send and does not use this path.
-            Some(config) => select_native_history(
-                config.api_backend,
-                config.supports_search_tool,
-                false,
-            ),
-            None => NativeHistoryRequirement::Inactive,
-        }
+        let Some(config) = self.chat_state_handle.get_sampling_config().await else {
+            return NativeHistoryRequirement::Inactive;
+        };
+        // The bridge surface is the list these callers can see. An empty list
+        // stays Inactive. The primary turn does not use this path: it stores
+        // the bit from the tools it is about to send and reuses that stored
+        // value across a StaleHistory retry.
+        let declared_tools = if config.supports_search_tool {
+            let tool_bridge = self.agent.borrow().tool_bridge().clone();
+            tool_bridge.tool_definitions().await
+        } else {
+            Vec::new()
+        };
+        let has_searchable_tools = xai_grok_sampling_types::SearchAdmission::for_row(
+            config.supports_search_tool,
+            &declared_tools,
+        )
+        .has_searchable_tools;
+        select_native_history(
+            config.api_backend,
+            config.supports_search_tool,
+            has_searchable_tools,
+        )
     }
 }
 

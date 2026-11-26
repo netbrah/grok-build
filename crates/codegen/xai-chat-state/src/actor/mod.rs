@@ -528,6 +528,10 @@ impl ChatStateActor {
                 let diverged = self.diverge_native_checkpoint_from_disk();
                 let _ = reply.send(diverged);
             }
+            ChatStateCommand::SeedNativeWaitingClient { client_id, reply } => {
+                let seeded = self.seed_native_waiting_client(client_id);
+                let _ = reply.send(seeded);
+            }
             ChatStateCommand::ReloadNativeHistoryFromDisk { reply } => {
                 let result = self.reload_native_history_from_disk().await;
                 let _ = reply.send(result);
@@ -1033,6 +1037,84 @@ impl ChatStateActor {
         let mut bytes = checkpoint.bytes.to_vec();
         bytes.push(0xff);
         checkpoint.bytes = bytes.into();
+        true
+    }
+
+    /// Point the in-memory checkpoint at one waiting client so the native
+    /// handoff can see a live exchange. Disk is left alone. Production turns
+    /// do not call this.
+    fn seed_native_waiting_client(&mut self, client_id: String) -> bool {
+        use xai_grok_sampling_types::conversation::native_search_history::{
+            NativeBlobRef, NativeGroupRecord, NativeProducingBinding, NativeSourceCoordinate,
+            NativeWaitingClient,
+        };
+        let Some(slot) = self.state.native.checkpoint.as_mut() else {
+            return false;
+        };
+        let checkpoint = std::sync::Arc::make_mut(slot);
+        if checkpoint.source.producing_bindings.is_empty() {
+            let request = checkpoint
+                .source
+                .responses
+                .last()
+                .map(|response| response.request.clone())
+                .unwrap_or_else(|| "seed-request".to_owned());
+            checkpoint
+                .source
+                .producing_bindings
+                .push(NativeProducingBinding {
+                    request,
+                    generation: None,
+                    origin: serde_json::json!({
+                        "status": "Unknown",
+                        "reason": "test seed"
+                    }),
+                    receipt: None,
+                    origin_ref: NativeBlobRef {
+                        kind: "producing_binding".to_owned(),
+                        byte_len: 1,
+                        digest: "seed".to_owned(),
+                    },
+                });
+        }
+        let Some(origin) = checkpoint.source.producing_bindings.last().cloned() else {
+            return false;
+        };
+        checkpoint
+            .ledger
+            .lifecycle
+            .exchanges
+            .insert(origin.request.clone(), "LiveBound".to_owned());
+        checkpoint.ledger.groups.push(NativeGroupRecord {
+            key: "seed-waiting".to_owned(),
+            family: "client".to_owned(),
+            execution: "client".to_owned(),
+            origin_ref: origin.origin_ref.clone(),
+            validated_join: None,
+            keyless_server_fifo: false,
+            members: Vec::new(),
+            duplicate_observations: Vec::new(),
+            state: "LivePending".to_owned(),
+        });
+        checkpoint
+            .ledger
+            .lifecycle
+            .waiting_clients
+            .push(NativeWaitingClient {
+                client_id,
+                source: NativeSourceCoordinate {
+                    lineage: checkpoint.source.lineage.clone(),
+                    producing_binding: origin.request.clone(),
+                    turn: 1,
+                    item: 0,
+                    response: 0,
+                    block: 0,
+                    submember: None,
+                    occurrence: 0,
+                },
+                result: None,
+                delivery: "Waiting".to_owned(),
+            });
         true
     }
 

@@ -16222,6 +16222,141 @@ fn local_tool_search_guard_refuses_orphan_before_send() {
     });
 }
 
+fn sampler_row(model: &str, server: &MockInferenceServer) -> xai_grok_sampler::SamplerConfig {
+    xai_grok_sampler::SamplerConfig {
+        base_url: server.url(),
+        model: model.into(),
+        api_key: Some("test-key".into()),
+        api_backend: xai_grok_sampler::ApiBackend::Messages,
+        max_completion_tokens: Some(4096),
+        ..Default::default()
+    }
+}
+
+fn install_messages_row(actor: &SessionActor, model: &str, server: &MockInferenceServer, flag: bool) {
+    let mut entry = super::support::entry_with_search_flag(model, flag);
+    entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    entry.api_base_url = Some(server.url());
+    entry.api_key = Some("test-key".into());
+    actor.models_manager.insert_test_entry(model, entry);
+}
+
+#[test]
+fn selected_row_uses_tools_for_checkpoint_switch_and_undeclared_handoff() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;
+    use xai_grok_sampling_types::{ToolCallFunction, ToolCallResponse};
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("checkpoint turn"),
+            );
+            let session = stale_history_session(&server).await;
+            let actor = session.actor.clone();
+            assert_eq!(
+                actor.current_row_native_history().await,
+                NativeHistoryRequirement::Selected,
+                "Messages with the search flag and a declared tool is Selected"
+            );
+            assert!(
+                !actor.native_checkpoint_covers_history().await,
+                "a Selected row with no checkpoint does not cover history"
+            );
+            let outcome = run_native_history_prompt(&actor, "cover the checkpoint", "cover-1").await;
+            let err = outcome.as_ref().err().map(|error| format!("{error}")).unwrap_or_default();
+            assert!(outcome.is_ok(), "the checkpoint turn must send: {err}");
+            assert!(
+                actor.native_checkpoint_covers_history().await,
+                "a Selected continuation consults the native checkpoint"
+            );
+            let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            sampling.supports_search_tool = false;
+            actor.chat_state_handle.update_sampling_config(sampling);
+            assert_eq!(
+                actor.current_row_native_history().await,
+                NativeHistoryRequirement::Inactive,
+                "the same tools without the search flag stay Inactive"
+            );
+            assert!(
+                !actor.native_checkpoint_covers_history().await,
+                "an Inactive row does not treat the checkpoint as cover"
+            );
+            let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            sampling.supports_search_tool = true;
+            actor.chat_state_handle.update_sampling_config(sampling);
+            assert!(
+                actor
+                    .chat_state_handle
+                    .seed_native_waiting_client("call_missing")
+                    .await,
+                "the checkpoint turn left a producing binding to seed"
+            );
+            let refused = actor
+                .execute_tool_calls_with_native_recovery(
+                    vec![ToolCallResponse {
+                        id: "call_missing".into(),
+                        kind: "function".into(),
+                        function: ToolCallFunction::new("not_declared", "{}"),
+                    }],
+                    None,
+                )
+                .await;
+            let error = refused.expect_err("an undeclared native client must not run");
+            assert_eq!(
+                crate::sampling::error::error_code_from_data(&error),
+                Some("native_bound_tool_unavailable"),
+                "the Selected handoff refuses an undeclared tool: {error}"
+            );
+
+            install_messages_row(&actor, "test-next", &server, true);
+            super::switch_projection::SWITCH_PROJECTION_ARM.with(|arm| arm.set(None));
+            actor
+                .handle_set_session_model(
+                    sampler_row("test-next", &server),
+                    false,
+                    false,
+                    false,
+                    false,
+                    85,
+                )
+                .await
+                .expect("switch onto a flagged Messages row");
+            assert_eq!(
+                super::switch_projection::SWITCH_PROJECTION_ARM.with(|arm| arm.get()),
+                Some("native"),
+                "the switch passes the declared tools into the Selected projection arm"
+            );
+
+            actor.agent.replace(super::support::test_agent_with_tools(vec![]).await);
+            install_messages_row(&actor, "test-empty", &server, true);
+            super::switch_projection::SWITCH_PROJECTION_ARM.with(|arm| arm.set(None));
+            actor
+                .handle_set_session_model(
+                    sampler_row("test-empty", &server),
+                    false,
+                    false,
+                    false,
+                    false,
+                    85,
+                )
+                .await
+                .expect("switch with an empty tool surface");
+            assert_eq!(
+                super::switch_projection::SWITCH_PROJECTION_ARM.with(|arm| arm.get()),
+                Some("inactive"),
+                "Messages with the flag and no searchable tools does not enter the native switch arm"
+            );
+
+            eprintln!(
+                "criterion 5: Selected rows consult the checkpoint, the switch arm, and the undeclared-tool handoff"
+            );
+        });
+    });
+}
+
 #[test]
 fn native_history_production_selected_requires_valid_plan() {
     use xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement;

@@ -2392,7 +2392,7 @@ impl SessionActor {
         Some(None)
     }
 
-    async fn native_checkpoint_covers_history(&self) -> bool {
+    pub(super) async fn native_checkpoint_covers_history(&self) -> bool {
         if self.current_row_native_history().await
             != xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
         {

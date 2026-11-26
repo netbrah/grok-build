@@ -464,6 +464,12 @@ pub enum ChatStateCommand {
     DivergeNativeCheckpointFromDisk {
         reply: oneshot::Sender<bool>,
     },
+    /// Test stimulus: mark the in-memory checkpoint as a live handoff that is
+    /// still waiting on `client_id`. Production turns do not send this.
+    SeedNativeWaitingClient {
+        client_id: String,
+        reply: oneshot::Sender<bool>,
+    },
     ReloadNativeHistoryFromDisk {
         reply: oneshot::Sender<
             Result<

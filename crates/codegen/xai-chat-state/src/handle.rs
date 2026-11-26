@@ -976,6 +976,17 @@ impl ChatStateHandle {
     /// Make the in-memory checkpoint's bytes differ from disk and clear its authority.
     /// The next commit of a sealed preparation then returns `StaleHistoryDurable`
     /// until `reload_native_history_from_disk` installs the disk checkpoint.
+    /// Mark the in-memory checkpoint as a live handoff waiting on `client_id`.
+    /// Returns false when there is no checkpoint or no producing binding.
+    /// Production turns do not call this. The undeclared-tool handoff test does.
+    pub async fn seed_native_waiting_client(&self, client_id: impl Into<String>) -> bool {
+        let client_id = client_id.into();
+        self.query("SeedNativeWaitingClient", |reply| {
+            ChatStateCommand::SeedNativeWaitingClient { client_id, reply }
+        })
+        .await
+        .unwrap_or(false)
+    }
     pub async fn diverge_native_checkpoint_from_disk(&self) -> bool {
         self.query("DivergeNativeCheckpointFromDisk", |reply| {
             ChatStateCommand::DivergeNativeCheckpointFromDisk { reply }
