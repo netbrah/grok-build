@@ -15232,6 +15232,17 @@ fn primary_rows_send_without_native_history_refusal() {
                 );
                 let session = NativeHistorySession::new(&server).await;
                 let actor = session.actor.clone();
+                if backend == xai_grok_sampling_types::ApiBackend::Messages {
+                    actor.agent.replace(
+                        super::support::test_agent_with_tools(vec![
+                            xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                                xai_grok_tools::implementations::grok_build::read_file::ReadFileTool,
+                            >()
+                            .with_name("warehouse_lookup"),
+                        ])
+                        .await,
+                    );
+                }
                 let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
                 sampling.api_backend = backend.clone();
                 sampling.supports_search_tool = search;
@@ -15271,11 +15282,14 @@ fn primary_rows_send_without_native_history_refusal() {
                     .unwrap_or_default();
                 assert!(
                     !err.contains("native_history_wire_staged"),
-                    "{path} refused before HTTP: {err}"
+                    "{path} search={search} refused before HTTP: {err}"
                 );
                 assert!(
                     !err.contains("native_history_plan_refused"),
-                    "{path} plan refused before HTTP: {err}"
+                    "{path} search={search} plan refused before HTTP: {err}"
+                );
+                eprintln!(
+                    "criterion 3: {path} search={search} sent without native_history_wire_staged or native_history_plan_refused"
                 );
                 let sent: Vec<_> = server
                     .requests()
@@ -15297,17 +15311,43 @@ fn primary_rows_send_without_native_history_refusal() {
                 );
                 if backend == xai_grok_sampling_types::ApiBackend::Responses {
                     assert!(body.contains("\"store\":false") || body.contains("\"store\": false"));
+                    assert!(
+                        !body.contains("tool_search_tool_"),
+                        "Responses was built by the Messages planner: {body}"
+                    );
+                    eprintln!(
+                        "criterion 3: Responses search={search} sent on its own dialect, not the Messages planner"
+                    );
                 }
                 if backend == xai_grok_sampling_types::ApiBackend::ChatCompletions {
                     assert!(
                         !body.contains("tool_search_tool_"),
                         "{path} borrowed the Messages replay dialect: {body}"
                     );
+                    assert!(
+                        !body.contains("tool_search_tool_bm25"),
+                        "Chat Completions was given the Messages replay dialect: {body}"
+                    );
+                    eprintln!(
+                        "criterion 3: Chat Completions search={search} was not given the Messages replay dialect"
+                    );
+                }
+                if backend == xai_grok_sampling_types::ApiBackend::Messages && search {
+                    assert!(
+                        body.contains("tool_search_tool_"),
+                        "a Selected Messages row did not enter the search finalizer: {body}"
+                    );
+                    eprintln!(
+                        "criterion 3: Selected Messages with searchable tools entered the finalizer"
+                    );
                 }
                 if backend == xai_grok_sampling_types::ApiBackend::Messages && !search {
                     assert!(
                         !body.contains("tool_search_tool_"),
                         "a Messages row with supports_search_tool false entered the search finalizer: {body}"
+                    );
+                    eprintln!(
+                        "criterion 3: Inactive Messages with supports_search_tool false did not enter the finalizer"
                     );
                 }
                 actor
@@ -15759,6 +15799,9 @@ fn messages_discovery_history_sends_without_stale_history() {
                 body.contains("srvtoolu_live"),
                 "A green policy test and a proxied pass do not close D-1 or D-2. D-1 is closed only by Inactive non-Messages sends. D-2 is closed only when an admitted Messages first turn sends and the continuation still carries server_tool_use. body={body}"
             );
+            eprintln!(
+                "criterion 4: A green policy test and a proxied pass do not close D-1 or D-2. D-1 is closed only by Inactive non-Messages sends. D-2 is closed only when an admitted Messages first turn sends and the continuation still carries server_tool_use."
+            );
             assert!(
                 !body.contains("Historical search recorded; this history grants no current tool authority."),
                 "the neutral sentence is not a successful server_tool_use replay: {body}"
@@ -15771,6 +15814,118 @@ fn messages_discovery_history_sends_without_stale_history() {
                 !body.contains("\"name\":\"search_tool\"")
                     && !body.contains("\"name\": \"search_tool\""),
                 "discovery history still carries the old search_tool bridge"
+            );
+            eprintln!(
+                "criterion 4: the neutral sentence is not success and search_tool is absent on the admitted continuation"
+            );
+        });
+    });
+}
+
+#[test]
+fn inactive_messages_discovery_does_not_send_raw_server_tool_use() {
+    super::length_salvage_tests::block_on_session(|| {
+        super::length_salvage_tests::current_thread_local(async {
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                super::length_salvage_tests::messages_stop_sse("inactive answer"),
+            );
+            let session = NativeHistorySession::new(&server).await;
+            let actor = session.actor.clone();
+            actor.agent.replace(
+                super::support::test_agent_with_tools(vec![
+                    xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                        xai_grok_tools::implementations::grok_build::read_file::ReadFileTool,
+                    >()
+                    .with_name("warehouse_lookup"),
+                ])
+                .await,
+            );
+            let mut sampling = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            sampling.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+            sampling.supports_search_tool = false;
+            actor.chat_state_handle.update_sampling_config(sampling);
+            let mut entry = super::support::entry_with_search_flag("test", false);
+            entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+            entry.api_base_url = Some(server.url());
+            entry.api_key = Some("test-key".into());
+            actor.models_manager.insert_test_entry("test", entry);
+            let call = xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(
+                serde_json::json!({
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_inactive",
+                    "name": "tool_search_tool_bm25",
+                    "input": {}
+                }),
+            )
+            .expect("inactive discovery call");
+            let result = xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(
+                serde_json::json!({
+                    "type": "tool_search_tool_result",
+                    "tool_use_id": "srvtoolu_inactive",
+                    "content": {
+                        "type": "tool_search_tool_search_result",
+                        "tool_references": [{"type": "tool_reference", "tool_name": "warehouse_lookup"}]
+                    }
+                }),
+            )
+            .expect("inactive discovery result");
+            actor
+                .chat_state_handle
+                .push_user_message_and_ack(ConversationItem::Discovery { item: call })
+                .await;
+            actor
+                .chat_state_handle
+                .push_user_message_and_ack(ConversationItem::Discovery { item: result })
+                .await;
+            actor
+                .session_turn_active
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            actor
+                .chat_state_handle
+                .push_user_message_and_ack(ConversationItem::user("inactive discovery prompt"))
+                .await;
+            let mut prepare = |_request: &mut ConversationRequest,
+                               _: &xai_chat_state::RequestTransportBinding| { Ok(()) };
+            let mut salvage = super::length_salvage::LengthSalvage::new(None);
+            let mut sampling_totals = Default::default();
+            let outcome = actor
+                .process_conversation_turn_for_native_history_test(
+                    "inactive-discovery",
+                    None,
+                    None,
+                    None,
+                    &mut salvage,
+                    &mut sampling_totals,
+                    &mut prepare,
+                )
+                .await;
+            let err = outcome
+                .as_ref()
+                .err()
+                .map(|error| format!("{error}"))
+                .unwrap_or_default();
+            assert!(outcome.is_ok(), "Inactive Messages with discovery still sends: {err}");
+            let body = server
+                .requests()
+                .into_iter()
+                .filter_map(|request| serde_json::to_string(&request.body).ok())
+                .find(|body| body.contains("inactive discovery prompt"))
+                .unwrap_or_default();
+            assert!(
+                body.contains("inactive discovery prompt"),
+                "Inactive Messages sent nothing: {err}"
+            );
+            assert!(
+                !body.contains("\"type\":\"server_tool_use\"")
+                    && !body.contains("\"type\": \"server_tool_use\""),
+                "A green policy test and a proxied pass do not close D-1 or D-2. D-1 is closed only by Inactive non-Messages sends. D-2 is closed only when an admitted Messages first turn sends and the continuation still carries server_tool_use. A non-admitted Messages row sent a raw server_tool_use block: {body}"
+            );
+            eprintln!(
+                "criterion 4: a non-admitted Messages row with discovery in history did not send a raw server_tool_use block"
             );
         });
     });
