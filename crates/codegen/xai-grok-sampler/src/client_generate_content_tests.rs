@@ -535,6 +535,63 @@ async fn generate_content_continuation_reuses_the_request_and_accumulates_hop_us
 
 #[tokio::test]
 #[serial]
+async fn generate_content_continuation_normalizes_usage_before_accumulation() {
+    for (first_total, second_prompt, second_total, expected_prompt, expected_total) in [
+        (Some(15), 0, Some(12), 17, 27),
+        (None, 7, None, 17, 27),
+    ] {
+        let mut first_usage = serde_json::json!({
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "cachedContentTokenCount": 20,
+        });
+        if let Some(total) = first_total {
+            first_usage["totalTokenCount"] = serde_json::json!(total);
+        }
+        let mut second_usage = serde_json::json!({
+            "promptTokenCount": second_prompt,
+            "candidatesTokenCount": 5,
+        });
+        if let Some(total) = second_total {
+            second_usage["totalTokenCount"] = serde_json::json!(total);
+        }
+        let first = sse_frame(serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "first"}]},
+                "finishReason": "CONTINUATION",
+                "continuationToken": "dG9rZW4tMQ==",
+            }],
+            "usageMetadata": first_usage,
+        }));
+        let second = sse_frame(serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "second"}]},
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": second_usage,
+        }));
+        let (address, mut rx, server) = spawn_mock_sequence(
+            GEMINI_ROUTE,
+            vec![(200, "text/event-stream", first), (200, "text/event-stream", second)],
+        )
+        .await;
+        let client = gemini_client(format!("http://{address}/v1beta"), GEMINI_MODEL);
+        let response = client
+            .conversation_collect(ConversationRequest::from_items(vec![ConversationItem::user("hello")]))
+            .await;
+        server.abort();
+        let usage = response.unwrap().usage.unwrap();
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens, usage.total_tokens),
+            (expected_prompt, 10, expected_total));
+        assert_eq!(usage.cached_prompt_tokens, 10);
+        rx.try_recv().unwrap();
+        rx.try_recv().unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
+#[serial]
 async fn generate_content_continuation_also_handles_json_array_and_object_hops() {
     let first = serde_json::json!([{
         "candidates": [{

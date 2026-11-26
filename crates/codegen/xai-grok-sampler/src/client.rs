@@ -666,10 +666,32 @@ fn generate_content_error_body(text: &str) -> Option<SamplingError> {
     })
 }
 
+fn normalize_generate_content_usage(usage: &UsageMetadata) -> UsageMetadata {
+    let completion = usage.candidates_token_count.saturating_add(usage.thoughts_token_count);
+    let prompt = if usage.prompt_token_count > 0 {
+        usage.prompt_token_count
+    } else {
+        usage.total_token_count.saturating_sub(completion)
+    };
+    UsageMetadata {
+        prompt_token_count: prompt,
+        total_token_count: if usage.total_token_count > 0 {
+            usage.total_token_count
+        } else {
+            prompt.saturating_add(completion)
+        },
+        cached_content_token_count: usage.cached_content_token_count.min(prompt),
+        ..usage.clone()
+    }
+}
+
 fn accumulate_generate_content_usage(
     previous: &UsageMetadata,
     current: &UsageMetadata,
 ) -> UsageMetadata {
+    // Apply missing-field fallbacks per hop, before their sums hide omissions.
+    let previous = normalize_generate_content_usage(previous);
+    let current = normalize_generate_content_usage(current);
     UsageMetadata {
         prompt_token_count: previous
             .prompt_token_count
