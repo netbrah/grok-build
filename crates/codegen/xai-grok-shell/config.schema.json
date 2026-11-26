@@ -467,6 +467,16 @@
             "null"
           ]
         },
+        "auth_scheme": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuthScheme"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "auto_compact_threshold_percent": {
           "description": "Per-model auto-compact threshold override (0-100) from `[model.<id>]`.\nRead directly by `resolve_auto_compact_threshold_percent`.\nIntentionally NOT merged into `ModelInfo.auto_compact_threshold_percent` so the resolver can keep user-per-model distinct from GB-per-model.",
           "format": "uint8",

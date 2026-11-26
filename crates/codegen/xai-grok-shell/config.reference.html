@@ -45,13 +45,13 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <header>
 <h1>config.toml reference</h1>
 <p class="sub">xai-grok-shell · agent <code>Config</code> surface + <code>[model.&lt;id&gt;]</code> override rows · JSON Schema draft-07, rendered from the live types</p>
-<p class="ver">content hash <code>fnv1a-64 80847a7d4840bd21</code> · 49 root properties · 51 model-row fields · 12 enum definitions · 30 endpoint fields · 103 definitions</p>
+<p class="ver">content hash <code>fnv1a-64 c5076f24a063583e</code> · 49 root properties · 52 model-row fields · 12 enum definitions · 30 endpoint fields · 103 definitions</p>
 <p class="regen">regenerate: <code>cargo run -p xai-grok-shell --bin config-schema-write -- --html</code></p>
 <p class="prov">provenance: bead <code>apex-33z</code> CONFIG-REFERENCE-HTML-1 · donor pattern: codex config-schema golden via apex-hw0 (<code>config_schema.rs</code>)</p>
 </header>
 <nav class="toc">
 <a href="#root">root (49)</a>
-<a href="#model">model rows (51)</a>
+<a href="#model">model rows (52)</a>
 <a href="#enums">enums (12)</a>
 <a href="#endpoints">endpoints (30)</a>
 <a href="#defs">definitions</a>
@@ -110,7 +110,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr class="f" data-name="worktree"><th><code><a class="ref" href="#def-WorktreeConfigSection">worktree</a></code></th><td><span class="opt">optional</span></td><td class="type"><a class="ref" href="#def-WorktreeConfigSection">WorktreeConfigSection</a></td><td class="desc">`[worktree]` section (currently `[worktree.auto_gc]` only).</td></tr>
 <tr class="f" data-name="worktree_pool"><th><code><a class="ref" href="#def-WorktreePoolConfig">worktree_pool</a></code></th><td><span class="opt">optional</span></td><td class="type"><a class="ref" href="#def-WorktreePoolConfig">WorktreePoolConfig</a></td><td class="desc">Deprecated `[worktree_pool]` section. The pre-warmed worktree pool was deleted (never wired into production).<br>The section is still parsed so existing user configs don't trip unknown-key warnings.</td></tr>
 </tbody></table></section>
-<section id="model"><h2><code>[model.&lt;id&gt;]</code> override rows — <a class="ref" href="#def-ConfigModelOverride">ConfigModelOverride</a> (51 fields)</h2>
+<section id="model"><h2><code>[model.&lt;id&gt;]</code> override rows — <a class="ref" href="#def-ConfigModelOverride">ConfigModelOverride</a> (52 fields)</h2>
 <p class="lead">A `[model.foo]` entry from config.toml, parsed directly from raw TOML (bypassing deep merge).<br>Scalar fields are `Option` so absent means &quot;inherit from defaults/prefetched&quot;.<br>The collection fields (`extra_headers`, `reasoning_efforts`) merge only when non-empty and so cannot express &quot;override to empty.&quot;</p>
 <table><thead><tr><th>field</th><th>required</th><th>type</th><th>description (verbatim schema text)</th></tr></thead><tbody>
 <tr class="f" data-name="agent_type"><th><code>agent_type</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
@@ -118,6 +118,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr class="f" data-name="api_base_url"><th><code>api_base_url</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="api_key"><th><code>api_key</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="auth_provider"><th><code>auth_provider</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Name of a `[auth_provider.&lt;name&gt;]` credential helper that mints this model's bearer token.<br>Static `api_key` / `env_key` win when both are set.</td></tr>
+<tr class="f" data-name="auth_scheme"><th><code>auth_scheme</code></th><td><span class="opt">optional</span></td><td class="type"><a class="ref" href="#def-AuthScheme">AuthScheme</a><span class="chip">bearer</span><span class="chip">x_api_key</span><span class="chip">x_goog_api_key</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="auto_compact_threshold_percent"><th><code>auto_compact_threshold_percent</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">integer</span> <code>uint8</code> <span class="t">min 0</span> <span class="t">max 255</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Per-model auto-compact threshold override (0-100) from `[model.&lt;id&gt;]`.<br>Read directly by `resolve_auto_compact_threshold_percent`.<br>Intentionally NOT merged into `ModelInfo.auto_compact_threshold_percent` so the resolver can keep user-per-model distinct from GB-per-model.</td></tr>
 <tr class="f" data-name="base_url"><th><code>base_url</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="cache_ttl"><th><code>cache_ttl</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Messages-wire stable-head cache retention tier (&quot;5m&quot; or &quot;1h&quot;).<br>Absent = inherit (donor/prefetched, else `[models]` global, else<br>the wire default 5m).</td></tr>
@@ -321,7 +322,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 </tbody></table></section>
 
 </main>
-<footer>Rendered deterministically from the live schema: sorted traversal, no timestamps, std-only, self-contained (no external assets). Self-identifies via fnv1a-64 content hash <code>80847a7d4840bd21</code> over the canonicalized, default-stripped schema JSON. Guarded by the golden <code>agent::config_schema_tests::config_reference_html_matches</code>.</footer>
+<footer>Rendered deterministically from the live schema: sorted traversal, no timestamps, std-only, self-contained (no external assets). Self-identifies via fnv1a-64 content hash <code>c5076f24a063583e</code> over the canonicalized, default-stripped schema JSON. Guarded by the golden <code>agent::config_schema_tests::config_reference_html_matches</code>.</footer>
 <script>
 (function () {
   var box = document.getElementById('q');

@@ -1704,6 +1704,83 @@ fn x_api_key_auth_scheme_flows_from_config_to_sampler() {
     let info = client.auth_info();
     assert_eq!(info.auth_type, "x-api-key");
 }
+#[tokio::test]
+#[serial]
+async fn gemini_toml_auth_scheme_reaches_outbound_header() {
+    use axum::{Router, body::Bytes, http::HeaderMap, routing::post};
+    use xai_grok_sampling_types::{ConversationItem, ConversationRequest};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let app = Router::new().route(
+        "/gemini/v1beta/models/gemini-3.8-flash:streamGenerateContent",
+        post(move |headers: HeaderMap, _: Bytes| {
+            let tx = tx.clone();
+            async move {
+                tx.send(headers).unwrap();
+                axum::Json(serde_json::json!({
+                    "candidates": [{
+                        "content": {"role": "model", "parts": [{"text": "hello"}]},
+                        "finishReason": "STOP",
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 2,
+                    },
+                }))
+            }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let (_, models) = resolve_models_from_toml(
+        &format!(
+            r#"
+            [model.native-gemini]
+            model = "gemini-3.8-flash"
+            base_url = "http://{address}/gemini/v1beta"
+            api_backend = "generate_content"
+            auth_scheme = "x_goog_api_key"
+            api_key = "gemini-test-key"
+            context_window = 1048576
+            "#,
+        ),
+        None,
+    );
+    let model = models.get("native-gemini").unwrap();
+    let sampling = resolve_sampling(model, None);
+    let scheme = sampling.auth_scheme;
+    let client = xai_grok_sampler::SamplingClient::new(sampling).unwrap();
+    let result = client
+        .conversation_collect(ConversationRequest {
+            model: Some(model.info.model.clone()),
+            ..ConversationRequest::from_items(vec![ConversationItem::user("hello")])
+        })
+        .await;
+    server.abort();
+    result.unwrap();
+    let headers = rx.try_recv().unwrap();
+    assert_eq!(scheme, AuthScheme::XGoogApiKey);
+    assert_eq!(headers.get("x-goog-api-key").unwrap(), "gemini-test-key");
+    assert!(!headers.contains_key("authorization"));
+    assert!(!headers.contains_key("x-api-key"));
+}
+
+#[test]
+fn auth_scheme_override_absent_preserves_prefetched_scheme() {
+    let mut model = test_model_entry("custom", "https://example.test/v1", None, None, None);
+    model.info.auth_scheme = AuthScheme::XApiKey;
+    let entry = ConfigModelOverride::default().apply(
+        "custom",
+        Some(model),
+        &EndpointsConfig::default(),
+    );
+    assert_eq!(entry.info.auth_scheme, AuthScheme::XApiKey);
+}
+
 #[test]
 fn auth_scheme_defaults_to_bearer_when_not_set_in_config() {
     let model = test_model_entry(

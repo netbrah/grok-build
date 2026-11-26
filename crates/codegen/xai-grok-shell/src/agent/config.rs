@@ -5292,6 +5292,7 @@ pub struct ConfigModelOverride {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub api_backend: Option<ApiBackend>,
+    pub auth_scheme: Option<AuthScheme>,
     /// Per-model native (v2) multi-agent gate (MA-3, spec Q1.2); `None` = dark.
     pub multi_agent_v2: Option<bool>,
     #[serde(default)]
@@ -5443,6 +5444,9 @@ impl ConfigModelOverride {
         }
         if let Some(ref v) = self.api_backend {
             entry.info.api_backend = v.clone();
+        }
+        if let Some(v) = self.auth_scheme {
+            entry.info.auth_scheme = v;
         }
         if let Some(v) = self.multi_agent_v2 {
             entry.info.multi_agent_v2 = Some(v);

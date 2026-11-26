@@ -684,6 +684,7 @@ mod tests {
             temperature: Some(0.5),
             top_p: Some(0.9),
             api_backend: Some(ApiBackend::Messages),
+            auth_scheme: Some(xai_grok_sampler::AuthScheme::XGoogApiKey),
             extra_headers: [("x-team".to_owned(), "codegen".to_owned())]
                 .into_iter()
                 .collect(),
