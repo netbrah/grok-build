@@ -5,6 +5,7 @@
 
 use super::*;
 use axum::http::{HeaderMap, Uri};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use xai_grok_sampling_types::conversation::{ToolExposure, ToolSpec};
 use xai_grok_sampling_types::gemini::{FinishReason, GenerateContentResponse};
@@ -144,6 +145,96 @@ async fn spawn_mock_sequence(
         let _ = axum::serve(listener, app).await;
     });
     (addr, rx, server)
+}
+
+async fn spawn_stalled_json_mock() -> (
+    std::net::SocketAddr,
+    mpsc::UnboundedReceiver<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let app = Router::new().route(
+        GEMINI_ROUTE,
+        post(move |_: Bytes| {
+            let tx = tx.clone();
+            async move {
+                tx.send(()).unwrap();
+                axum::response::Response::builder()
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from_stream(
+                        futures_util::stream::pending::<std::result::Result<Bytes, std::io::Error>>(),
+                    ))
+                    .unwrap()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (address, rx, server)
+}
+
+#[tokio::test]
+#[serial]
+async fn generate_content_stalled_json_respects_idle_timeout() {
+    let (address, _rx, server) = spawn_stalled_json_mock().await;
+    let client = gemini_client(format!("http://{address}/v1beta"), GEMINI_MODEL);
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        client.conversation_collect_with_idle_timeout(
+            ConversationRequest::from_items(vec![ConversationItem::user("hello")]),
+            Duration::from_millis(50),
+        ),
+    )
+    .await;
+    server.abort();
+    assert!(result.is_ok(), "JSON body read bypassed the idle timeout");
+    let error = result.unwrap().unwrap_err();
+    let expected_message = SamplingError::IdleTimeout { elapsed_secs: 0 }.to_string();
+    assert!(matches!(error, SamplingError::Api { message, .. } if message == expected_message));
+}
+
+#[tokio::test]
+#[serial]
+async fn generate_content_stalled_json_allows_actor_cancellation() {
+    let (address, mut rx, server) = spawn_stalled_json_mock().await;
+    let config = SamplerConfig {
+        base_url: format!("http://{address}/v1beta"),
+        model: GEMINI_MODEL.to_owned(),
+        api_backend: ApiBackend::GenerateContent,
+        auth_scheme: AuthScheme::XGoogApiKey,
+        ..minimal_config()
+    };
+    let (events, _event_rx) = mpsc::unbounded_channel();
+    let handle = crate::actor::SamplerActor::spawn(
+        config,
+        crate::config::RetryPolicy {
+            max_retries: 0,
+            ..Default::default()
+        },
+        events,
+    );
+    let request_id = crate::types::RequestId::random();
+    let collector_handle = handle.clone();
+    let collector_id = request_id.clone();
+    let mut collector = tokio::spawn(async move {
+        collector_handle
+            .submit_and_collect(
+                collector_id,
+                ConversationRequest::from_items(vec![ConversationItem::user("hello")]),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+    handle.cancel(request_id);
+    let result = tokio::time::timeout(Duration::from_secs(2), &mut collector).await;
+    collector.abort();
+    server.abort();
+    assert!(result.is_ok(), "stalled JSON blocked actor cancellation");
+    let error = result.unwrap().unwrap().unwrap_err();
+    assert!(matches!(error, SamplingError::Auth { message, .. } if message == "request cancelled"));
 }
 
 fn gemini_client(base_url: String, model: &str) -> SamplingClient {

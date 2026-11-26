@@ -5083,16 +5083,19 @@ impl SamplingClient {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or_default()
                 .to_owned();
-            let bytes = response.bytes().await?;
-            tracing::warn!(
-                content_type = %content_type,
-                body_preview = %Self::body_preview(bytes.as_ref()),
-                model_id = %model_id,
-                "generateContent 2xx response is not an event stream; decoding the buffered body"
-            );
-            let events =
-                futures_util::stream::iter(decode_generate_content_json_body(bytes.as_ref()))
-                    .boxed();
+            let events = async_stream::try_stream! {
+                // Keep body IO inside the stream's idle and cancellation boundaries.
+                let bytes = response.bytes().await?;
+                tracing::warn!(
+                    content_type = %content_type,
+                    body_preview = %Self::body_preview(bytes.as_ref()),
+                    model_id = %model_id,
+                    "generateContent 2xx response is not an event stream; decoding the buffered body"
+                );
+                for event in decode_generate_content_json_body(bytes.as_ref()) {
+                    yield event?;
+                }
+            }.boxed();
             return Ok((
                 span_timing.hold_until_first_content(events, generate_content_chunk_class),
                 model_metadata,
